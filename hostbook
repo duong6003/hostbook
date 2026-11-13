@@ -68,6 +68,7 @@ pick(){
   return 1
 }
 row(){ printf '%s%*s %s%s\n' "$1" $((18-${#1})) '' "$2" "${3:+   ${CD}← $3${C0}}"; }   # căn lề theo số ký tự, không theo byte
+confirm(){ gum confirm --affirmative "Có" --negative "Không" "$@"; }   # nút tiếng Việt; lời gọi nào truyền nút riêng thì nút đó thắng
 ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
 
 # ---------- chỉ mục server ----------
@@ -246,7 +247,7 @@ sync_locked(){
   behind=$(g rev-list --count 'HEAD..@{u}'); ahead=$(g rev-list --count '@{u}..HEAD')
   if [ "$behind" -gt 0 ]; then
     before=$(cut -f1 "$IDX" 2>/dev/null | sort)
-    if ! g pull -q --rebase 2>/dev/null; then g rebase --abort 2>/dev/null; set_status conflict; return 1; fi
+    if ! g pull -q --rebase >/dev/null 2>&1; then g rebase --abort 2>/dev/null; set_status conflict; return 1; fi
     build_index; after=$(cut -f1 "$IDX" | sort)
     new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -5 | tr '\n' ' ')
     if [ -n "$new" ]; then set_status pulled "Server mới từ máy khác: $new"; else set_status pulled "Đã nhận $behind thay đổi từ máy khác"; fi
@@ -469,7 +470,7 @@ save_group(){
 }
 need_tmux(){
   have tmux && return 0
-  if is_mac && have brew; then gum confirm "Cần tmux để mở nhiều server cùng lúc. Cài ngay bằng brew install tmux?" && gum spin --title "Đang cài tmux" -- brew install tmux && return 0
+  if is_mac && have brew; then confirm "Cần tmux để mở nhiều server cùng lúc. Cài ngay bằng brew install tmux?" && gum spin --title "Đang cài tmux" -- brew install tmux && return 0
   else box 221 "Cần tmux để mở nhiều server cùng lúc." "Cài bằng trình quản lý gói của máy, ví dụ: sudo apt install tmux"; pause; fi
   return 1
 }
@@ -492,7 +493,7 @@ open_many(){ # group-name-or-empty host...
   fi
   for h in "$@"; do is_prod "$h" && nprod=$((nprod+1)); done
   if [ "$mode" = sync ] && [ $nprod -gt 0 ]; then
-    gum confirm --default=false --affirmative "Mở" --negative "Không" "Chạy đồng loạt trên $nprod server PROD? Mọi phím bạn gõ sẽ gửi tới tất cả." || return 1
+    confirm --default=false --affirmative "Mở" --negative "Không" "Chạy đồng loạt trên $nprod server PROD? Mọi phím bạn gõ sẽ gửi tới tất cả." || return 1
   fi
   # phiên của nhóm mang tên nhóm; bộ chọn tạm mang tên server đầu + số server + mã của cả bộ, để hai bộ khác nhau không vào nhầm phiên
   if [ -n "$grp" ]; then s="hb-$grp"; elif [ $# -eq 1 ]; then s="hb-$1"
@@ -557,7 +558,7 @@ group_actions(){
   case $(pick "Nhóm $n" "Mở nhóm" "Đổi kiểu mở|đang là: $(mode_label "$(group_field "$n" 2)")" "Xoá nhóm|server không bị xoá") in
     0) open_many "$n" $(group_field "$n" 3);;
     1) set_group_mode "$n" ""; open_many "$n" $(group_field "$n" 3);;
-    2) gum confirm --default=false "Xoá nhóm $n?" && { awk -F'\t' -v n="$n" '$1!=n' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; save_and_sync "Đã xoá nhóm $n"; };;
+    2) confirm --default=false "Xoá nhóm $n?" && { awk -F'\t' -v n="$n" '$1!=n' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; save_and_sync "Đã xoá nhóm $n"; };;
   esac
 }
 
@@ -604,7 +605,7 @@ connect_kho(){ # nối ~/ssh-hosts với kho trên máy khác
   m=$(pick_machine "Kho ở máy nào?") || return 1
   ensure_key "$m" || { pause; return 1; }
   if ! sshx -o ConnectTimeout=8 "$m" 'test -d ~/repos/ssh-hosts.git' 2>/dev/null; then
-    gum confirm "Máy $m chưa có kho. Tạo kho trên máy đó?" || return 1
+    confirm "Máy $m chưa có kho. Tạo kho trên máy đó?" || return 1
     sshx "$m" 'git init -q --bare ~/repos/ssh-hosts.git' || { err "Không tạo được kho (máy đó đã cài git chưa?)"; pause; return 1; }
     ok "Đã tạo kho trên $m"
   fi
@@ -651,7 +652,7 @@ copy_keys(){
   used=$(cut -f7 "$IDX" 2>/dev/null | sed 's|.*/||' | sort -u | tr '\n' ',')
   sel=$(printf '%s\n' "$keys" | gum choose --no-limit --header "Chọn key cần sao chép · space đổi lựa chọn · đã chọn sẵn key đang dùng" --selected "$used") || return 1
   [ -n "$sel" ] || return 1
-  gum confirm "Sao chép $(printf '%s\n' "$sel" | wc -l | tr -d ' ') key sang máy này?" || return 1
+  confirm "Sao chép $(printf '%s\n' "$sel" | wc -l | tr -d ' ') key sang máy này?" || return 1
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   for k in $sel; do
     if [ -f "$HOME/.ssh/$k" ]; then warn "$k đã có trên máy này, giữ nguyên"; continue; fi
@@ -662,7 +663,7 @@ copy_keys(){
 }
 undo_last(){
   local msg; msg=$(g log -1 --format=%s 2>/dev/null) || return 1
-  gum confirm --default=false "Hoàn tác \"$msg\"?" || return 1
+  confirm --default=false "Hoàn tác \"$msg\"?" || return 1
   g revert --no-edit HEAD >/dev/null 2>&1 || { err "Không hoàn tác được"; pause; return 1; }
   if ! validate >/dev/null; then g reset -q --hard HEAD~1; err "Hoàn tác sẽ làm hỏng config nên đã dừng"; pause; return 1; fi
   build_index; flash "${CG}✓ Đã hoàn tác \"$msg\"${C0}"; : > "$ST.force"
@@ -753,7 +754,7 @@ home(){
       ctrl-o) tools;;
       ctrl-s) gum spin --title "Đang đồng bộ với kho" -- "$SELF" _sync_now;;
       right) case $t in h) host_actions "$n";; g) group_actions "$n";;
-               s) gum confirm --default=false "Đóng hẳn phiên ${n#hb-}? Các kết nối trong đó sẽ bị ngắt." && tmux kill-session -t "$n" && flash "Đã đóng phiên ${n#hb-}";; esac;;
+               s) confirm --default=false "Đóng hẳn phiên ${n#hb-}? Các kết nối trong đó sẽ bị ngắt." && tmux kill-session -t "$n" && flash "Đã đóng phiên ${n#hb-}";; esac;;
       '?') show_help;;
     esac
   done
@@ -810,7 +811,7 @@ first_run(){ # chưa có ~/ssh-hosts
        ensure_key "$m" || return 1
        GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ $m" -- git clone -q "$m:repos/ssh-hosts.git" "$DIR" || { err "Không lấy được kho từ $m"; return 1; };;
     *) mkdir -p "$DIR"; git -C "$DIR" init -q; printf '*\n!*.conf\n!.gitignore\n!groups.tsv\n' > "$DIR/.gitignore"
-       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && gum confirm "Nhập các server đang có trong ~/.ssh/config?"; then
+       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && confirm "Nhập các server đang có trong ~/.ssh/config?"; then
          awk 'tolower($1)=="host" || tolower($1)=="match" {keep=1} keep' "$HOME/.ssh/config" > "$DIR/imported.conf"
          cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"; awk 'tolower($1)=="host" || tolower($1)=="match" {exit} {print}' "$HOME/.ssh/config.bak" > "$HOME/.ssh/config"
          ok "Đã chuyển các khối Host sang ~/ssh-hosts/imported.conf (bản cũ ở ~/.ssh/config.bak)"
@@ -820,7 +821,7 @@ first_run(){ # chưa có ~/ssh-hosts
   chmod 700 "$DIR"
   setup
   [ "$i" = 2 ] && make_kho_here
-  [ "$i" = 1 ] && gum confirm --negative "Để sau" "Kết nối kho ngay để sao lưu và dùng trên nhiều máy?" && connect_kho
+  [ "$i" = 1 ] && confirm --negative "Để sau" "Kết nối kho ngay để sao lưu và dùng trên nhiều máy?" && connect_kho
   pause "enter để bắt đầu"
 }
 
