@@ -105,7 +105,7 @@ git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm "a-web3"
 check "chưa có kho: header báo rõ" '"$S" _header | strip | grep -q "Chưa có kho"'
 git init -q --bare "$T/kho.git"; git -C "$HOSTBOOK_DIR" remote add origin "$T/kho.git"
 "$S" _sync_now
-check "lần đầu: đẩy lên kho và đặt upstream" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = ok ] && [ "$(git -C "$T/kho.git" log --oneline | wc -l | tr -d " ")" = 2 ]'
+check "lần đầu: đẩy lên kho và đặt upstream" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = ok ] && git -C "$T/kho.git" log --format=%s | grep -q "^a-web3$" && git -C "$T/kho.git" log --format=%s | grep -q "Bật gộp theo từng server"'
 git clone -q "$T/kho.git" "$T/other"; printf '\n# tags: prod search\nHost c-search1\n  HostName 10.3.0.40\n' > "$T/other/project-c.conf"
 git -C "$T/other" add -A; git -C "$T/other" commit -qm "c-search1"; git -C "$T/other" push -q
 "$S" _sync_now
@@ -174,5 +174,73 @@ out=$(PATH="$T/fakebin:$PATH" "$S" 2>&1 </dev/null | strip)
 check "fzf quá cũ: báo rõ và chỉ cách cài lại" 'printf "%s" "$out" | grep -q "fzf 0.44.1 quá cũ" && printf "%s" "$out" | grep -q "install.sh"'
 rm "$T/fakebin/fzf"
 check "--version" '"$S" --version | grep -q "^hostbook [0-9]"'
+
+# ---- xoá, đổi tên, chuyển dự án ----
+"$S" _index >/dev/null
+"$S" _rename a-web1 a-front1 >/dev/null
+idx=$("$S" _index)
+check "đổi tên: dòng Host, nhóm và lịch sử theo tên mới" '[ -n "$(row a-front1 3)" ] && [ -z "$(row a-web1 3)" ] && grep -q "a-front1" "$HOSTBOOK_DIR/groups.tsv" && ! grep -q "a-web1 " "$HOSTBOOK_DIR/groups.tsv"'
+"$S" _rename a-bastion a-gate >/dev/null; idx=$("$S" _index)
+check "đổi tên máy trung gian: server khác đi qua tên mới" '[ "$(row a-web2 6)" = a-gate ] && [ "$(row a-front1 6)" = a-gate ]'
+before=$(printf '%s\n' "$idx" | awk -F'\t' '$1=="a-db"{print $3,$4,$5,$6}')
+"$S" _move a-db project-b >/dev/null; idx=$("$S" _index)
+after=$(printf '%s\n' "$idx" | awk -F'\t' '$1=="a-db"{print $3,$4,$5,$6}')
+check "chuyển dự án: giữ nguyên user và máy trung gian thừa hưởng từ wildcard cũ" '[ "$(row a-db 2)" = project-b ] && [ "$after" = "$before" ]'
+check "chuyển dự án: tags đi theo khối" '[ "$(row a-db 8)" = "prod db postgres" ]'
+"$S" _delete a-web2 >/dev/null; idx=$("$S" _index)
+check "xoá: mất khỏi danh sách, dòng tags không bị bỏ lại" '[ -z "$(row a-web2 3)" ] && ! grep -B1 "^Host a-web3" "$HOSTBOOK_DIR/project-a.conf" | grep -q "prod web hcm"'
+check "xoá: bỏ khỏi nhóm, nhóm vẫn còn" '! grep -q "a-web2" "$HOSTBOOK_DIR/groups.tsv" && grep -q "^prod-web" "$HOSTBOOK_DIR/groups.tsv"'
+check "các thao tác trên đều được commit" '[ -z "$(git -C "$HOSTBOOK_DIR" status --porcelain)" ] && git -C "$HOSTBOOK_DIR" log --format=%s | grep -q "^xoá a-web2"'
+
+# ---- nhập nhiều server ----
+parsed=$(printf 'n-web1 ubuntu@10.0.1.31 #prod #web\nn-api, deploy@10.2.0.33:2222\n10.0.1.40\ndb1.example.com\nbad;name 1.2.3.4\n# ghi chú\n' | "$S" _import_parse 2>"$T/imp.err")
+check "nhập: đọc tên, user, cổng, tags; dấu phẩy cũng được" 'printf "%s\n" "$parsed" | grep -q "^n-web1	ubuntu	10.0.1.31	-	prod web$" && printf "%s\n" "$parsed" | grep -q "^n-api	deploy	10.2.0.33	2222	-$"'
+check "nhập: tên lấy từ tên máy khi chỉ có địa chỉ" 'printf "%s\n" "$parsed" | grep -q "^db1	-	db1.example.com"'
+check "nhập: báo đúng dòng lỗi" 'grep -q "dòng 3: thiếu tên" "$T/imp.err" && grep -q "dòng 5: tên" "$T/imp.err"'
+printf '%s\n' "$parsed" > "$T/imp.tsv"; "$S" _import_write "$T/imp.tsv" >/dev/null; idx=$("$S" _index)
+check "nhập: đoán dự án theo dải IP, user theo dự án khi không ghi" '[ "$(row n-web1 2)" = project-a ] && [ "$(row n-api 2)" = project-b ] && [ "$(row n-api 5)" = 2222 ] && [ "$(row db1 4)" != "" ]'
+
+cat > "$T/old_config" <<'EOF'
+Host *
+  ServerAliveInterval 30
+# tags: prod
+Host x-web1
+  HostName 1.1.1.1
+Host x-web2
+  HostName 1.1.1.2
+Host x-*
+  User ops
+Host lone
+  HostName 2.2.2.2
+Match host foo
+  User bar
+EOF
+mkdir -p "$T/split"; n=$("$S" _split "$T/old_config" "$T/split" "$T/split.global")
+check "tách ssh config: nhóm theo phần đầu tên, lẻ vào imported" '[ "$n" = 4 ] && grep -q "Host x-web1" "$T/split/x.conf" && grep -q "Host x-\*" "$T/split/x.conf" && grep -q "Host lone" "$T/split/imported.conf"'
+check "tách ssh config: comment tags đi theo khối, Host * và Match ở lại" 'grep -B1 "Host x-web1" "$T/split/x.conf" | grep -q "# tags: prod" && grep -q "ServerAliveInterval" "$T/split.global" && grep -q "Match host foo" "$T/split.global"'
+
+# ---- đồng bộ hai máy: gộp theo từng server ----
+"$S" _sync_now; git -C "$T/other" pull -q
+printf '\n# tags: kho\nHost from-kho\n  HostName 10.6.0.1\n' >> "$T/other/project-b.conf"
+sed -i.b 's/HostName 10.0.1.12$/HostName 10.0.1.112/' "$T/other/project-a.conf"; rm -f "$T/other/project-a.conf.b"
+git -C "$T/other" commit -qam "máy khác thêm và sửa"; git -C "$T/other" push -q
+printf '\nHost from-local\n  HostName 10.6.0.2\n' >> "$HOSTBOOK_DIR/project-b.conf"
+"$S" _sync_now 2>/dev/null; idx=$("$S" _index)
+check "hai máy cùng thêm server vào cuối một file: gộp sạch, không báo xung đột" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" != conflict ] && [ -n "$(row from-kho 3)" ] && [ -n "$(row from-local 3)" ]'
+check "kho có server của cả hai máy" 'git -C "$T/kho.git" show HEAD:project-b.conf | grep -q from-local && git -C "$T/kho.git" show HEAD:project-b.conf | grep -q from-kho'
+
+git -C "$T/other" pull -q
+sed -i.b 's/HostName 10.0.1.11$/HostName 10.0.1.211/' "$T/other/project-a.conf"; rm -f "$T/other/project-a.conf.b"
+git -C "$T/other" commit -qam "sửa a-front1 ở máy khác"; git -C "$T/other" push -q
+sed -i.b 's/HostName 10.0.1.11$/HostName 10.0.1.99/' "$HOSTBOOK_DIR/project-a.conf"; rm -f "$HOSTBOOK_DIR/project-a.conf.b"
+printf '\nHost from-local2\n  HostName 10.6.0.3\n' >> "$HOSTBOOK_DIR/project-b.conf"
+"$S" _sync_now 2>/dev/null
+check "cùng sửa một server: báo xung đột" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = conflict ]'
+"$S" _resolve theirs >"$T/resolve.out" 2>&1; idx=$("$S" _index)
+check "lấy bản kho: server bị sửa hai nơi theo kho, server mới của máy này vẫn còn" '[ "$(row a-front1 3)" = 10.0.1.211 ] && [ -n "$(row from-local2 3)" ] && [ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = ok ]'
+check "sau khi gộp, kho có cả hai phía" 'git -C "$T/kho.git" show HEAD:project-b.conf | grep -q from-local2'
+
+check "tên kho hiển thị gọn" '[ "$(cd "$HOSTBOOK_DIR" && git remote set-url origin git@github.com:me/hosts.git && "$S" _kho_addr)" = "git@github.com" ] && [ "$(cd "$HOSTBOOK_DIR" && git remote set-url origin ssh://git@gitea.lan:2222/me/hosts.git && "$S" _kho_addr)" = "gitea.lan:2222" ]'
+git -C "$HOSTBOOK_DIR" remote set-url origin "$T/kho.git"
 
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]
