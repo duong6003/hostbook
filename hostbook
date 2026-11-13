@@ -36,6 +36,7 @@ export GUM_CHOOSE_CURSOR_FOREGROUND=212 GUM_CHOOSE_HEADER_FOREGROUND=141 GUM_CHO
   GUM_CONFIRM_SELECTED_BACKGROUND=212 GUM_SPIN_SPINNER_FOREGROUND=212
 
 # ---------- nhỏ ----------
+export GIT_OPTIONAL_LOCKS=0   # git status chạy nền không giành khoá index với lần đồng bộ khác
 g(){ git -C "$DIR" "$@"; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
 scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
@@ -49,6 +50,7 @@ title(){ printf '\n%s‹%s %s%s%s\n\n' "$CD" "$C0" "$CU$CB" "$*" "$C0"; }
 flash(){ printf '%s\t%s\n' "$(date +%s)" "$*" > "$FLASH"; }
 pause(){ printf '\n%s%s%s' "$CD" "${1:-enter để quay lại}" "$C0" >&2; read -r _ </dev/tty; }
 have(){ command -v "$1" >/dev/null 2>&1; }
+perm(){ stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }   # GNU trước: trên Linux "stat -f" là lệnh khác, không báo lỗi
 is_mac(){ [ "$(uname)" = Darwin ]; }
 copy(){ if have pbcopy; then pbcopy; elif have wl-copy; then wl-copy; elif have xclip; then xclip -selection clipboard; elif have xsel; then xsel -b; else return 1; fi; }
 has_remote(){ [ -n "$(g remote 2>/dev/null)" ]; }
@@ -679,8 +681,8 @@ doctor(){
   if e=$(validate); then ensure_index; ok "Cú pháp ssh config hợp lệ · $(wc -l < "$IDX" | tr -d ' ') server"; else err "ssh config lỗi: $(printf '%s' "$e" | head -1)"; fi
   [ -s "$STATE/skipped" ] && warn "Bỏ qua server có tên chứa ký tự lạ: $(sed "s|$DIR/||" "$STATE/skipped" | head -3 | tr '\n' ' ')"
   for n in $(cut -f7 "$IDX" 2>/dev/null | sort -u); do n=${n/#\~/$HOME}; [ -f "$n" ] || continue
-    case $(stat -f %Lp "$n" 2>/dev/null || stat -c %a "$n") in 600|400) ok "Quyền ${n/#$HOME/~} là 600";; *) warn "Quyền ${n/#$HOME/~} quá rộng · chmod 600 ${n/#$HOME/~}";; esac; done
-  case $(stat -f %Lp "$DIR" 2>/dev/null || stat -c %a "$DIR") in 700) ok "~/ssh-hosts chỉ chủ máy đọc được";; *) warn "~/ssh-hosts người khác trên máy đọc được · chmod 700 ~/ssh-hosts";; esac
+    case $(perm "$n") in 600|400) ok "Quyền ${n/#$HOME/~} là 600";; *) warn "Quyền ${n/#$HOME/~} quá rộng · chmod 600 ${n/#$HOME/~}";; esac; done
+  case $(perm "$DIR") in 700) ok "~/ssh-hosts chỉ chủ máy đọc được";; *) warn "~/ssh-hosts người khác trên máy đọc được · chmod 700 ~/ssh-hosts";; esac
   if [ -d "$HOME/.config/ghostty" ] || [ -d /Applications/Ghostty.app ]; then grep -qs 'ssh-env' "$HOME/.config/ghostty/config" && ok "Ghostty: ssh-env đang bật" || warn "Ghostty chưa bật ssh-env · chạy: hostbook setup"; fi
   [ -n "$(g status --porcelain 2>/dev/null)" ] && warn "Có thay đổi chưa commit" || ok "Không có thay đổi chờ lưu"
   case $(sed -n 1p "$ST" 2>/dev/null) in pending) warn "$(sed -n 2p "$ST") thay đổi chờ đẩy lên kho";; conflict) err "Kho và máy này cùng sửa một chỗ · vào ~/ssh-hosts chạy git status để gộp tay";; esac
@@ -778,7 +780,7 @@ setup(){
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   if ! grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config"; then
     [ -f "$HOME/.ssh/config" ] && cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
-    { echo "# Danh sách server nằm trong ~/ssh-hosts (hostbook đồng bộ với kho)"; echo "Include ~/ssh-hosts/*.conf"; echo; cat "$HOME/.ssh/config" 2>/dev/null; } > "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config"
+    { echo "# Danh sách server nằm trong ~/ssh-hosts (hostbook đồng bộ với kho)"; echo "Include ~/ssh-hosts/*.conf"; echo; cat "$HOME/.ssh/config" 2>/dev/null || true; } > "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config"
     chmod 600 "$HOME/.ssh/config"; ok "Đã thêm Include vào ~/.ssh/config$( [ -f "$HOME/.ssh/config.bak" ] && echo ', bản cũ ở ~/.ssh/config.bak')"
   else ok "~/.ssh/config đã có Include"; fi
   case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac

@@ -162,7 +162,7 @@ for i in 1 2 3 4 5; do printf '\nHost race%s\n  HostName 10.7.0.%s\n' $i $i >> "
 check "đồng bộ chạy đồng thời không gây lỗi khoá git" '! grep -q "index.lock" "$T/race.err"'
 check "sau đó máy và kho khớp nhau" '[ "$(git -C "$HOSTBOOK_DIR" rev-parse HEAD)" = "$(git -C "$T/kho.git" rev-parse HEAD)" ] && [ -z "$(git -C "$HOSTBOOK_DIR" status --porcelain)" ]'
 
-check "thư mục trạng thái chỉ chủ máy đọc được" '[ "$(stat -f %Lp "$HOSTBOOK_STATE" 2>/dev/null || stat -c %a "$HOSTBOOK_STATE")" = 700 ]'
+check "thư mục trạng thái chỉ chủ máy đọc được" '[ "$(stat -c %a "$HOSTBOOK_STATE" 2>/dev/null || stat -f %Lp "$HOSTBOOK_STATE")" = 700 ]'
 
 mkdir -p "$T/fakebin"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = -G ] && exec %s "$@"; done\necho "FAKESSH $*"\n' "$(command -v ssh)" > "$T/fakebin/ssh"; chmod +x "$T/fakebin/ssh"
