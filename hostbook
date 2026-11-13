@@ -1,0 +1,844 @@
+#!/usr/bin/env bash
+# hostbook: tìm, kết nối và đồng bộ danh sách server SSH.
+#
+# Dữ liệu (nằm trong ~/ssh-hosts, đồng bộ bằng git, tách riêng khỏi app):
+#   <dự án>.conf   ssh config chuẩn; "# tags: a b" và "# desc: ..." đặt ngay trên dòng Host
+#   groups.tsv     nhóm: tên<TAB>kiểu mở<TAB>server server ...
+# Kho = remote "origin" của ~/ssh-hosts: một bare repo trên máy luôn bật, các máy chỉ cần thấy nó qua mạng.
+# Riêng từng máy (không đồng bộ): ~/.local/state/hostbook (lịch sử dùng, chỉ mục, trạng thái).
+#
+# Cần: git, fzf >= 0.63, gum >= 0.14. tmux khi mở nhiều server cùng lúc. Viết cho bash 3.2 để chạy trên macOS và Linux.
+set -u
+umask 077   # danh sách server và trạng thái chỉ chủ máy đọc được
+VERSION=0.1.0
+FZF_MIN=0.63; GUM_MIN=0.14
+REPO_URL=https://github.com/duong6003/hostbook
+
+resolve_self(){ local p=$1 l; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l;; *) p=$(dirname "$p")/$l;; esac; done
+  (cd "$(dirname "$p")" && printf '%s/%s\n' "$(pwd)" "$(basename "$p")"); }
+SELF=$(resolve_self "$0")
+DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
+STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
+SSHCFG=${HOSTBOOK_SSH_CONFIG:-}   # chỉ dùng khi kiểm thử: thay cho ~/.ssh/config
+IDX=$STATE/index.tsv; HIST=$STATE/history; ST=$STATE/status; FLASH=$STATE/flash
+GRP=$DIR/groups.tsv
+ME=$(id -un)
+TAB=$'\t'
+# ${#chuỗi} chỉ đếm đúng ký tự có dấu khi locale là UTF-8; Ubuntu tối giản chỉ có C.UTF-8, macOS có en_US.UTF-8
+case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in *[Uu][Tt][Ff]*8*) ;; *)
+  for l in C.UTF-8 en_US.UTF-8; do locale -a 2>/dev/null | grep -qix "$l\|${l%UTF-8}utf8" && { export LC_CTYPE=$l; break; }; done;; esac
+mkdir -p "$STATE"; chmod 700 "$STATE"
+[ -f "$HIST" ] || { cp "$HOME/.local/state/sshm/history" "$HIST" 2>/dev/null || : > "$HIST"; }   # giữ lịch sử từ bản thử sshm
+
+E=$'\033'; C0="$E[0m"; CB="$E[1m"; CD="$E[38;5;244m"; CP="$E[38;5;212m"; CU="$E[38;5;141m"; CG="$E[38;5;114m"; CR="$E[38;5;204m"; CY="$E[38;5;221m"
+export GUM_CHOOSE_CURSOR_FOREGROUND=212 GUM_CHOOSE_HEADER_FOREGROUND=141 GUM_CHOOSE_SELECTED_FOREGROUND=212 \
+  GUM_INPUT_HEADER_FOREGROUND=141 GUM_INPUT_PROMPT_FOREGROUND=212 GUM_INPUT_CURSOR_FOREGROUND=212 \
+  GUM_CONFIRM_SELECTED_BACKGROUND=212 GUM_SPIN_SPINNER_FOREGROUND=212
+
+# ---------- nhỏ ----------
+g(){ git -C "$DIR" "$@"; }
+sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
+scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
+git_ssh(){ printf 'ssh%s -o BatchMode=yes -o ConnectTimeout=%s' "${SSHCFG:+ -F $(printf %q "$SSHCFG")}" "${1:-4}"; }
+ok(){ printf '%s✓%s %s\n' "$CG" "$C0" "$*"; }
+warn(){ printf '%s!%s %s\n' "$CY" "$C0" "$*"; }
+err(){ printf '%s✗%s %s\n' "$CR" "$C0" "$*"; }
+dim(){ printf '%s%s%s\n' "$CD" "$*" "$C0"; }
+box(){ local c=$1; shift; gum style --border rounded --padding "0 1" --border-foreground "$c" "$@"; }
+title(){ printf '\n%s‹%s %s%s%s\n\n' "$CD" "$C0" "$CU$CB" "$*" "$C0"; }
+flash(){ printf '%s\t%s\n' "$(date +%s)" "$*" > "$FLASH"; }
+pause(){ printf '\n%s%s%s' "$CD" "${1:-enter để quay lại}" "$C0" >&2; read -r _ </dev/tty; }
+have(){ command -v "$1" >/dev/null 2>&1; }
+is_mac(){ [ "$(uname)" = Darwin ]; }
+copy(){ if have pbcopy; then pbcopy; elif have wl-copy; then wl-copy; elif have xclip; then xclip -selection clipboard; elif have xsel; then xsel -b; else return 1; fi; }
+has_remote(){ [ -n "$(g remote 2>/dev/null)" ]; }
+remote_url(){ g remote get-url origin 2>/dev/null; }
+kho_addr(){ remote_url | sed 's/:.*//'; }
+valid_name(){ case $1 in ""|*[!A-Za-z0-9._-]*) return 1;; esac; }   # tên server chỉ gồm chữ, số, . _ - (tên lạ trong kho không được chạy như lệnh)
+ver_ge(){ [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$2" ]; }   # $1 >= $2
+
+# pick HEADER ITEM... → in ra số thứ tự (0-based) của mục được chọn. Mục có dạng "Nhãn|mô tả".
+pick(){
+  local header=$1; shift; local items=() i=0 sel x
+  for x in "$@"; do if [ "$x" != "${x#*|}" ]; then items[i]="${x%%|*}  ·  ${x#*|}"; else items[i]=$x; fi; i=$((i+1)); done
+  sel=$(gum choose --header "$header" "${items[@]}") || return 1
+  i=0; for x in "${items[@]}"; do [ "$x" = "$sel" ] && { echo $i; return 0; }; i=$((i+1)); done
+  return 1
+}
+row(){ printf '%s%*s %s%s\n' "$1" $((18-${#1})) '' "$2" "${3:+   ${CD}← $3${C0}}"; }   # căn lề theo số ký tự, không theo byte
+ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
+
+# ---------- chỉ mục server ----------
+# index.tsv: tên dự_án hostname user port proxyjump key tags desc file dòng   (giá trị lấy từ "ssh -G", nên khớp đúng cách ssh hiểu)
+build_index(){
+  local f
+  : > "$STATE/skipped"
+  { for f in "$DIR"/*.conf; do
+      [ -f "$f" ] || continue
+      awk -v proj="$(basename "$f" .conf)" -v file="$f" -v skip="$STATE/skipped" '
+        /^[ \t]*#[ \t]*tags:/ { s=$0; sub(/^[ \t]*#[ \t]*tags:[ \t]*/,"",s); tags=s; next }
+        /^[ \t]*#[ \t]*desc:/ { s=$0; sub(/^[ \t]*#[ \t]*desc:[ \t]*/,"",s); desc=s; next }
+        tolower($1)=="host" { for (i=2;i<=NF;i++) if ($i !~ /[*?!]/) {
+                                if ($i ~ /^[A-Za-z0-9._-]+$/) printf "%s\t%s\t%s\t%s\t%s\t%d\n", $i, proj, (tags==""?"-":tags), (desc==""?"-":desc), file, NR
+                                else print FILENAME ":" NR ": " $i >> skip }
+                              tags=""; desc=""; next }
+        /^[ \t]*(#|$)/ { next }
+        { tags=""; desc="" }' "$f"
+    done; } | while IFS="$TAB" read -r n p t d f l; do
+      sshx -G "$n" 2>/dev/null | awk -v n="$n" -v p="$p" -v t="$t" -v d="$d" -v f="$f" -v l="$l" '
+        $1=="hostname"{h=$2} $1=="user"{u=$2} $1=="port"{po=$2} $1=="proxyjump"{j=$2} $1=="identityfile"&&k==""{k=$2}
+        END { if (j=="none") j=""; if (t=="-") t=""; if (d=="-") d=""
+              printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n,p,h,u,po,j,k,t,d,f,l }'
+    done > "$IDX.tmp" && mv "$IDX.tmp" "$IDX"
+}
+ensure_index(){
+  [ -d "$DIR" ] || { : > "$IDX"; return; }
+  if [ -f "$IDX" ] && [ ! "$DIR" -nt "$IDX" ] && [ -z "$(find "$DIR" -maxdepth 1 -name '*.conf' -newer "$IDX" 2>/dev/null)" ] \
+     && { [ ! -f "$HOME/.ssh/config" ] || [ ! "$HOME/.ssh/config" -nt "$IDX" ]; }; then return; fi
+  build_index
+}
+host_field(){ awk -F'\t' -v n="$1" -v c="$2" '$1==n{print $c; exit}' "$IDX"; }   # 2 dự án 3 ip 4 user 5 port 6 jump 7 key 8 tags 9 desc 10 file 11 dòng
+host_exists(){ awk -F'\t' -v n="$1" '$1==n{f=1; exit} END{exit !f}' "$IDX"; }
+is_prod(){ case " $(host_field "$1" 8) " in *" prod "*) return 0;; esac; return 1; }
+record(){ local n; for n in "$@"; do printf '%s\t%s\n' "$(date +%s)" "$n" >> "$HIST"; done
+  [ "$(wc -l < "$HIST")" -gt 3000 ] && { tail -n 1500 "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"; }; }
+
+# Kiểm tra toàn bộ ssh config (kể cả các file Include). In lỗi và trả về 1 nếu hỏng.
+validate(){ local out; out=$(sshx -G hostbook-validate-probe 2>&1 >/dev/null) && return 0; printf '%s\n' "$out" | grep -v 'terminating'; return 1; }
+
+# ---------- nhóm ----------
+# groups.tsv có thể để trống cột kiểu mở; "read" với IFS=tab sẽ gộp hai tab liền nhau, nên tách tay
+group_line(){ local line=$1; GN=${line%%"$TAB"*}; line=${line#*"$TAB"}; GM=${line%%"$TAB"*}; GH=${line#*"$TAB"}; }
+group_field(){ awk -F'\t' -v n="$1" -v c="$2" '$1==n{print $c; exit}' "$GRP" 2>/dev/null; }
+set_group_mode(){ awk -F'\t' -v OFS='\t' -v n="$1" -v m="$2" '$1==n{$2=m} {print}' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; }
+
+# ---------- danh sách cho fzf ----------
+mode_label(){ case $1 in sync) echo 'chạy đồng loạt';; split) echo 'chia ô';; tabs) echo 'mỗi server một tab';; *) echo 'hỏi khi mở';; esac; }
+cmd_list(){
+  ensure_index
+  local s line
+  if have tmux; then
+    for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep '^hb-'); do
+      printf 's:%s\t%s↺ %-12s%s%sphiên tmux · %s ô · đang chạy · enter để vào lại%s\n' "$s" "$CG" "${s#hb-}" "$C0" "$CD" "$(tmux list-panes -s -t "$s" -F '#{pane_dead}' 2>/dev/null | grep -c 0)" "$C0"
+    done
+  fi
+  [ -f "$GRP" ] && while IFS= read -r line; do
+    [ -n "$line" ] || continue; group_line "$line"; set -- $GH
+    printf 'g:%s\t%s▦ %-12s%s%snhóm · %s server · %s%s\n' "$GN" "$CU" "$GN" "$C0" "$CD" "$#" "$(mode_label "$GM")" "$C0"
+  done < "$GRP"
+  LC_ALL=C awk -F'\t' -v now="$(date +%s)" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" '
+    function vlen(s,  t){ t=s; gsub(/[\200-\277]/,"",t); return length(t) }
+    function pad(s,w){ if (vlen(s)>w) return substr(s,1,w-1) "~"; return s sprintf("%" (w-vlen(s)) "s","") }
+    function ago(t,  d){ if (!t) return "-"; d=now-t; if (d<3600) return (d<120?1:int(d/60)) "m"; if (d<86400) return int(d/3600) "h"; return int(d/86400) "d" }
+    function tagcol(s,  n,a,i,out,w,tk){ n=split(s,a," "); out=""; w=0
+      for (i=1;i<=n;i++){ tk="#" a[i]; if (w+length(tk)+1>23) { out=out cd "~" c0; w++; break }
+        out=out (a[i]=="prod"?cr:cu) tk c0 " "; w+=length(tk)+1 }
+      return out sprintf("%" (24-w>0?24-w:1) "s","") }
+    FILENAME==ARGV[1] { a=now-$1; sc[$2]+=(a<3600?4:a<86400?2:a<604800?1:0.5); if ($1>last[$2]) last[$2]=$1; next }
+    { printf "%010.2f\th:%s\t%s %s%s%s%s%s%s%s %s%s%s\n", sc[$1], $1, pad($1,14), cd, pad($2,11), c0, tagcol($8), cd, pad("@" $4,10), pad($3,16), sprintf("%4s",ago(last[$1])), "  " $9, c0 }
+  ' "$HIST" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
+}
+
+cmd_preview(){
+  local t=${1%%:*} n=${1#*:}
+  case $t in
+    h) ensure_index
+       awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" '$1==n {
+         prod=(" " $8 " " ~ / prod /)
+         printf "%s%s%s%s\n", cb, $1, c0, (prod? "  " cr cb "● PROD" c0 : "")
+         printf "%s%s%s\n", cd, ($9==""?"(chưa có mô tả)":$9), c0
+         t=$8; gsub(/ /," #",t); printf "%s%s%s\n\n", cu, ($8==""?"(chưa có tag)":"#" t), c0
+         printf "%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, $1, cd, c0, $3, cd, c0, $4
+         if ($5!="22") printf "  %sPort%s %s\n", cd, c0, $5
+         if ($6!="") printf "  %sProxyJump%s %s\n", cd, c0, $6
+         printf "  %sIdentityFile%s %s\n\n%s%s:%s%s\n", cd, c0, $7, cd, $10, $11, c0 }' "$IDX" | sed "s|$HOME|~|g"
+       awk -F'\t' -v n="$n" -v now="$(date +%s)" -v cd="$CD" -v c0="$C0" '$2==n{c++; if($1>l)l=$1} END{
+         if (!c) { printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0; exit }
+         d=now-l; a=(d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày")
+         printf "%sLần gần nhất: %s trước · %d lần%s\n", cd, a, c, c0 }' "$HIST" ;;
+    g) local h; ensure_index
+       printf '%s%s%s\n%sNhóm · mở bằng: %s%s\n\n' "$CU$CB" "$n" "$C0" "$CD" "$(mode_label "$(group_field "$n" 2)")" "$C0"
+       for h in $(group_field "$n" 3); do
+         if ! host_exists "$h"; then printf '  %s%-14s đã bị xoá%s\n' "$CD" "$h" "$C0"
+         elif is_prod "$h"; then printf '  %s%-14s%s %s\n' "$CR" "$h" "$C0" "$(host_field "$h" 3)"
+         else printf '  %-14s %s%s%s\n' "$h" "$CD" "$(host_field "$h" 3)" "$C0"; fi; done
+       printf '\n%s→ để đổi kiểu mở hoặc xoá nhóm%s\n' "$CD" "$C0" ;;
+    s) printf '%s%s%s\n%sPhiên tmux đang chạy nền. Đóng terminal không mất phiên.%s\n\n' "$CG$CB" "${n#hb-}" "$C0" "$CD" "$C0"
+       tmux list-panes -s -t "$n" -F '  #{pane_title}#{?pane_dead, (đã thoát),}' 2>/dev/null
+       printf '\n%senter vào lại · → để đóng hẳn%s\n' "$CD" "$C0" ;;
+  esac
+}
+
+cmd_header(){
+  local n state msg="" t f fl=""
+  n=$( [ -s "$IDX" ] && wc -l < "$IDX" | tr -d ' ' || echo 0)
+  if [ -f "$FLASH" ]; then IFS="$TAB" read -r t f < "$FLASH"; [ $(( $(date +%s) - t )) -lt 30 ] && fl=$f; fi
+  if ! has_remote; then msg="${CY}● Chưa có kho, danh sách chỉ nằm trên máy này${C0}${CD} · ^o kết nối kho${C0}"
+  else
+    state=$(sed -n 1p "$ST" 2>/dev/null); f=$(sed -n 2p "$ST" 2>/dev/null)
+    case $state in
+      ok) msg="${CD}✓ đã đồng bộ với kho${C0}";;
+      checking) msg="${CP}… đang kiểm tra kho${C0}";;
+      offline) msg="${CY}⏸ Không kết nối được kho ($(kho_addr))${C0}${CD} · ^s thử lại${C0}";;
+      pending) msg="${CY}⏸ $f thay đổi chờ đẩy lên kho${C0}${CD} · ^s thử lại${C0}";;
+      conflict) msg="${CR}✗ Kho và máy này cùng sửa một chỗ${C0}${CD} · ^o → Kiểm tra máy này${C0}";;
+      invalid) msg="${CR}✗ File lỗi, chưa đồng bộ: $f${C0}";;
+      pulled) msg="${CG}↓ $f${C0}";;
+      *) msg="${CD}kho ở $(kho_addr) · chưa kiểm tra${C0}";;
+    esac
+  fi
+  printf '%shostbook%s %s %s · %s server · %s%s\n' "$CU$CB" "$C0" "$CD" "$(hostname -s)" "$n" "$C0" "$msg"
+  [ -n "$fl" ] && printf '%s\n' "$fl"
+  [ "$n" = 0 ] && printf '\n%sChưa có server nào.%s %s^a%s thêm server đầu tiên, dán user@ip là đủ · %s^o%s kết nối kho để lấy danh sách\n' "$CB" "$C0" "$CP" "$C0" "$CP" "$C0"
+  return 0
+}
+
+cmd_footer(){
+  local t=${1%%:*} c=${FZF_SELECT_COUNT:-0}
+  [ -n "${1:-}" ] && printf '%s\n' "$1" > "$STATE/current"   # dòng đang trỏ, cho → và ^e (fzf chỉ trả về các dòng đã chọn)
+  k(){ printf '%s%s%s %s%s%s   ' "$CP" "$1" "$C0" "$CD" "$2" "$C0"; }
+  if [ "$c" -gt 0 ]; then k enter "mở $c server"; k '^g' 'lưu thành nhóm'; k tab 'chọn thêm'; k esc 'bỏ chọn'
+  else case $t in
+    h) k enter ssh; k '→' 'thao tác'; k tab 'chọn nhiều'; k '^a' thêm; k '^e' sửa; k '^o' 'công cụ'; k '?' 'trợ giúp';;
+    g) k enter 'mở nhóm'; k '→' 'đổi kiểu mở / xoá'; k '^a' thêm; k '^o' 'công cụ'; k '?' 'trợ giúp';;
+    s) k enter 'vào lại phiên'; k '→' 'đóng hẳn'; k '^a' thêm; k '^o' 'công cụ'; k '?' 'trợ giúp';;
+    *) k '^a' 'thêm server'; k '^o' 'công cụ'; k '?' 'trợ giúp';;
+  esac; fi
+  echo
+}
+
+# ---------- đồng bộ với kho ----------
+set_status(){ printf '%s\n%s\n%s\n' "$1" "${2:-}" "$(date +%s)" > "$ST"; }
+notify_fzf(){ [ -n "${FZF_PORT:-}" ] && have curl && curl -s -m 2 -XPOST -H "x-api-key: ${FZF_API_KEY:-}" "localhost:$FZF_PORT" -d "reload('$SELF' _list)+transform-header('$SELF' _header)" >/dev/null 2>&1; return 0; }
+# Chỉ một lần đồng bộ chạy tại một thời điểm (mkdir là thao tác nguyên tử). Khoá cũ hơn 2 phút coi như bị bỏ quên.
+lock(){ local w=${1:-0} i=0
+  while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
+    if [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$STATE/sync.lock" 2>/dev/null; continue; fi
+    [ $i -ge "$w" ] && return 1; sleep 1; i=$((i+1)); done
+  trap 'rmdir "$STATE/sync.lock" 2>/dev/null' EXIT; }
+unlock(){ rmdir "$STATE/sync.lock" 2>/dev/null; trap - EXIT; }
+# Commit mọi thay đổi trong ~/ssh-hosts nếu config còn hợp lệ.
+commit_all(){ local msg=$1 e
+  [ -z "$(g status --porcelain)" ] && return 0
+  if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
+  g add -A && g commit -qm "$msg" >/dev/null
+}
+# Kéo, đẩy, ghi trạng thái. Không bao giờ hỏi gì: chạy được ở nền.
+sync_quiet(){
+  lock "${1:-0}" || return 0
+  sync_locked; local rc=$?; unlock; notify_fzf; return $rc
+}
+sync_locked(){
+  local before after behind ahead new
+  commit_all "Sửa ngoài hostbook" || return 1
+  has_remote || return 0
+  export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 4)
+  if ! g fetch -q origin 2>/dev/null; then
+    ahead=$(g rev-list --count '@{u}..HEAD' 2>/dev/null || g rev-list --count HEAD 2>/dev/null)
+    if [ "${ahead:-0}" -gt 0 ]; then set_status pending "$ahead"; else set_status offline; fi; return 1; fi
+  if ! g rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+    if g ls-remote --exit-code origin HEAD >/dev/null 2>&1; then g branch -q --set-upstream-to="origin/$(g symbolic-ref --short HEAD)" 2>/dev/null; fi
+  fi
+  if ! g rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
+    if g push -q -u origin HEAD 2>/dev/null; then set_status ok; else set_status offline; fi; return 0; fi
+  behind=$(g rev-list --count 'HEAD..@{u}'); ahead=$(g rev-list --count '@{u}..HEAD')
+  if [ "$behind" -gt 0 ]; then
+    before=$(cut -f1 "$IDX" 2>/dev/null | sort)
+    if ! g pull -q --rebase 2>/dev/null; then g rebase --abort 2>/dev/null; set_status conflict; return 1; fi
+    build_index; after=$(cut -f1 "$IDX" | sort)
+    new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -5 | tr '\n' ' ')
+    if [ -n "$new" ]; then set_status pulled "Server mới từ máy khác: $new"; else set_status pulled "Đã nhận $behind thay đổi từ máy khác"; fi
+  else set_status ok; fi
+  if [ "$ahead" -gt 0 ] || [ "$behind" -gt 0 ]; then g push -q 2>/dev/null || set_status pending "$ahead"; fi
+  return 0
+}
+cmd_bg_sync(){ # chạy nền mỗi lần mở ô tìm; nếu vừa đồng bộ xong và không có gì mới thì bỏ qua để khỏi gọi mạng liên tục
+  local last
+  if [ -f "$ST.force" ]; then rm -f "$ST.force"
+  else last=$(sed -n 3p "$ST" 2>/dev/null)
+    [ -z "$(g status --porcelain 2>/dev/null)" ] && [ "$(sed -n 1p "$ST" 2>/dev/null)" = ok ] && [ $(( $(date +%s) - ${last:-0} )) -lt 60 ] && return 0
+  fi
+  has_remote && [ "$(sed -n 1p "$ST" 2>/dev/null)" != pulled ] && { set_status checking; notify_fzf; }
+  sync_quiet
+}
+save_and_sync(){ # $1 = mô tả thay đổi
+  if commit_all "$1"; then
+    if has_remote; then flash "${CG}✓ $1${C0}${CD} · đang đồng bộ với kho${C0}"; else flash "${CG}✓ $1${C0}${CD} · chưa có kho để sao lưu${C0}"; fi
+    : > "$ST.force"
+  else flash "${CR}✗ Chưa lưu: file lỗi${C0}"; fi
+}
+
+# ---------- kết nối & báo lỗi ----------
+connect(){
+  local n=$1 e rc jump; e=$(mktemp); jump=$(host_field "$n" 6)
+  record "$n"
+  printf '%s→ ssh %s%s%s%s\n' "$CD" "$n" "${jump:+ qua $jump}" "$C0" "$(is_prod "$n" && printf '   %s● PROD%s' "$CR$CB" "$C0")"
+  sshx "$n" 2> >(tee "$e" >&2); rc=$?
+  sleep 0.1
+  if [ $rc -eq 255 ]; then explain "$n" "$e"; fi
+  rm -f "$e"
+}
+explain(){
+  local n=$1 f=$2 ip user key kind j acts=()
+  ip=$(host_field "$n" 3); user=$(host_field "$n" 4); key=$(host_field "$n" 7); j=$(host_field "$n" 6)
+  if grep -qiE 'IDENTIFICATION HAS CHANGED|Host key verification failed' "$f"; then kind=hostkey
+  elif grep -qi 'Permission denied' "$f"; then kind=denied
+  elif grep -qi 'Could not resolve hostname' "$f"; then kind=dns
+  elif grep -qi 'Connection refused' "$f"; then kind=refused
+  elif grep -qiE 'timed out|No route to host|Network is unreachable|Host is down' "$f"; then kind=network
+  else return 0; fi
+  echo
+  case $kind in
+    hostkey) box 204 "${CR}⚠ Host key của $n đã thay đổi${C0}" "Có thể server vừa được cài lại." "Cũng có thể có người đang chặn giữa đường." "${CR}Chỉ cập nhật khi bạn chắc chắn server vừa được cài lại.${C0}"
+             case $(pick "Làm gì tiếp?" "Quay lại ô tìm|an toàn" "Tôi đã kiểm tra, cập nhật host key") in
+               1) ssh-keygen -R "$ip" >/dev/null 2>&1; ssh-keygen -R "$n" >/dev/null 2>&1; connect "$n";; esac; return;;
+    denied)  box 221 "${CY}$n từ chối đăng nhập (Permission denied)${C0}" "Đang thử: user $user, key ${key/#$HOME/~}" "• Key của máy này có thể chưa được thêm lên server" "• Hoặc sai user";;
+    dns)     box 221 "${CY}Không tìm thấy địa chỉ $ip${C0}" "• Sai tên máy, hoặc tên này chỉ dùng được trong mạng nội bộ/VPN";;
+    refused) box 221 "${CY}$n ($ip) từ chối kết nối ở cổng $(host_field "$n" 5)${C0}" "• Server đang chạy nhưng không mở SSH ở cổng này" "• Hoặc sai cổng";;
+    network) box 221 "${CY}Không kết nối được $n ($ip)${C0}" "• Máy này chưa vào được mạng của server (VPN, mạng nội bộ…)" "• Server đang tắt, hoặc sai IP" ${j:+"• Không vào được máy trung gian $j"};;
+  esac
+  acts=("Thử lại" "Sửa server này")
+  [ $kind = denied ] && acts+=("Sao chép key từ máy khác")
+  acts+=("Quay lại ô tìm")
+  case $(pick "Làm gì tiếp?" "${acts[@]}") in
+    0) connect "$n";;
+    1) edit_host "$n";;
+    2) [ $kind = denied ] && copy_keys;;
+  esac
+}
+
+# ---------- thêm & sửa ----------
+# Đoán các giá trị còn thiếu từ những server cùng dải IP. In ra các dòng key=value (src_* là nguồn đoán).
+infer(){ # host name user port
+  ensure_index
+  awk -F'\t' -v ip="$1" -v name="$2" -v user="$3" -v port="$4" -v me="$ME" '
+    function top(arr,  k,b,bn){ bn=0; for (k in arr) if (arr[k]>bn || (arr[k]==bn && k<b)) { b=k; bn=arr[k] } return b }
+    BEGIN { net=ip; sub(/\.[0-9]+$/,"",net) }
+    { allg[$2]++; rows[NR]=$0 }
+    index($3, net ".")==1 && net!=ip { peer[$2]++; np++ }
+    END {
+      if (np) { grp=top(peer); src="cùng dải " net ".x" } else if (NR) { grp=top(allg); src="dự án có nhiều server nhất" } else { grp="servers"; src="dự án mặc định" }
+      print "group=" grp; print "src_group=" src
+      n=0
+      for (i=1;i<=NR;i++) { split(rows[i],f,"\t"); if (f[2]!=grp) continue; n++; us[f[4]]++; ks[f[7]]++; if (f[6]!="") { js[f[6]]++; nj++ }
+        m=split(f[8],tg," "); for (t=1;t<=m;t++) { tc[tg[t]]++; pool[tg[t]]=1 } }
+      if (user=="") { if (n) { print "user=" top(us); print "src_user=giống các server trong " grp } else { print "user=" me; print "src_user=user của máy này" } } else print "user=" user
+      print "port=" (port==""?"22":port)
+      tags=""; for (t in tc) if (tc[t]==n) common[t]=1
+      for (t in common) tags=tags (tags==""?"":" ") t
+      m=split(tolower(name),parts,/[-_.0-9]+/); extra=0
+      for (t=1;t<=m;t++) if (parts[t]!="" && (parts[t] in pool) && !(parts[t] in common) && index(" " tags " ", " " parts[t] " ")==0) { tags=tags (tags==""?"":" ") parts[t]; extra=1 }
+      print "tags=" tags; if (tags!="") print "src_tags=từ " grp (extra?" và tên server":"")
+      if (nj && nj>=n-1) { print "jump=" top(js); print "src_jump=các server khác trong " grp " đều đi qua máy này" } else print "jump="
+      if (n) { print "key=" top(ks); print "src_key=key đang dùng cho " grp } else { print "key=~/.ssh/id_rsa"; print "src_key=key mặc định" }
+    }' "$IDX"
+}
+name_prefix(){ ensure_index; local net=${1%.*}; awk -F'\t' -v net="$net" 'index($3, net ".")==1 { split($1,a,"-"); if (a[2]!="") c[a[1] "-"]++ } END { for (k in c) if (c[k]>b) { b=c[k]; r=k } print r }' "$IDX"; }
+parse_addr(){ # "user@host:port" → in ra 3 dòng user, host, port
+  local s=$1 u="" p=""
+  case $s in *@*) u=${s%%@*}; s=${s#*@};; esac
+  case $s in *:*) p=${s##*:}; s=${s%:*};; esac
+  case $s in ""|*[!A-Za-z0-9._-]*) return 1;; esac
+  case $u in *[!A-Za-z0-9._-]*) return 1;; esac
+  case $p in ""|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]|[0-9][0-9][0-9][0-9][0-9]) ;; *) return 1;; esac
+  printf '%s\n%s\n%s\n' "$u" "$s" "$p"
+}
+# Khối Host cho server mới. Ghi rõ Port / ProxyJump none khi một khối wildcard của dự án đặt giá trị khác,
+# vì ssh lấy giá trị khớp đầu tiên và wildcard có thể đứng trước.
+host_block(){ # name ip user port jump key tags desc
+  local cur_port cur_jump
+  cur_port=$(sshx -G "$1" 2>/dev/null | awk '$1=="port"{print $2}'); cur_jump=$(sshx -G "$1" 2>/dev/null | awk '$1=="proxyjump"{print $2}')
+  [ -n "$7" ] && printf '# tags: %s\n' "$7"; [ -n "$8" ] && printf '# desc: %s\n' "$8"
+  printf 'Host %s\n  HostName %s\n  User %s\n' "$1" "$2" "$3"
+  { [ "$4" != 22 ] || [ "${cur_port:-22}" != 22 ]; } && printf '  Port %s\n' "$4"
+  if [ -n "$5" ]; then printf '  ProxyJump %s\n' "$5"; elif [ -n "$cur_jump" ] && [ "$cur_jump" != none ]; then printf '  ProxyJump none\n'; fi
+  printf '  IdentityFile %s\n' "$6"
+}
+# Ghi khối Host vào <dự án>.conf, đặt trước khối wildcard đầu tiên để giá trị riêng của server được ssh ưu tiên.
+write_host(){ # project block-file
+  local f=$DIR/$1.conf
+  if [ -f "$f" ] && grep -qE '^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]].*[*?]' "$f"; then
+    awk -v blk="$2" 'BEGIN{ while ((getline l < blk) > 0) b=b l "\n" } !done && /^[ \t]*[Hh][Oo][Ss][Tt][ \t].*[*?]/ { printf "%s\n", b; done=1 } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  else { [ -s "$f" ] && echo; cat "$2"; } >> "$f"; fi
+}
+read_infer(){ # gán kết quả của infer vào biến cùng tên (không dùng eval)
+  local line k v
+  while IFS= read -r line; do k=${line%%=*}; v=${line#*=}
+    case $k in group|src_group|user|src_user|port|tags|src_tags|jump|src_jump|key|src_key) printf -v "$k" '%s' "$v";; esac
+  done < <(infer "$@")
+}
+add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn lại, cho xem lại rồi lưu
+  local raw=${1:-} name=${2:-} u h p pre line i blk f dup
+  local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" key="" src_key="" desc=""
+  while :; do
+    [ -n "$raw" ] || raw=$(ask "Địa chỉ server · dán kiểu nào cũng được: 10.0.1.13, ubuntu@10.0.1.13, 10.0.1.13:2222" "10.0.1.13") || return 1
+    if line=$(parse_addr "$raw"); then break; fi; err "Không đọc được \"$raw\". Ví dụ: ubuntu@10.0.1.13"; raw=""
+  done
+  u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p)
+  pre=$(name_prefix "$h")
+  while :; do
+    [ -n "$name" ] || name=$(ask "Tên server${pre:+ · đã điền sẵn \"$pre\" theo các server cùng dải IP}" "${pre}web3" "$pre") || return 1
+    case $name in
+      *-) err "Tên chưa xong: \"$name\""; pre=$name; name="";;
+      *) if ! valid_name "$name"; then err "Tên chỉ gồm chữ, số và . _ -"; name=""
+         elif host_exists "$name"; then err "Đã có server tên $name"; name=""; else break; fi;; esac
+  done
+  read_infer "$h" "$name" "$u" "$p"
+  while :; do
+    clear; title "Thêm server"
+    dup=$(awk -F'\t' -v ip="$h" '$3==ip{print $1; exit}' "$IDX")
+    box 244 "$(row "Tên" "$name"
+      row "Địa chỉ" "$user@$h$( [ "$port" != 22 ] && echo ":$port")" "$src_user"
+      row "Dự án" "$group" "$src_group"
+      row "Tags" "${tags:-—}" "$src_tags"
+      row "Máy trung gian" "${jump:-không}" "$src_jump"
+      row "Key" "$key" "$src_key"
+      row "Mô tả" "${desc:-(trống)}")"
+    [ -n "$dup" ] && warn "Trùng IP với $dup"
+    case $(pick "" "Lưu|kiểm tra rồi tự đồng bộ" "Sửa một mục…" "Huỷ") in
+      0) break;;
+      1) case $(pick "Sửa mục nào?" "Tên|$name" "Địa chỉ|$user@$h:$port" "Dự án|$group" "Tags|${tags:-—}" "Máy trung gian|${jump:-không}" "Key|$key" "Mô tả|${desc:-(trống)}") in
+           0) i=$(ask "Tên" "" "$name") && { if valid_name "$i" && ! host_exists "$i"; then name=$i; else err "Tên không hợp lệ hoặc đã có"; sleep 1; fi; };;
+           1) i=$(ask "Địa chỉ" "ubuntu@10.0.1.13:22" "$user@$h:$port") && line=$(parse_addr "$i") && { u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p); user=${u:-$user}; port=${p:-22}; src_user=""; };;
+           2) i=$( { awk -F'\t' '{print $2}' "$IDX" | sort -u; echo "+ Dự án mới"; } | gum choose --header "Dự án") && {
+                if [ "$i" = "+ Dự án mới" ]; then i=$(ask "Tên dự án mới · chữ thường, số, dấu gạch ngang" "project-d") && case $i in *[!a-z0-9-]*|"") err "Tên dự án không hợp lệ"; sleep 1;; *) group=$i;; esac
+                else group=$i; fi; src_group=""; };;
+           3) i=$(ask "Tags · cách nhau dấu cách" "prod web" "$tags") && { tags=$(printf '%s' "$i" | tr -cd 'A-Za-z0-9._ -'); src_tags=""; };;
+           4) i=$( { echo "Không"; awk -F'\t' '$8 ~ /(^| )bastion( |$)/ {print $1}' "$IDX"; } | gum choose --header "Máy trung gian (ProxyJump)") && { [ "$i" = Không ] && jump="" || jump=$i; src_jump=""; };;
+           5) i=$( { ls "$HOME"/.ssh/ 2>/dev/null | grep -vE '\.pub$|^(config|known_hosts|authorized_keys|agent)' | sed 's|^|~/.ssh/|'; } | gum choose --header "Key") && { key=$i; src_key=""; };;
+           6) i=$(ask "Mô tả · một dòng" "Nginx chính" "$desc") && desc=$(printf '%s' "$i" | tr -d '\t\n\r');;
+         esac;;
+      *) return 1;;
+    esac
+  done
+  blk=$(mktemp); host_block "$name" "$h" "$user" "$port" "$jump" "$key" "$tags" "$desc" > "$blk"
+  f=$DIR/$group.conf; [ -f "$f" ] && cp "$f" "$blk.bak"
+  write_host "$group" "$blk"
+  if ! i=$(validate); then
+    if [ -f "$blk.bak" ]; then mv "$blk.bak" "$f"; else rm -f "$f"; fi
+    err "Không lưu được vì config lỗi:"; dim "$i"; rm -f "$blk"; pause; return 1
+  fi
+  rm -f "$blk" "$blk.bak"; build_index
+  save_and_sync "Đã thêm $name"
+  ADDED=$name
+}
+edit_host(){ # mở file ở đúng dòng, kiểm tra khi đóng, hỏi lại nếu hỏng
+  local n=$1 f l ed e bak
+  f=$(host_field "$n" 10); l=$(host_field "$n" 11); [ -n "$f" ] || return 1
+  ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
+  bak=$(mktemp); cp "$f" "$bak"
+  while :; do
+    case $ed in code*|cursor*) $ed -g "$f:$l" --wait;; *) $ed "+$l" "$f";; esac
+    cmp -s "$f" "$bak" && { rm -f "$bak"; return 0; }
+    if e=$(validate); then rm -f "$bak"; build_index; save_and_sync "Đã sửa $n"; return 0; fi
+    echo; box 204 "${CR}Chưa đồng bộ: file lỗi sẽ không được đẩy sang máy khác.${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
+    l=$(printf '%s' "$e" | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -1); l=${l:-1}
+    case $(pick "Làm gì tiếp?" "Mở lại để sửa|tới dòng $l" "Bỏ thay đổi|khôi phục bản trước") in
+      0) ;;
+      *) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ Đã khôi phục $(basename "$f")${C0}"; return 0;;
+    esac
+  done
+}
+
+# ---------- nhóm, nhiều server, tmux ----------
+suggest_group_name(){ # tag chung của các server, rồi tới phần tên chung
+  ensure_index
+  local base n=2 name
+  # lấy tối đa 2 tag mà mọi server đều có, theo thứ tự tag của server đầu tiên; không có thì dùng tên server bỏ số cuối
+  base=$(awk -F'\t' -v want=" $* " -v first="$1" 'index(want, " " $1 " ") { k++; m=split($8,a," "); for (i=1;i<=m;i++) c[a[i]]++ }
+    $1==first { order=$8; nm=$1 }
+    END { m=split(order,a," "); out=""; used=0
+      for (i=1;i<=m && used<2;i++) if (c[a[i]]==k) { out=out (out==""?"":"-") a[i]; used++ }
+      if (out=="") { sub(/[0-9]+$/,"",nm); sub(/-$/,"",nm); out=nm }
+      print out }' "$IDX" | tr -cd 'a-z0-9-')
+  [ -n "$base" ] || base=nhom-moi; name=$base
+  while [ -n "$(group_field "$name" 1)" ]; do name=$base-$n; n=$((n+1)); done
+  echo "$name"
+}
+save_group(){
+  local hosts="$*" name
+  title "Lưu thành nhóm"; dim "Gồm $# server: $hosts"; dim "Nhóm được lưu trong kho nên máy khác cũng thấy."; echo
+  while :; do
+    name=$(ask "Tên nhóm · đã gợi ý từ tag chung" "nhom-moi" "$(suggest_group_name "$@")") || return 1
+    case $name in ""|*[!a-z0-9-]*) err "Chỉ dùng chữ thường, số và dấu gạch ngang";; *) [ -n "$(group_field "$name" 1)" ] && err "Đã có nhóm tên $name" || break;; esac
+  done
+  printf '%s\t\t%s\n' "$name" "$hosts" >> "$GRP"
+  save_and_sync "Đã lưu nhóm $name"
+}
+need_tmux(){
+  have tmux && return 0
+  if is_mac && have brew; then gum confirm "Cần tmux để mở nhiều server cùng lúc. Cài ngay bằng brew install tmux?" && gum spin --title "Đang cài tmux" -- brew install tmux && return 0
+  else box 221 "Cần tmux để mở nhiều server cùng lúc." "Cài bằng trình quản lý gói của máy, ví dụ: sudo apt install tmux"; pause; fi
+  return 1
+}
+open_many(){ # group-name-or-empty host...
+  local grp=$1; shift
+  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh
+  need_tmux || return 1
+  for h in "$@"; do if valid_name "$h" && host_exists "$h"; then ok_hosts="$ok_hosts $h"; else missing="$missing $h"; fi; done
+  [ -n "$missing" ] && warn "Bỏ qua server không còn trong danh sách:$missing"
+  set -- $ok_hosts; [ $# -gt 0 ] || { err "Không còn server nào để mở"; pause; return 1; }
+  [ -n "$grp" ] && mode=$(group_field "$grp" 2)
+  if [ -z "$mode" ]; then
+    last=$(cat "$STATE/lastmode" 2>/dev/null || echo sync)
+    title "Mở $# server"; dim "$*"; echo
+    case $last in split) last="Chia ô";; tabs) last="Mỗi server một tab";; *) last="Chạy đồng loạt";; esac
+    mode=$(printf 'Chia ô\nChạy đồng loạt\nMỗi server một tab\n' | gum choose --header "Mở thế nào?$( [ -n "$grp" ] && echo " · sẽ nhớ cho nhóm $grp")" --selected "$last") || return 1
+    case $mode in Chia*) mode=split;; Chạy*) mode=sync;; *) mode=tabs;; esac
+    echo "$mode" > "$STATE/lastmode"
+    [ -n "$grp" ] && { set_group_mode "$grp" "$mode"; save_and_sync "Nhóm $grp: mở bằng $(mode_label "$mode")"; }
+  fi
+  for h in "$@"; do is_prod "$h" && nprod=$((nprod+1)); done
+  if [ "$mode" = sync ] && [ $nprod -gt 0 ]; then
+    gum confirm --default=false --affirmative "Mở" --negative "Không" "Chạy đồng loạt trên $nprod server PROD? Mọi phím bạn gõ sẽ gửi tới tất cả." || return 1
+  fi
+  # phiên của nhóm mang tên nhóm; bộ chọn tạm mang tên server đầu + số server + mã của cả bộ, để hai bộ khác nhau không vào nhầm phiên
+  if [ -n "$grp" ]; then s="hb-$grp"; elif [ $# -eq 1 ]; then s="hb-$1"
+  else s="hb-$1+$(( $# - 1 ))-$(printf '%s\n' "$@" | sort | cksum | cut -c1-4)"; fi
+  s=$(printf '%s' "$s" | tr -c 'a-zA-Z0-9_+-' '-')
+  if tmux has-session -t "=$s" 2>/dev/null; then attach "$s"; return; fi
+  record "$@"
+  [ -n "$SSHCFG" ] && sshcmd="ssh -F $(printf %q "$SSHCFG")"
+  for h in "$@"; do
+    if [ $first = 1 ]; then tmux new-session -d -s "$s" -n "${grp:-$h}" "$sshcmd $(printf %q "$h")"; first=0
+    elif [ "$mode" = tabs ]; then tmux new-window -t "$s" -n "$h" "$sshcmd $(printf %q "$h")"
+    else tmux split-window -t "$s" "$sshcmd $(printf %q "$h")"; tmux select-layout -t "$s" tiled >/dev/null; fi
+    tmux select-pane -t "$s" -T "$h$(is_prod "$h" && echo ' · PROD')"
+    is_prod "$h" && tmux set -p -t "$s" pane-border-style fg=colour204 \; set -p -t "$s" pane-active-border-style fg=colour204,bold 2>/dev/null
+  done
+  local pfx; pfx=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pfx=${pfx:-^b}
+  tmux set -t "$s" remain-on-exit on \; set -t "$s" pane-border-status top \; set -t "$s" pane-border-format ' #{pane_title} ' \; \
+    set -t "$s" status-style bg=colour114,fg=colour235 \; set -t "$s" status-left "[${s#hb-}] " \; \
+    set -t "$s" status-right " $pfx d: ẩn phiên (vẫn chạy) · $pfx x: đóng ô " \; set -t "$s" status-left-length 30 >/dev/null
+  if [ "$mode" = sync ]; then tmux set-window-option -t "$s" synchronize-panes on >/dev/null; tmux set -t "$s" status-right " ĐỒNG LOẠT · $pfx d: ẩn phiên " >/dev/null; fi
+  [ "$mode" = tabs ] && tmux select-window -t "$s:^" 2>/dev/null
+  attach "$s"
+}
+attach(){ if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$1"; else tmux attach -t "$1"; fi; }
+
+# ---------- thao tác trên một server ----------
+pf_presets(){ # tên → "cổng|mô tả|cách dùng"
+  local t=" $(host_field "$1" 8) "
+  case $t in *" postgres "*) echo "5432|PostgreSQL|psql -h localhost -p 5432";; esac
+  case $t in *" mysql "*) echo "3306|MySQL|mysql -h 127.0.0.1 -P 3306";; esac
+  case $t in *" redis "*) echo "6379|Redis|redis-cli -p 6379";; esac
+  case $t in *" rabbitmq "*) echo "15672|RabbitMQ web|mở http://localhost:15672";; esac
+  case $t in *" elastic "*) echo "9200|Elasticsearch|curl localhost:9200";; esac
+  echo "8080|Web app|mở http://localhost:8080"
+}
+port_forward(){ # name [cổng]
+  local n=$1 port=${2:-} use="" lp
+  if [ -z "$port" ]; then port=$(ask "Cổng trên server" "3000") || return 1; fi
+  case $port in ""|*[!0-9]*) err "Cổng phải là số"; pause; return 1;; esac
+  use=$(pf_presets "$n" | awk -F'|' -v p="$port" '$1==p{print $3}')
+  lp=$port; while nc -z localhost "$lp" 2>/dev/null; do lp=$((lp+1)); done
+  echo; box 114 "${CG}${CB}localhost:$lp  →  $n:$port${C0}" "Dùng: ${use:-localhost:$lp}" "$( [ "$lp" != "$port" ] && echo "Cổng $port trên máy này đang bận nên dùng $lp.")" "${CD}Ctrl-C để dừng chuyển tiếp${C0}"
+  record "$n"
+  sshx -N -o ExitOnForwardFailure=yes -L "$lp:localhost:$port" "$n"
+}
+host_actions(){
+  local n=$1 ip p1 pport pname
+  ip=$(host_field "$n" 3); p1=$(pf_presets "$n" | head -1); pport=${p1%%|*}; pname=$(printf '%s' "$p1" | cut -d'|' -f2)
+  title "$n$(is_prod "$n" && printf '  %s● PROD%s' "$CR" "$C0")"; dim "$(host_field "$n" 9)"; echo
+  case $(pick "" "SSH vào server|enter ở ô tìm" "Mở trong tab tmux mới" "Chuyển tiếp cổng $pname|localhost:$pport → $n:$pport" "Chuyển tiếp cổng khác…" "Copy IP|$ip" "Copy lệnh ssh|ssh $n" "Sửa|^e") in
+    0) connect "$n";;
+    1) open_many "" "$n";;
+    2) port_forward "$n" "$pport";;
+    3) port_forward "$n";;
+    4) printf '%s' "$ip" | copy && flash "${CG}✓ Đã copy $ip${C0}";;
+    5) printf 'ssh %s' "$n" | copy && flash "${CG}✓ Đã copy: ssh $n${C0}";;
+    6) edit_host "$n";;
+  esac
+}
+group_actions(){
+  local n=$1
+  case $(pick "Nhóm $n" "Mở nhóm" "Đổi kiểu mở|đang là: $(mode_label "$(group_field "$n" 2)")" "Xoá nhóm|server không bị xoá") in
+    0) open_many "$n" $(group_field "$n" 3);;
+    1) set_group_mode "$n" ""; open_many "$n" $(group_field "$n" 3);;
+    2) gum confirm --default=false "Xoá nhóm $n?" && { awk -F'\t' -v n="$n" '$1!=n' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; save_and_sync "Đã xoá nhóm $n"; };;
+  esac
+}
+
+# ---------- kho, máy mới, key ----------
+# Các máy thấy được qua mạng: LAN (mDNS) và Tailscale nếu có. In "địa_chỉ|mô tả".
+discover(){
+  local tmp p inst me; tmp=$(mktemp -d)
+  if is_mac && have dns-sd; then
+    me=$(scutil --get LocalHostName 2>/dev/null).local
+    dns-sd -B _ssh._tcp local. > "$tmp/b" 2>/dev/null & p=$!; sleep 1.2; kill $p 2>/dev/null; wait $p 2>/dev/null
+    # dns-sd -B chỉ cho tên hiển thị của máy; dns-sd -L đổi ra tên mạng dạng xxx.local
+    awk -F'_ssh._tcp.' '/ Add / { n=$2; sub(/^[ \t]+/,"",n); print n }' "$tmp/b" | sort -u > "$tmp/names"
+    while IFS= read -r inst; do ( dns-sd -L "$inst" _ssh._tcp local. > "$tmp/r.$RANDOM" 2>/dev/null & q=$!; sleep 1; kill $q 2>/dev/null ) & done < "$tmp/names"; wait
+    cat "$tmp"/r.* 2>/dev/null | sed -n 's/.*reached at \([^ ]*\)\.:[0-9]*.*/\1/p' | sort -u | grep -vx "$me" | sed 's/$/|cùng mạng LAN/'
+  elif have avahi-browse; then avahi-browse -tpr _ssh._tcp 2>/dev/null | awk -F';' '$1=="=" {print $7}' | sort -u | grep -vx "$(hostname).local" | sed 's/$/|cùng mạng LAN/'; fi
+  if have tailscale; then tailscale status 2>/dev/null | awk 'NR>1 && $1 ~ /^100\./ && !/offline/ {print $2 "|qua Tailscale"}'; fi
+  rm -rf "$tmp"
+}
+pick_machine(){ # header → in đúng một dòng "user@máy" ra stdout; mọi lời nhắn đi stderr vì hàm này được gọi trong $(...)
+  local header=$1 list=() x i m
+  while IFS= read -r x; do [ -n "$x" ] && list+=("$ME@$x"); done < <(gum spin --title "Đang tìm máy trong mạng" --show-output -- "$SELF" _discover)
+  list+=("Nhập địa chỉ khác…|tên máy hoặc IP, user mặc định là $ME")
+  dim "Chỉ cần thấy máy đó qua mạng: cùng Wi-Fi/LAN, VPN hay Tailscale đều được." >&2; echo >&2
+  i=$(pick "$header" "${list[@]}") || return 1
+  if [ "$i" -eq $(( ${#list[@]} - 1 )) ]; then
+    m=$(ask "Tên máy hoặc IP · có thể kèm user@" "home.local hoặc 192.168.1.20") || return 1
+    case $m in *@*) ;; *) m="$ME@$m";; esac
+  else x=${list[$i]}; m=${x%%|*}; fi
+  case ${m#*@} in ""|*[!A-Za-z0-9._-]*) err "Địa chỉ không hợp lệ: $m" >&2; return 1;; esac
+  case ${m%%@*} in ""|*[!A-Za-z0-9._-]*) err "User không hợp lệ: $m" >&2; return 1;; esac
+  printf '%s\n' "$m"
+}
+ensure_key(){ # có key để đăng nhập máy $1; nếu chưa thì tạo key và ssh-copy-id (hỏi mật khẩu một lần)
+  local m=$1
+  sshx -o BatchMode=yes -o ConnectTimeout=5 "$m" true 2>/dev/null && return 0
+  if [ ! -f "$HOME/.ssh/id_ed25519" ] && [ ! -f "$HOME/.ssh/id_rsa" ]; then mkdir -p "$HOME/.ssh"; ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" && ok "Đã tạo key ~/.ssh/id_ed25519"; fi
+  dim "Lần đầu kết nối: nhập mật khẩu của $m một lần để thêm key của máy này."
+  ssh-copy-id ${SSHCFG:+-F "$SSHCFG"} "$m" || { err "Không đăng nhập được $m"; return 1; }
+  ok "Đã thêm key lên $m"
+}
+connect_kho(){ # nối ~/ssh-hosts với kho trên máy khác
+  local m url
+  title "$(has_remote && echo 'Đổi kho' || echo 'Kết nối kho')"; dim "Kho giữ bản gốc danh sách server. Mọi máy nối cùng một kho sẽ luôn giống nhau."; echo
+  m=$(pick_machine "Kho ở máy nào?") || return 1
+  ensure_key "$m" || { pause; return 1; }
+  if ! sshx -o ConnectTimeout=8 "$m" 'test -d ~/repos/ssh-hosts.git' 2>/dev/null; then
+    gum confirm "Máy $m chưa có kho. Tạo kho trên máy đó?" || return 1
+    sshx "$m" 'git init -q --bare ~/repos/ssh-hosts.git' || { err "Không tạo được kho (máy đó đã cài git chưa?)"; pause; return 1; }
+    ok "Đã tạo kho trên $m"
+  fi
+  url="$m:repos/ssh-hosts.git"
+  if has_remote; then g remote set-url origin "$url"; else g remote add origin "$url"; fi
+  export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 8)
+  lock 10 || { err "Đang có một lần đồng bộ khác, thử lại sau"; pause; return 1; }
+  if g fetch -q origin 2>/dev/null && g ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
+    # kho đã có dữ liệu: gộp với danh sách của máy này (lịch sử khác nhau nên cần --allow-unrelated-histories)
+    g branch -q --set-upstream-to="origin/$(g symbolic-ref --short HEAD)" 2>/dev/null || { g fetch -q origin "+refs/heads/*:refs/remotes/origin/*"; g branch -q --set-upstream-to="origin/$(g remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')"; }
+    if ! g merge -q --no-edit --allow-unrelated-histories '@{u}' >/dev/null 2>&1; then
+      g merge --abort 2>/dev/null; unlock; err "Danh sách trên máy này và trong kho cùng có một file nhưng khác nội dung. Cần gộp tay trong ~/ssh-hosts."; pause; return 1
+    fi
+  fi
+  sync_locked; unlock; build_index
+  case $(sed -n 1p "$ST") in ok|pulled) ok "Đã nối với kho ở $m"; flash "${CG}✓ Đã nối với kho ở $m${C0}";; *) warn "Đã đặt kho ở $m nhưng chưa đồng bộ được: $(sed -n 1p "$ST")";; esac
+  pause "enter để tiếp tục"
+}
+make_kho_here(){
+  local addrs
+  title "Tạo kho trên máy này"; dim "Chạy một lần trên máy luôn bật. Các máy khác chỉ cần thấy máy này qua mạng."; echo
+  if ! nc -z localhost 22 2>/dev/null; then
+    if is_mac; then box 221 "${CY}Cần bật SSH trên máy này:${C0}" "System Settings → General → Sharing → Remote Login"
+    else box 221 "${CY}Cần bật SSH trên máy này:${C0}" "sudo systemctl enable --now ssh"; fi
+    pause "bật xong nhấn enter để kiểm tra lại"; nc -z localhost 22 2>/dev/null || { err "SSH vẫn chưa bật"; pause; return 1; }
+  fi
+  ok "SSH đang bật"
+  [ -d "$HOME/repos/ssh-hosts.git" ] || git init -q --bare "$HOME/repos/ssh-hosts.git"; ok "Kho: ~/repos/ssh-hosts.git"
+  if [ -d "$DIR/.git" ]; then
+    if has_remote; then g remote set-url origin "$HOME/repos/ssh-hosts.git"; else g remote add origin "$HOME/repos/ssh-hosts.git"; fi
+    g push -q -u origin HEAD 2>/dev/null && ok "Đã đưa danh sách của máy này vào kho"
+  fi
+  addrs="$( (is_mac && echo "$(scutil --get LocalHostName 2>/dev/null).local"); (is_mac && ipconfig getifaddr en0 2>/dev/null) || hostname -I 2>/dev/null | awk '{print $1}'; have tailscale && tailscale ip -4 2>/dev/null | head -1 ) | grep . | tr '\n' ' ')"
+  echo; box 114 "${CG}Kho đã sẵn sàng.${C0}" "Máy khác vào được bằng: $addrs" "Mở hostbook trên máy khác cùng mạng, app sẽ tự tìm thấy kho này." "${CD}Khi khác mạng, dùng VPN hoặc Tailscale để các máy thấy kho.${C0}"
+  pause
+}
+copy_keys(){
+  local m keys k sel used
+  title "Sao chép key từ máy khác"; dim "Sao chép private key qua ssh, quyền tự đặt về 600."; echo
+  m=$(pick_machine "Máy có key") || return 1
+  keys=$(sshx -o ConnectTimeout=8 "$m" 'cd ~/.ssh 2>/dev/null && for f in *; do case $f in *.pub|config|known_hosts*|authorized_keys*|agent|*.sock) ;; *) [ -f "$f" ] && head -c 40 "$f" | grep -q "PRIVATE KEY" && echo "$f";; esac; done') || { err "Không đọc được ~/.ssh trên $m"; pause; return 1; }
+  keys=$(printf '%s\n' "$keys" | grep -E '^[A-Za-z0-9._-]+$')
+  [ -n "$keys" ] || { warn "Không thấy private key nào trên $m"; pause; return 1; }
+  used=$(cut -f7 "$IDX" 2>/dev/null | sed 's|.*/||' | sort -u | tr '\n' ',')
+  sel=$(printf '%s\n' "$keys" | gum choose --no-limit --header "Chọn key cần sao chép · space đổi lựa chọn · đã chọn sẵn key đang dùng" --selected "$used") || return 1
+  [ -n "$sel" ] || return 1
+  gum confirm "Sao chép $(printf '%s\n' "$sel" | wc -l | tr -d ' ') key sang máy này?" || return 1
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+  for k in $sel; do
+    if [ -f "$HOME/.ssh/$k" ]; then warn "$k đã có trên máy này, giữ nguyên"; continue; fi
+    scpx -q "$m:.ssh/$k" "$HOME/.ssh/$k" && chmod 600 "$HOME/.ssh/$k" && ok "$k → ~/.ssh/$k · chmod 600"
+    scpx -q "$m:.ssh/$k.pub" "$HOME/.ssh/$k.pub" 2>/dev/null
+  done
+  dim "Khi có thể, nên dùng key riêng cho mỗi máy."; pause
+}
+undo_last(){
+  local msg; msg=$(g log -1 --format=%s 2>/dev/null) || return 1
+  gum confirm --default=false "Hoàn tác \"$msg\"?" || return 1
+  g revert --no-edit HEAD >/dev/null 2>&1 || { err "Không hoàn tác được"; pause; return 1; }
+  if ! validate >/dev/null; then g reset -q --hard HEAD~1; err "Hoàn tác sẽ làm hỏng config nên đã dừng"; pause; return 1; fi
+  build_index; flash "${CG}✓ Đã hoàn tác \"$msg\"${C0}"; : > "$ST.force"
+}
+doctor(){
+  local n e
+  title "Kiểm tra máy này"
+  ok "hostbook $VERSION"
+  check_deps report
+  have tmux && ok "tmux đã cài" || warn "tmux chưa có · sẽ hỏi cài khi mở nhiều server"
+  [ -d "$DIR/.git" ] && ok "~/ssh-hosts là git repo" || err "~/ssh-hosts chưa phải git repo"
+  if has_remote; then
+    if GIT_SSH_COMMAND=$(git_ssh 4) g ls-remote -q origin >/dev/null 2>&1; then ok "Kho ở $(kho_addr) kết nối được"; else warn "Không kết nối được kho ở $(kho_addr)"; fi
+  else warn "Chưa có kho · Công cụ → Kết nối kho"; fi
+  grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config" && ok "~/.ssh/config có Include ~/ssh-hosts/*.conf" || err "~/.ssh/config chưa Include ~/ssh-hosts/*.conf · chạy: hostbook setup"
+  if e=$(validate); then ensure_index; ok "Cú pháp ssh config hợp lệ · $(wc -l < "$IDX" | tr -d ' ') server"; else err "ssh config lỗi: $(printf '%s' "$e" | head -1)"; fi
+  [ -s "$STATE/skipped" ] && warn "Bỏ qua server có tên chứa ký tự lạ: $(sed "s|$DIR/||" "$STATE/skipped" | head -3 | tr '\n' ' ')"
+  for n in $(cut -f7 "$IDX" 2>/dev/null | sort -u); do n=${n/#\~/$HOME}; [ -f "$n" ] || continue
+    case $(stat -f %Lp "$n" 2>/dev/null || stat -c %a "$n") in 600|400) ok "Quyền ${n/#$HOME/~} là 600";; *) warn "Quyền ${n/#$HOME/~} quá rộng · chmod 600 ${n/#$HOME/~}";; esac; done
+  case $(stat -f %Lp "$DIR" 2>/dev/null || stat -c %a "$DIR") in 700) ok "~/ssh-hosts chỉ chủ máy đọc được";; *) warn "~/ssh-hosts người khác trên máy đọc được · chmod 700 ~/ssh-hosts";; esac
+  if [ -d "$HOME/.config/ghostty" ] || [ -d /Applications/Ghostty.app ]; then grep -qs 'ssh-env' "$HOME/.config/ghostty/config" && ok "Ghostty: ssh-env đang bật" || warn "Ghostty chưa bật ssh-env · chạy: hostbook setup"; fi
+  [ -n "$(g status --porcelain 2>/dev/null)" ] && warn "Có thay đổi chưa commit" || ok "Không có thay đổi chờ lưu"
+  case $(sed -n 1p "$ST" 2>/dev/null) in pending) warn "$(sed -n 2p "$ST") thay đổi chờ đẩy lên kho";; conflict) err "Kho và máy này cùng sửa một chỗ · vào ~/ssh-hosts chạy git status để gộp tay";; esac
+  pause
+}
+tools(){
+  case $(pick "Công cụ · việc ít dùng, phần lớn app đã tự làm" \
+      "Đồng bộ ngay|thường không cần, app tự đồng bộ" "Kiểm tra máy này|phần mềm, ssh config, quyền key, kết nối" \
+      "Hoàn tác thay đổi gần nhất|$(g log -1 --format=%s 2>/dev/null)" \
+      "$(has_remote && echo "Đổi kho|đang dùng kho ở $(kho_addr)" || echo 'Kết nối kho|để sao lưu và dùng trên nhiều máy')" \
+      "Sao chép key từ máy khác|khi chuyển máy" "Tạo kho trên máy này|chạy một lần trên máy luôn bật") in
+    0) gum spin --title "Đang đồng bộ với kho" -- "$SELF" _sync_now;;
+    1) doctor;; 2) undo_last;; 3) connect_kho;; 4) copy_keys;; 5) make_kho_here;;
+  esac
+}
+show_help(){
+  clear; title "Trợ giúp · hostbook $VERSION"
+  r(){ printf '  %s%s%*s%s %s\n' "$CP" "$1" $((26-${#1})) '' "$C0" "$2"; }
+  printf '%sTìm kiếm%s\n' "$CU" "$C0"
+  r 'web prod' 'khớp cả hai (dấu cách nghĩa là VÀ)'; r 'aweb1' 'tìm mờ, khớp a-web1'; r '#prod' 'có tag prod'; r '@deploy' 'user là deploy'
+  r '^b-' 'tên bắt đầu bằng b-'; r '!staging' 'loại server có chữ staging'; r 'db | cache' 'db HOẶC cache'; r '10.8' 'theo IP'
+  printf '\n%sPhím%s\n' "$CU" "$C0"
+  r enter 'ssh, mở nhóm, hoặc vào lại phiên'; r '→' 'thao tác: chuyển tiếp cổng, copy IP, tab mới…'; r tab 'chọn nhiều server'
+  r '^g' 'lưu các server đã chọn thành nhóm'; r '^a / ^e' 'thêm / sửa server'; r '^s' 'đồng bộ ngay (thường không cần)'
+  r '^o' 'công cụ: kho, sao chép key, hoàn tác'; r esc 'xoá ô tìm, nhấn lần nữa để bỏ chọn, lần nữa để thoát'
+  printf '\n%sTrong phiên nhiều server (tmux)%s\n' "$CU" "$C0"
+  r '^b d' 'ẩn phiên, vẫn chạy nền'; r '^b mũi tên' 'đổi ô'; r '^b n / p' 'tab sau / trước'; r '^b x' 'đóng ô đang chọn'
+  printf '\n%sTừ dòng lệnh%s\n' "$CU" "$C0"
+  r 'hostbook web1' 'vào thẳng nếu đúng tên, hoặc chỉ một server khớp'; r 'hostbook add ubuntu@10.0.1.13' 'thêm nhanh, các mục khác tự đoán'
+  r 'hostbook sync · doctor' 'đồng bộ · kiểm tra'; r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r 's' 'lối tắt của hostbook'
+  pause
+}
+
+# ---------- màn chính ----------
+home(){
+  local q=${1:-} out rc key sel first t n hosts
+  # khoá cho cổng điều khiển của fzf: chỉ tiến trình con của lần chạy này gửi lệnh được
+  FZF_API_KEY=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 32); export FZF_API_KEY
+  while :; do
+    ADDED=""; rm -f "$STATE/current"
+    out=$(cmd_list | fzf --ansi --multi --layout=reverse --height=100% --no-separator \
+      --delimiter="$TAB" --with-nth=2 --accept-nth=1 --tiebreak=index --info=inline-right \
+      --prompt='> ' --ghost='Tìm theo tên, #tag, @user, IP, mô tả…' --pointer='▌' --marker='+' \
+      --header "$(cmd_header)" --footer "$(cmd_footer)" \
+      --preview "'$SELF' _preview {1}" --preview-window='right,38%,border-left,<36(hidden)' --gutter=' ' \
+      --color='fg+:bold,hl:212,hl+:212,pointer:212,marker:212,prompt:212,header:-1,info:244,border:238,ghost:244' \
+      --listen --bind "start:execute-silent('$SELF' _bg_sync >/dev/null 2>&1 &)" \
+      --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
+      --bind "focus:transform-footer('$SELF' _footer {1})" --bind "multi:transform-footer('$SELF' _footer {1})" \
+      --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
+      --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,right,?' --print-query --query "$q"); rc=$?
+    [ $rc -eq 130 ] || [ $rc -eq 2 ] && return 0
+    q=$(printf '%s\n' "$out" | sed -n 1p); key=$(printf '%s\n' "$out" | sed -n 2p); sel=$(printf '%s\n' "$out" | sed -n '3,$p')
+    first=$(printf '%s\n' "$sel" | sed -n 1p)
+    case $key in right|ctrl-e) [ -s "$STATE/current" ] && first=$(cat "$STATE/current");; esac
+    t=${first%%:*}; n=${first#*:}
+    hosts=$(printf '%s\n' "$sel" | sed -n 's/^h://p' | tr '\n' ' ')
+    clear
+    case $key in
+      ''|enter) set -- $hosts
+         if [ $# -ge 2 ]; then open_many "" "$@"
+         elif [ "$t" = h ]; then connect "$n"
+         elif [ "$t" = g ]; then open_many "$n" $(group_field "$n" 3)
+         elif [ "$t" = s ]; then attach "$n"; fi;;
+      ctrl-a) add_host; [ -n "${ADDED:-}" ] && q=$ADDED;;
+      ctrl-e) [ "$t" = h ] && edit_host "$n";;
+      ctrl-g) set -- $hosts; if [ $# -ge 2 ]; then save_group "$@"; else flash "${CY}Chọn ít nhất 2 server bằng tab rồi nhấn ^g${C0}"; fi;;
+      ctrl-o) tools;;
+      ctrl-s) gum spin --title "Đang đồng bộ với kho" -- "$SELF" _sync_now;;
+      right) case $t in h) host_actions "$n";; g) group_actions "$n";;
+               s) gum confirm --default=false "Đóng hẳn phiên ${n#hb-}? Các kết nối trong đó sẽ bị ngắt." && tmux kill-session -t "$n" && flash "Đã đóng phiên ${n#hb-}";; esac;;
+      '?') show_help;;
+    esac
+  done
+}
+
+# ---------- cài đặt, phiên bản ----------
+check_deps(){ # report: in từng dòng; im lặng: trả về 1 và in hướng dẫn nếu thiếu
+  local bad=0 v
+  have git || { err "Thiếu git"; bad=1; }
+  if have fzf; then v=$(fzf --version | awk '{print $1}')
+    if ver_ge "$v" "$FZF_MIN"; then [ "${1:-}" = report ] && ok "fzf $v"; else err "fzf $v quá cũ, cần >= $FZF_MIN"; bad=1; fi
+  else err "Thiếu fzf"; bad=1; fi
+  if have gum; then v=$(gum --version | awk '{print $3}' | sed 's/^v//')
+    if ver_ge "$v" "$GUM_MIN"; then [ "${1:-}" = report ] && ok "gum $v"; else err "gum $v quá cũ, cần >= $GUM_MIN"; bad=1; fi
+  else err "Thiếu gum"; bad=1; fi
+  [ $bad = 0 ] && return 0
+  [ "${1:-}" = report ] || dim "Cài lại để lấy đúng phiên bản: curl -fsSL $REPO_URL/raw/main/install.sh | bash"
+  return 1
+}
+setup(){
+  local rc_file
+  title "Cài hostbook cho máy này"
+  mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "Lệnh hostbook: ~/.local/bin/hostbook"
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+  if ! grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config"; then
+    [ -f "$HOME/.ssh/config" ] && cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
+    { echo "# Danh sách server nằm trong ~/ssh-hosts (hostbook đồng bộ với kho)"; echo "Include ~/ssh-hosts/*.conf"; echo; cat "$HOME/.ssh/config" 2>/dev/null; } > "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config"
+    chmod 600 "$HOME/.ssh/config"; ok "Đã thêm Include vào ~/.ssh/config$( [ -f "$HOME/.ssh/config.bak" ] && echo ', bản cũ ở ~/.ssh/config.bak')"
+  else ok "~/.ssh/config đã có Include"; fi
+  case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac
+  if [ -n "$rc_file" ]; then
+    if grep -qs '^alias s=sshm$' "$rc_file"; then sed -i.bak 's/^alias s=sshm$/alias s=hostbook/; s/^# sshm: tìm và kết nối server SSH$/# hostbook: tìm và kết nối server SSH/' "$rc_file" && rm -f "$rc_file.bak"; ok "Lối tắt s giờ mở hostbook"
+    elif ! grep -qs 'alias s=hostbook' "$rc_file"; then printf '\n# hostbook: tìm và kết nối server SSH\nalias s=hostbook\n' >> "$rc_file"; ok "Đã thêm lối tắt s vào $(basename "$rc_file")"; fi
+    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) grep -qs '.local/bin' "$rc_file" || { printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$rc_file"; ok "Đã thêm ~/.local/bin vào PATH"; };; esac
+  fi
+  if [ -d /Applications/Ghostty.app ] || have ghostty; then
+    mkdir -p "$HOME/.config/ghostty"
+    grep -qs 'ssh-env' "$HOME/.config/ghostty/config" || { printf '# ssh-env: khi ssh, dùng TERM=xterm-256color để server không có terminfo của Ghostty vẫn hiển thị đúng\nshell-integration-features = ssh-env\n' >> "$HOME/.config/ghostty/config"; ok "Đã bật ssh-env cho Ghostty"; }
+  fi
+  [ -d "$DIR" ] && { chmod 700 "$DIR"; build_index; ok "Sẵn sàng · $(wc -l < "$IDX" | tr -d ' ') server"; }
+  return 0
+}
+update(){
+  local d; d=$(dirname "$SELF")
+  if [ -d "$d/.git" ]; then git -C "$d" pull -q --ff-only && ok "Đã cập nhật hostbook lên $("$SELF" --version)" || err "Không cập nhật được, thử: curl -fsSL $REPO_URL/raw/main/install.sh | bash"
+  else dim "Bản này không cài bằng git. Cập nhật bằng: curl -fsSL $REPO_URL/raw/main/install.sh | bash"; fi
+}
+first_run(){ # chưa có ~/ssh-hosts
+  local i m
+  clear; box 141 "${CU}${CB}Chào mừng đến hostbook${C0}" "Máy này chưa có danh sách server."; echo
+  i=$(pick "Bắt đầu thế nào?" "Dùng kho ở máy khác|lấy danh sách server về máy này" "Đây là máy đầu tiên|tạo danh sách ở máy này, kho để sau" "Tạo kho trên máy này|máy luôn bật, các máy khác đồng bộ với nó") || return 1
+  case $i in
+    0) m=$(pick_machine "Kho ở máy nào?") || return 1
+       ensure_key "$m" || return 1
+       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ $m" -- git clone -q "$m:repos/ssh-hosts.git" "$DIR" || { err "Không lấy được kho từ $m"; return 1; };;
+    *) mkdir -p "$DIR"; git -C "$DIR" init -q; printf '*\n!*.conf\n!.gitignore\n!groups.tsv\n' > "$DIR/.gitignore"
+       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && gum confirm "Nhập các server đang có trong ~/.ssh/config?"; then
+         awk 'tolower($1)=="host" || tolower($1)=="match" {keep=1} keep' "$HOME/.ssh/config" > "$DIR/imported.conf"
+         cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"; awk 'tolower($1)=="host" || tolower($1)=="match" {exit} {print}' "$HOME/.ssh/config.bak" > "$HOME/.ssh/config"
+         ok "Đã chuyển các khối Host sang ~/ssh-hosts/imported.conf (bản cũ ở ~/.ssh/config.bak)"
+       fi
+       g add -A && g commit -qm "Tạo danh sách" >/dev/null;;
+  esac
+  chmod 700 "$DIR"
+  setup
+  [ "$i" = 2 ] && make_kho_here
+  [ "$i" = 1 ] && gum confirm --negative "Để sau" "Kết nối kho ngay để sao lưu và dùng trên nhiều máy?" && connect_kho
+  pause "enter để bắt đầu"
+}
+
+# ---------- điểm vào ----------
+case ${1:-} in
+  _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";;
+  _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index; cat "$IDX";;
+  _infer) infer "$2" "$3" "${4:-}" "${5:-}";; _prefix) name_prefix "$2";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
+  _write) write_host "$2" "$3";; _block) shift; host_block "$@";; _validate) validate;;
+  --version|-v|version) echo "hostbook $VERSION";;
+  add) check_deps || exit 1; [ -d "$DIR" ] || { err "Chưa có ~/ssh-hosts · chạy hostbook để thiết lập"; exit 1; }; add_host "${2:-}" "${3:-}";;
+  sync) "$SELF" _sync_now; "$SELF" _header | sed -n 1p;;
+  doctor) doctor;; setup) setup;; update) update;; kho) check_deps || exit 1; connect_kho;; help|-h|--help) show_help;;
+  *) check_deps || exit 1
+     if [ ! -d "$DIR/.git" ]; then first_run || exit 1; fi
+     if [ -n "${1:-}" ]; then
+       ensure_index
+       if valid_name "$1" && [ $# -eq 1 ] && host_exists "$1"; then connect "$1"; exit; fi   # đúng tên thì vào thẳng
+       m=$(cmd_list | grep '^h:' | fzf --filter "$*" --delimiter="$TAB" --with-nth=2 --accept-nth=1)
+       if [ "$(printf '%s\n' "$m" | grep -c .)" = 1 ]; then connect "${m#h:}"; exit; fi
+     fi
+     home "$*";;
+esac
