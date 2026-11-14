@@ -25,6 +25,8 @@ except subprocess.TimeoutExpired:
 assert p.returncode==0 and len(out)==20 and all(chr(c) in '0123456789ABCDEFGHJKMNPQRSTVWXYZ' for c in out),out
 PYTEST
 check 'mã khôi phục kết thúc cả khi SIGPIPE bị bỏ qua' 'true'
+# Keep the existing UI while inheriting the terminal's background.
+check 'fzf kế thừa nền terminal trên mọi vùng chung' 'case "$(fzf_colors)" in *,bg:-1,preview-bg:-1,gutter:-1,*) true;; *) false;; esac'
 # Missing config, unsafe values and updates must not break defaults or execute content.
 check 'cấu hình mới mặc định là thẻ' '[ "$(cfg list cards)" = cards ]'
 cfg_set list minimal

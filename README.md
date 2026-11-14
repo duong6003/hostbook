@@ -117,6 +117,12 @@ key_ttl = 8h               # thời gian giữ key trong agent; cũng nhận ph�
 connect_timeout = 15      # giây; HOSTBOOK_CONNECT_TIMEOUT được ưu tiên
 ```
 
+Nền giao diện tự kế thừa nền terminal: nếu terminal có ảnh nền thì ảnh hiện
+qua vùng danh sách và chi tiết; nếu không có ảnh, app dùng màu nền mặc định
+của terminal. Màu chữ, vùng chọn và bố cục cũ được giữ. Ảnh nền, độ sáng và
+hiệu ứng do bạn cấu hình trong terminal; hostbook không cần nhận diện provider
+hoặc thêm tuỳ chọn ảnh nền riêng.
+
 **Tự tạo theme…** chép theme hiện tại vào `themes/<tên>.theme`, mở bằng `$EDITOR`, kiểm tra và cho xem trước trước khi dùng. Màu nhận số `0–255`, `#rrggbb`, hoặc tên ANSI (`red`, `bright-cyan`…). Giá trị cấu hình/theme sai sẽ dùng mặc định; `hb doctor` chỉ rõ dòng cần sửa. Nội dung file cấu hình được đọc như dữ liệu, không chạy như shell script.
 
 ## Dữ liệu

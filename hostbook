@@ -206,7 +206,7 @@ apply_theme(){
 }
 fzf_colors(){
   if [ -n "${NO_COLOR:-}" ]; then echo bw; return; fi
-  printf '%s,fg+:bold,hl:%s,hl+:%s,pointer:%s,marker:%s,prompt:%s,info:%s,border:%s,label:%s,ghost:%s,current-bg:%s,header:-1\n' \
+  printf '%s,bg:-1,preview-bg:-1,gutter:-1,fg+:bold,hl:%s,hl+:%s,pointer:%s,marker:%s,prompt:%s,info:%s,border:%s,label:%s,ghost:%s,current-bg:%s,header:-1\n' \
     "$TH_BASE" "$TH_ACCENT" "$TH_ACCENT" "$TH_ACCENT" "$TH_ACCENT" "$TH_ACCENT" "$TH_DIM" "$TH_BORDER" "$TH_TITLE" "$TH_DIM" "$TH_SEL_BG"
 }
 gum_color(){ # gum chỉ nhận số ANSI hoặc hex, fzf nhận cả tên ANSI
