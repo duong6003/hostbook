@@ -33,7 +33,7 @@ cfg_set list minimal
 printf '# giữ chú thích\npreview = bottom\n' >> "$CFG"
 cfg_set list cards
 check 'ghi cấu hình giữ các mục và chú thích khác' '[ "$(cfg list compact)" = cards ] && [ "$(cfg preview right)" = bottom ] && grep -q "# giữ chú thích" "$CFG"'
-printf 'list = broken\nconnect_timeout = 0\nkey_ttl = 30m\n' > "$CFG"
+printf 'list = broken\nconnect_timeout = 0\nkey_ttl = 30m\n' > "$CFG"; cfg_load   # config is parsed once per process
 check 'giá trị sai dùng mặc định và báo số dòng' '[ "$(cfg list cards)" = cards ] && [ "$(cfg connect_timeout 15)" = 15 ] && cfg_errors > "$T/errors" && grep -q "dòng 1" "$T/errors" && grep -q "dòng 2" "$T/errors"'
 check 'thời gian TTL đổi phút sang giây' '[ "$(duration "$(cfg key_ttl 8h)")" = 1800 ]'
 check 'không nhận tên theme vượt thư mục' '! cfg_valid theme ../outside'

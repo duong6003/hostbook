@@ -30,7 +30,7 @@ printf 'Include "%s/*.conf"\n' "$DIR" > "$T/crlf-ssh"
 SSHCFG=$T/crlf-ssh
 check 'CRLF Host lines remain discoverable' '[ "$(index_file "$DIR/crlf.conf" | cut -f1)" = crlf ]'
 mkdir -p "$CONF"; printf 'list = compact\r\n' > "$CFG"
-check 'CRLF settings preserve values' '[ "$(cfg list cards)" = compact ]'
+check 'CRLF settings preserve values' 'cfg_load; [ "$(cfg list cards)" = compact ]'
 printf 'fixture\ttabs\tcrlf example\r\n' > "$GRP"
 check 'CRLF groups preserve host names' '[ "$(group_field fixture 3)" = "crlf example" ]'
 check 'index notices edits when the host directory contains spaces' '(
