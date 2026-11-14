@@ -79,17 +79,29 @@ check "xem trước có PROD, ProxyJump, mô tả" 'printf "%s" "$prev" | grep -
 check "đọc địa chỉ user@ip:port" '[ "$("$S" _parse ops@10.3.0.50:2200 | tr "\n" " ")" = "ops 10.3.0.50 2200 " ]'
 check "đọc địa chỉ chỉ có IP" '[ "$("$S" _parse 10.0.1.13 | tr "\n" " ")" = " 10.0.1.13  " ]'
 check "từ chối địa chỉ có dấu cách / cổng sai" '! "$S" _parse "a b" >/dev/null && ! "$S" _parse "1.2.3.4:abc" >/dev/null'
-check "gợi ý tiền tố tên theo dải IP" '[ "$("$S" _prefix 10.0.1.13)" = a- ]'
-
-inf=$("$S" _infer 10.0.1.13 a-web3 "" "")
-iv(){ printf '%s\n' "$inf" | sed -n "s/^$1=//p"; }
-check "đoán dự án theo dải IP" '[ "$(iv group)" = project-a ] && [ "$(iv src_group)" = "cùng dải 10.0.1.x" ]'
-check "đoán user, máy trung gian; chưa có secret thì để trống" '[ "$(iv user)" = ubuntu ] && [ "$(iv jump)" = a-bastion ] && [ -z "$(iv secret)" ]'
-check "đoán tags: tag chung + tag từ tên" '[ "$(iv tags)" = "prod web" ]'
-inf=$("$S" _infer 10.2.0.77 b-worker "" 2201)
-check "giữ user/port đã dán, đoán dự án b" '[ "$(iv group)" = project-b ] && [ "$(iv port)" = 2201 ] && [ "$(iv user)" = deploy ]'
-inf=$("$S" _infer 172.16.0.5 lab1 "root" "")
-check "IP lạ: dự án nhiều server nhất, giữ user" '[ "$(iv group)" = project-a ] && [ "$(iv user)" = root ] && [ "$(iv src_group)" = "dự án có nhiều server nhất" ]'
+sg(){ "$S" _suggest_host "$@"; }
+fv(){ printf '%s\n' "$sug" | awk -F'\t' -v k="$1" '$1=="field" && $2==k {print $3}'; }
+sug=$(sg 10.0.1.13)
+check "gợi ý tiền tố tên từ server cùng dải, có lý do" '[ "$(fv prefix)" = a- ] && printf "%s\n" "$sug" | grep "^field	prefix" | grep -q "cùng dải 10.0.1.x"'
+sug=$(sg 10.0.1.13 a-web3)
+check "cùng dải + cùng tiền tố: tự chọn dự án, lý do có cả hai" 'printf "%s\n" "$sug" | grep -q "^auto	1" && printf "%s\n" "$sug" | grep "^project	project-a" | grep "●●●" | grep "cùng dải 10.0.1.x (3 server)" | grep -q "tên bắt đầu bằng a- (4 server)"'
+check "có server giống nhất để sao chép thiết lập" 'printf "%s\n" "$sug" | grep -q "^peer	a-web[12]	"'
+check "đoán user, máy trung gian (>= 80% server), chưa có secret" '[ "$(fv user)" = ubuntu ] && [ "$(fv jump)" = a-bastion ] && [ -z "$(fv secret)" ]'
+check "tags: có ở >= 60% server của dự án + từ trong tên" '[ "$(fv tags)" = "prod web" ]'
+sug=$(sg 10.2.0.77 b-worker "" 2201)
+check "giữ cổng đã dán, đoán dự án và user theo server cùng dải" 'printf "%s\n" "$sug" | grep -q "^group	project-b" && [ "$(fv port)" = 2201 ] && [ "$(fv user)" = deploy ]'
+sug=$(sg 172.16.0.5 lab1 root)
+check "địa chỉ lạ: không đoán dự án, giữ user đã ghi" 'printf "%s\n" "$sug" | grep -q "^auto	0" && ! printf "%s\n" "$sug" | grep -q "^project" && [ "$(fv user)" = root ]'
+sug=$(sg 10.0.9.9 zzz)
+check "chỉ cùng dải /16: có gợi ý yếu nhưng không tự chọn" 'printf "%s\n" "$sug" | grep "^project	project-a" | grep -q "●○○" && printf "%s\n" "$sug" | grep -q "^auto	0"'
+printf 'Host x1\n  HostName x1.booking.vn\nHost x2\n  HostName x2.booking.vn\nHost y1\n  HostName y1.abc.com.vn\n' > "$HOSTBOOK_DIR/dom.conf"
+sug=$(sg api.booking.vn moi)
+check "tên miền: nhận ra cùng đuôi" 'printf "%s\n" "$sug" | grep "^project	dom" | grep -q "cùng đuôi .booking.vn (2 server)"'
+sug=$(sg z.def.com.vn moi)
+check "com.vn không bị coi là tên miền chung" '! printf "%s\n" "$sug" | grep -q "^project"'
+rm "$HOSTBOOK_DIR/dom.conf"; "$S" _index >/dev/null
+sug=$(HOSTBOOK_DIR="$T/trong" HOSTBOOK_STATE="$T/trong-state" "$S" _suggest_host 1.2.3.4 x)
+check "danh sách trống: không đoán dự án, user là user của máy" '! printf "%s\n" "$sug" | grep -q "^project" && [ "$(fv user)" = "$(id -un)" ]'
 
 printf '# tags: prod web\nHost a-web3\n  HostName 10.0.1.13\n  User ubuntu\n  ProxyJump none\n  IdentityFile ~/.ssh/id_rsa\n' > "$T/blk"
 "$S" _write project-a "$T/blk"

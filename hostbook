@@ -10,7 +10,7 @@
 # Cần: git, fzf >= 0.63, gum >= 0.14. tmux khi mở nhiều server cùng lúc. Viết cho bash 3.2 để chạy trên macOS và Linux.
 set -u
 umask 077   # danh sách server và trạng thái chỉ chủ máy đọc được
-VERSION=0.2.0
+VERSION=0.2.1
 FZF_MIN=0.63; GUM_MIN=0.14; AGE_MIN=1.3.0
 REPO_URL=https://github.com/duong6003/hostbook
 
@@ -103,7 +103,7 @@ ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
 IDXD=$STATE/idx2
 has_wild(){ grep -qE '^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]].*[*?]' "$1" 2>/dev/null; }
 index_file(){ # file → in các dòng chỉ mục; gọi "ssh -G" song song, 16 server một lượt
-  local f=$1 tmp i=0; tmp=$(mktemp -d)
+  local f=$1 tmp i=0 n p t d ff l sc r; tmp=$(mktemp -d)   # biến của vòng read phải là local, kẻo ghi đè biến cùng tên của hàm gọi
   awk -v proj="$(basename "$f" .conf)" -v file="$f" -v skip="$STATE/skipped" '
     /^[ \t]*#[ \t]*tags:/ { s=$0; sub(/^[ \t]*#[ \t]*tags:[ \t]*/,"",s); tags=s; next }
     /^[ \t]*#[ \t]*desc:/ { s=$0; sub(/^[ \t]*#[ \t]*desc:[ \t]*/,"",s); desc=s; next }
@@ -477,7 +477,7 @@ vault_identity(){
   done
   confirm "Dùng mã khôi phục?" && vault_recover >&2 && vault_identity
 }
-recovery_new(){ LC_ALL=C tr -dc '0-9A-HJKMNP-TV-Z' < /dev/urandom | head -c 20; }
+recovery_new(){ LC_ALL=C tr -dc '0-9A-HJKMNP-TV-Z' < /dev/urandom 2>/dev/null | head -c 20; }
 recovery_fmt(){ echo "HB-$(printf '%s' "$1" | sed 's/..../&-/g; s/-$//')"; }
 recovery_norm(){ printf '%s' "$1" | tr 'a-z' 'A-Z' | sed 's/^HB-//' | tr -d ' -'; }
 vault_create(){ # mật-khẩu-chính → tạo kho, in mã khôi phục
@@ -948,7 +948,7 @@ explain(){ # tên log [pane]
   [ "$(grep -c 'Remote protocol version' "$f")" -ge $need ] && banner=1
   [ -n "$j" ] && grep -q 'Authenticated to' "$f" && jump_ok=1   # lần "Authenticated to" đầu tiên là của máy trung gian
   if grep -qiE 'IDENTIFICATION HAS CHANGED|Host key verification failed' "$f"; then kind=hostkey
-  elif grep -qi 'Permission denied' "$f" && [ "$sctype" = key ] && grep -q 'secrets/.*\.pub": invalid format' "$f" && ! ssh-add -l 2>/dev/null | grep -qF "$(secret_meta "$sc" fp)"; then kind=locked
+  elif grep -qi 'Permission denied' "$f" && [ "$sctype" = key ] && ! ssh-add -l 2>/dev/null | grep -qF "$(secret_meta "$sc" fp)"; then kind=locked   # key của secret chưa nằm trong agent
   elif grep -qi 'Permission denied' "$f"; then kind=denied
   elif grep -qi 'Could not resolve hostname' "$f"; then kind=dns
   elif grep -qi 'Connection refused' "$f"; then kind=refused
@@ -1015,32 +1015,112 @@ explain(){ # tên log [pane]
   done
 }
 # ---------- thêm & sửa ----------
-# Đoán các giá trị còn thiếu từ những server cùng dải IP. In ra các dòng key=value (src_* là nguồn đoán).
-infer(){ # host name user port [dự-án-bắt-buộc]
+# Gợi ý khi thêm server: chấm điểm từng server đã có theo độ giống với server mới, rồi suy ra dự án và các giá trị.
+# In TSV:  project<TAB>tên<TAB>điểm<TAB>độ chắc<TAB>lý do   (tối đa 3, điểm >= 15, giảm dần)
+#          peer<TAB>tên<TAB>điểm<TAB>lý do                   (server giống nhất, khi điểm >= 60)
+#          auto<TAB>0|1                                       (1 = đủ chắc để tự chọn dự án đứng đầu)
+#          group<TAB>dự án dùng để tính các field (tham số thứ 5, hoặc dự án đứng đầu)
+#          field<TAB>user|port|jump|secret|tags|prefix<TAB>giá trị<TAB>lý do
+suggest(){ # địa-chỉ tên user cổng [dự-án]
   ensure_index
-  awk -F'\t' -v ip="$1" -v name="$2" -v user="$3" -v port="$4" -v force="${5:-}" -v me="$ME" '
-    function top(arr,  k,b,bn){ bn=0; for (k in arr) if (arr[k]>bn || (arr[k]==bn && k<b)) { b=k; bn=arr[k] } return b }
-    BEGIN { net=ip; sub(/\.[0-9]+$/,"",net) }
-    { allg[$2]++; rows[NR]=$0 }
-    index($3, net ".")==1 && net!=ip { peer[$2]++; np++ }
+  LC_ALL=C awk -F'\t' -v ip="$1" -v name="$2" -v user="$3" -v port="$4" -v force="${5:-}" -v me="$ME" -v now="$(date +%s)" '
+    function isip(h){ return h ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ }
+    function rest(h){ if (index(h,".")==0) return ""; return substr(h, index(h,".")+1) }
+    function base(h,  n,a){ n=split(h,a,"."); if (n>=3 && length(a[n])==2 && length(a[n-1])<=3) return a[n-2] "." a[n-1] "." a[n]; if (n>=2) return a[n-1] "." a[n]; return h }
+    function pfx(s,  c){ if (match(s, /[-._0-9]/)) { if (RSTART==1) return ""; c=substr(s,RSTART,1); return substr(s,1,RSTART-1) (c ~ /[-._]/ ? c : "") } return "" }
+    function addlab(nm,l,w){ L[nm]=L[nm] (L[nm]==""?"":"|") l; if (!(l in LW)) { LW[l]=w; LO[++nl]=l } }
+    function dots(v){ return v>=80 ? "●●●" : (v>=45 ? "●●○" : "●○○") }
+    FILENAME==ARGV[1] { if (now-$1 < 604800) recent[$2]=1; next }
+    { n=$1; N++; nm[N]=n; P[n]=$2; U[n]=$4; J[n]=$6; SC[n]=$12; TG[n]=$8
+      if (!($2 in pseen)) { pseen[$2]=1; po[++np]=$2 }
+      m=split($8,t," "); for (i=1;i<=m;i++) pool[t[i]]=1
+      a=0
+      if (isip(ip) && isip($3)) { split(ip,x,"."); split($3,y,".")
+        if (x[1]==y[1] && x[2]==y[2] && x[3]==y[3]) { a=50; addlab(n, "cùng dải " x[1] "." x[2] "." x[3] ".x", 50) }
+        else if (x[1]==y[1] && x[2]==y[2]) { a=15; addlab(n, "cùng dải " x[1] "." x[2] ".x.x", 15) } }
+      else if (!isip(ip) && !isip($3) && index(ip,".")) {
+        if (index(rest(ip),".") && rest(ip)==rest($3)) { a=55; addlab(n, "cùng đuôi ." rest(ip), 55) }
+        else if (base(ip)==base($3)) { a=40; addlab(n, "cùng tên miền " base(ip), 40) } }
+      AD[n]=a; s=a
+      if (name!="") { p1=pfx(name); p2=pfx(n)
+        if (p1!="" && p1==p2) { s+=40; addlab(n, "tên bắt đầu bằng " p1, 40) }
+        c=0; m=split(tolower(name),t,/[-_.0-9]+/); k=split(tolower(n),q,/[-_.0-9]+/)
+        for (i=(p1!=""?2:1); i<=m && c<2; i++) if (t[i]!="") for (j=(p2!=""?2:1); j<=k; j++) if (q[j]==t[i]) { s+=10; c++; addlab(n, "tên có chữ " t[i], 10); break } }
+      if (port!="" && port!="22" && $5==port) { s+=10; addlab(n, "cùng cổng " port, 10) }
+      if (user!="" && $4==user) { s+=10; addlab(n, "cùng user " user, 10) }
+      if (s>0 && (n in recent)) s+=5
+      S[n]=s }
     END {
-      if (force!="") { grp=force; src="bạn chọn" } else if (np) { grp=top(peer); src="cùng dải " net ".x" } else if (NR) { grp=top(allg); src="dự án có nhiều server nhất" } else { grp="servers"; src="dự án mặc định" }
-      print "group=" grp; print "src_group=" src
-      n=0
-      for (i=1;i<=NR;i++) { split(rows[i],f,"\t"); if (f[2]!=grp) continue; n++; us[f[4]]++; if (f[12]!="") ks[f[12]]++; if (f[6]!="") { js[f[6]]++; nj++ }
-        m=split(f[8],tg," "); for (t=1;t<=m;t++) { tc[tg[t]]++; pool[tg[t]]=1 } }
-      if (user=="") { if (n) { print "user=" top(us); print "src_user=giống các server trong " grp } else { print "user=" me; print "src_user=user của máy này" } } else print "user=" user
-      print "port=" (port==""?"22":port)
-      tags=""; for (t in tc) if (tc[t]==n) common[t]=1
-      for (t in common) tags=tags (tags==""?"":" ") t
-      m=split(tolower(name),parts,/[-_.0-9]+/); extra=0
-      for (t=1;t<=m;t++) if (parts[t]!="" && (parts[t] in pool) && !(parts[t] in common) && index(" " tags " ", " " parts[t] " ")==0) { tags=tags (tags==""?"":" ") parts[t]; extra=1 }
-      print "tags=" tags; if (tags!="") print "src_tags=từ " grp (extra?" và tên server":"")
-      if (nj && nj>=n-1) { print "jump=" top(js); print "src_jump=các server khác trong " grp " đều đi qua máy này" } else print "jump="
-      sc=top(ks); if (sc!="") { print "secret=" sc; print "src_secret=đang dùng cho " ks[sc] " server trong " grp } else print "secret="
-    }' "$IDX"
+      # điểm dự án = tổng 3 server giống nhất, chia 1,5
+      for (i=1;i<=N;i++) { n=nm[i]; p=P[n]; v=S[n]
+        if (v>T1[p]) { T3[p]=T2[p]; T2[p]=T1[p]; T1[p]=v } else if (v>T2[p]) { T3[p]=T2[p]; T2[p]=v } else if (v>T3[p]) T3[p]=v
+        if (v>0) { m=split(L[n],t,"|"); for (j=1;j<=m;j++) LC[p SUBSEP t[j]]++ } }
+      for (i=1;i<=np;i++) PS[po[i]]=(T1[po[i]]+T2[po[i]]+T3[po[i]])/1.5
+      top=""; second=0
+      for (r=1;r<=3;r++) { best=""; bv=14.999
+        for (i=1;i<=np;i++) { p=po[i]; if (!(p in used) && PS[p]>bv) { bv=PS[p]; best=p } }
+        if (best=="") break; used[best]=1
+        if (r==1) { top=best; topv=bv } else if (r==2) second=bv
+        why=""; c=0
+        for (w=55; w>=10 && c<3; w-=5) for (j=1;j<=nl && c<3;j++) { l=LO[j]; if (LW[l]==w && ((best SUBSEP l) in LC)) { why=why (why==""?"":" · ") l " (" LC[best SUBSEP l] " server)"; c++ } }
+        printf "project\t%s\t%d\t%s\t%s\n", best, bv, dots(bv), why }
+      print "auto\t" ((top!="" && topv>=80 && topv-second>=30) ? 1 : 0)
+      bp=""; bs=59.999; for (i=1;i<=N;i++) if (S[nm[i]]>bs) { bs=S[nm[i]]; bp=nm[i] }
+      if (bp!="") { why=L[bp]; gsub(/\|/," · ",why); printf "peer\t%s\t%d\t%s\n", bp, bs, why }
+      G=(force!="") ? force : top
+      print "group\t" G
+      ba=""; bv=14.999; for (i=1;i<=N;i++) if (AD[nm[i]]>bv) { bv=AD[nm[i]]; ba=nm[i] }
+      if (ba!="" && pfx(ba)!="") { why=L[ba]; sub(/\|.*/,"",why); printf "field\tprefix\t%s\t%s\n", pfx(ba), why }
+      print "field\tport\t" (port==""?"22":port) "\t"
+      ng=0; for (i=1;i<=N;i++) if (P[nm[i]]==G) { n=nm[i]; ng++; UW[U[n]]+=S[n]+1; if (!(U[n] in useen)) { useen[U[n]]=1; uo[++nu]=U[n] } }
+      if (user!="") print "field\tuser\t" user "\t"
+      else { bu=""; bv=0; for (i=1;i<=nu;i++) if (UW[uo[i]]>bv) { bv=UW[uo[i]]; bu=uo[i] }
+        if (bu!="") print "field\tuser\t" bu "\tgiống các server trong " G; else print "field\tuser\t" me "\tuser của máy này" }
+      cu=(user!="") ? user : bu
+      if (G=="" || ng==0) exit
+      tot=0; for (i=1;i<=N;i++) { n=nm[i]; if (P[n]!=G) continue; if ((" " TG[n] " ") ~ / bastion /) continue; tot++; if (J[n]!="") { JC[J[n]]++; if (!(J[n] in jseen)) { jseen[J[n]]=1; jo[++nj]=J[n] } } }
+      for (i=1;i<=nj;i++) if (tot>0 && JC[jo[i]] >= 0.8*tot) { print "field\tjump\t" jo[i] "\tcác server khác trong " G " đều đi qua máy này"; break }
+      for (i=1;i<=N;i++) { n=nm[i]; if (P[n]!=G || SC[n]=="") continue; if (!(SC[n] in sseen)) { sseen[SC[n]]=1; so[++ns]=SC[n] }; SA[SC[n]]++; if (U[n]==cu) SU[SC[n]]++ }
+      bsn=""; bv=0; for (i=1;i<=ns;i++) if (SU[so[i]]>bv) { bv=SU[so[i]]; bsn=so[i] }
+      if (bsn=="") for (i=1;i<=ns;i++) if (SA[so[i]]>bv) { bv=SA[so[i]]; bsn=so[i] }
+      if (bsn!="") print "field\tsecret\t" bsn "\tđang dùng cho " SA[bsn] " server trong " G
+      tags=""
+      for (i=1;i<=N;i++) { n=nm[i]; if (P[n]!=G) continue; m=split(TG[n],t," "); for (j=1;j<=m;j++) { TC[t[j]]++; if (!(t[j] in tseen)) { tseen[t[j]]=1; to[++nt]=t[j] } } }
+      for (i=1;i<=nt;i++) if (TC[to[i]] >= 0.6*ng) { tags=tags (tags==""?"":" ") to[i]; chosen[to[i]]=1 }
+      extra=0; m=split(tolower(name),t,/[-_.0-9]+/)
+      for (i=1;i<=m;i++) if (t[i]!="" && (t[i] in pool) && !(t[i] in chosen)) { tags=tags (tags==""?"":" ") t[i]; chosen[t[i]]=1; extra=1 }
+      if (tags!="") print "field\ttags\t" tags "\ttừ " G (extra ? " và tên server" : "")
+    }' "$HIST" "$IDX"
 }
-name_prefix(){ ensure_index; local net=${1%.*}; awk -F'\t' -v net="$net" 'index($3, net ".")==1 { split($1,a,"-"); if (a[2]!="") c[a[1] "-"]++ } END { for (k in c) if (c[k]>b) { b=c[k]; r=k } print r }' "$IDX"; }
+sug_val(){ awk -F'\t' -v k="$2" '$1=="field" && $2==k {print $3; exit}' "$1"; }
+sug_why(){ awk -F'\t' -v k="$2" '$1=="field" && $2==k {print $4; exit}' "$1"; }
+# Đặt các biến group/user/port/jump/secret/tags (và src_*) từ gợi ý. Không hỏi gì: dùng cho nhập nhiều dòng.
+read_suggest(){ # địa-chỉ tên user cổng [dự-án]
+  local f; f=$(tmpd)/sug
+  suggest "$1" "$2" "$3" "$4" "${5:-}" > "$f"
+  group=$(awk -F'\t' '$1=="group"{print $2}' "$f"); [ -n "$group" ] || group=imported
+  [ "$group" = "${5:-$group}" ] || suggest "$1" "$2" "$3" "$4" "$group" > "$f"
+  user=$(sug_val "$f" user); port=$(sug_val "$f" port); jump=$(sug_val "$f" jump); secret=$(sug_val "$f" secret); tags=$(sug_val "$f" tags)
+  src_user=$(sug_why "$f" user); src_jump=$(sug_why "$f" jump); src_secret=$(sug_why "$f" secret); src_tags=$(sug_why "$f" tags)
+  src_group=$(awk -F'\t' -v g="$group" '$1=="project" && $2==g {print $5}' "$f")
+}
+pick_project(){ # file-gợi-ý → in tên dự án
+  local f=$1 items=() keys=() p sc dt why i
+  while IFS="$TAB" read -r _ p sc dt why; do items+=("$p|$dt $why"); keys+=("$p"); done < <(grep '^project' "$f")
+  for p in $(cut -f2 "$IDX" | sort -u); do case " ${keys[*]:-} " in *" $p "*) ;; *) items+=("$p"); keys+=("$p");; esac; done
+  items+=("+ Dự án mới"); keys+=("+")
+  i=$(pick "Dự án nào?" "${items[@]}") || return 1
+  if [ "${keys[$i]}" = "+" ]; then p=$(ask "Tên dự án mới · chữ thường, số, dấu gạch ngang" "project-d") || return 1
+    case $p in ""|*[!a-z0-9-]*) err "Tên dự án không hợp lệ" >&2; return 1;; esac; echo "$p"
+  else echo "${keys[$i]}"; fi
+}
+pick_tags(){ # dự-án tags-hiện-tại → in tags mới
+  local g=$1 cur=$2 all sel
+  all=$( { printf '%s\n' $cur; awk -F'\t' -v g="$g" '$2==g{print $8}' "$IDX" | tr ' ' '\n'; } | grep . | awk '!s[$0]++')
+  sel=$( { printf '%s\n' "$all"; echo "+ Tag khác…"; } | grep . | gum choose --no-limit --header "Tags · space để bật/tắt, enter để xong" --selected "$(printf '%s' "$cur" | tr ' ' ',')") || return 1
+  if printf '%s\n' "$sel" | grep -qx '+ Tag khác…'; then sel=$(printf '%s\n' "$sel" | grep -vx '+ Tag khác…'; ask "Thêm tag · cách nhau dấu cách" "prod web" "" | tr ' ' '\n'); fi
+  printf '%s\n' "$sel" | grep . | tr -cd 'A-Za-z0-9._\n-' | tr '\n' ' ' | sed 's/ $//'
+}
 parse_addr(){ # "user@host:port" → in ra 3 dòng user, host, port
   local s=$1 u="" p=""
   case $s in *@*) u=${s%%@*}; s=${s#*@};; esac
@@ -1092,12 +1172,6 @@ write_host(){ # project block-file
     awk -v blk="$2" 'BEGIN{ while ((getline l < blk) > 0) b=b l "\n" } !done && /^[ \t]*[Hh][Oo][Ss][Tt][ \t].*[*?]/ { printf "%s\n", b; done=1 } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   else { [ -s "$f" ] && echo; cat "$2"; } >> "$f"; fi
 }
-read_infer(){ # gán kết quả của infer vào biến cùng tên (không dùng eval)
-  local line k v
-  while IFS= read -r line; do k=${line%%=*}; v=${line#*=}
-    case $k in group|src_group|user|src_user|port|tags|src_tags|jump|src_jump|secret|src_secret) printf -v "$k" '%s' "$v";; esac
-  done < <(infer "$@")
-}
 add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn lại, cho xem lại rồi lưu
   local raw=${1:-} name=${2:-} u h p pre line i blk f dup
   local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" secret="" src_secret="" desc=""
@@ -1106,15 +1180,33 @@ add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn l�
     if line=$(parse_addr "$raw"); then break; fi; err "Không đọc được \"$raw\". Ví dụ: ubuntu@10.0.1.13"; raw=""
   done
   u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p)
-  pre=$(name_prefix "$h")
+  local sug peer peerwhy cloned="" prewhy
+  sug=$(tmpd)/sug; suggest "$h" "" "$u" "$p" > "$sug"
+  pre=$(sug_val "$sug" prefix); prewhy=$(sug_why "$sug" prefix)
   while :; do
-    [ -n "$name" ] || name=$(ask "Tên server${pre:+ · đã điền sẵn \"$pre\" theo các server cùng dải IP}" "${pre}web3" "$pre") || return 1
+    [ -n "$name" ] || name=$(ask "Tên server${pre:+ · đã điền sẵn \"$pre\" vì $prewhy}" "${pre}web3" "$pre") || return 1
     case $name in
       *-) err "Tên chưa xong: \"$name\""; pre=$name; name="";;
       *) if ! valid_name "$name"; then err "Tên chỉ gồm chữ, số và . _ -"; name=""
          elif host_exists "$name"; then err "Đã có server tên $name"; name=""; else break; fi;; esac
   done
-  read_infer "$h" "$name" "$u" "$p"
+  suggest "$h" "$name" "$u" "$p" > "$sug"
+  peer=$(awk -F'\t' '$1=="peer"{print $2}' "$sug"); peerwhy=$(awk -F'\t' '$1=="peer"{print $4}' "$sug")
+  if [ -n "$peer" ]; then   # có một server rất giống: đề nghị sao chép thiết lập của nó
+    clear; title "Thêm server $name"
+    echo "Giống ${CB}$peer${C0} nhất ${CD}($peerwhy)${C0}"
+    dim "Thiết lập của $peer: user $(host_field "$peer" 4)$( [ -n "$(host_field "$peer" 12)" ] && echo " · $(host_field "$peer" 12)")$( [ -n "$(host_field "$peer" 6)" ] && echo " · qua $(host_field "$peer" 6)") · dự án $(host_field "$peer" 2)"; echo
+    confirm "Sao chép thiết lập của $peer?" && cloned=1
+  fi
+  if [ -n "$cloned" ]; then group=$(host_field "$peer" 2)
+  elif [ "$(awk -F'\t' '$1=="auto"{print $2}' "$sug")" = 1 ]; then group=$(awk -F'\t' '$1=="group"{print $2}' "$sug")
+  elif [ ! -s "$IDX" ]; then group=servers
+  else clear; title "Thêm server $name"; group=$(pick_project "$sug") || return 1; fi
+  read_suggest "$h" "$name" "$u" "$p" "$group"
+  if [ -n "$cloned" ]; then
+    [ -n "$u" ] || { user=$(host_field "$peer" 4); src_user="giống $peer"; }
+    jump=$(host_field "$peer" 6); src_jump=${jump:+giống $peer}; secret=$(host_field "$peer" 12); src_secret=${secret:+giống $peer}; src_group="giống $peer"
+  fi
   if [ -z "$secret" ]; then clear; title "Thêm server $name"; secret=$(pick_login) || return 1; fi   # chưa có gì để gợi ý: hỏi luôn
   while :; do
     clear; title "Thêm server"
@@ -1132,10 +1224,8 @@ add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn l�
       1) case $(pick "Sửa mục nào?" "Tên|$name" "Địa chỉ|$user@$h:$port" "Dự án|$group" "Tags|${tags:-—}" "Máy trung gian|${jump:-không}" "Đăng nhập|${secret:-ssh tự lo}" "Mô tả|${desc:-(trống)}") in
            0) i=$(ask "Tên" "" "$name") && { if valid_name "$i" && ! host_exists "$i"; then name=$i; else err "Tên không hợp lệ hoặc đã có"; sleep 1; fi; };;
            1) i=$(ask "Địa chỉ" "ubuntu@10.0.1.13:22" "$user@$h:$port") && line=$(parse_addr "$i") && { u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p); user=${u:-$user}; port=${p:-22}; src_user=""; };;
-           2) i=$( { awk -F'\t' '{print $2}' "$IDX" | sort -u; echo "+ Dự án mới"; } | gum choose --header "Dự án") && {
-                if [ "$i" = "+ Dự án mới" ]; then i=$(ask "Tên dự án mới · chữ thường, số, dấu gạch ngang" "project-d") && case $i in *[!a-z0-9-]*|"") err "Tên dự án không hợp lệ"; sleep 1;; *) group=$i;; esac
-                else group=$i; fi; src_group=""; };;
-           3) i=$(ask "Tags · cách nhau dấu cách" "prod web" "$tags") && { tags=$(printf '%s' "$i" | tr -cd 'A-Za-z0-9._ -'); src_tags=""; };;
+           2) i=$(pick_project "$sug") && { group=$i; src_group=""; };;
+           3) i=$(pick_tags "$group" "$tags") && { tags=$i; src_tags=""; };;
            4) i=$( { echo "Không"; awk -F'\t' '$8 ~ /(^| )bastion( |$)/ {print $1}' "$IDX"; } | gum choose --header "Máy trung gian (ProxyJump)") && { [ "$i" = Không ] && jump="" || jump=$i; src_jump=""; };;
            5) i=$(pick_login "$secret" "$src_secret") && { secret=$i; src_secret=""; };;
            6) i=$(ask "Mô tả · một dòng" "Nginx chính" "$desc") && desc=$(printf '%s' "$i" | tr -d '\t\n\r');;
@@ -1282,7 +1372,7 @@ import_write(){ # file-tsv dự_án(rỗng = đoán theo dải IP) → ghi tất
     [ "$u" = - ] && u=""; [ "$pt" = - ] && pt=""; [ "$tg" = - ] && tg=""
     case $seen in *" $n "*) continue;; esac; host_exists "$n" && continue; seen="$seen$n "
     group=""; user=""; port=""; tags=""; jump=""; secret=""
-    read_infer "$h" "$n" "$u" "$pt" "$to"
+    read_suggest "$h" "$n" "$u" "$pt" "$to"
     [ -n "$tg" ] && tags=$tg
     host_block "$n" "$h" "$user" "$port" "$jump" "$secret" "$tags" "" > "$blk"
     write_host "$group" "$blk"; cnt=$((cnt+1))
@@ -1866,7 +1956,7 @@ case ${1:-} in
   unlock) cmd_unlock;; lock) cmd_lock "${2:-}";; secret|secrets) check_deps || exit 1; ensure_index; secret_manager;;
   vault) case ${2:-} in init) vault_init;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) echo "hostbook vault init | passwd | recover | recovery-code";; esac;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
-  _infer) infer "$2" "$3" "${4:-}" "${5:-}";; _prefix) name_prefix "$2";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
+  _suggest_host) suggest "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-}";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;
   _rename) ensure_index; apply_change "đổi tên" rename_host_raw "$2" "$3";; _move) ensure_index; apply_change "chuyển" move_host_raw "$2" "$3";;
   _import_parse) import_parse;; _import_write) ensure_index; apply_change "nhập" import_write "$2" "${3:-}";;
