@@ -58,9 +58,14 @@ printf '%s\n' "$HB_FZF_ROW" | fzf --sync --no-mouse --layout=reverse \
 
 try {
     if ([HostbookFzfConsole]::GetConsoleWindow() -eq [IntPtr]::Zero) {
-        if (![HostbookFzfConsole]::AllocConsole()) { throw 'Cannot allocate a console for the native fzf test.' }
-        $allocatedConsole = $true
-        [HostbookFzfConsole]::ShowWindow([HostbookFzfConsole]::GetConsoleWindow(), 0) | Out-Null
+        if ([HostbookFzfConsole]::AllocConsole()) {
+            $allocatedConsole = $true
+            [HostbookFzfConsole]::ShowWindow([HostbookFzfConsole]::GetConsoleWindow(), 0) | Out-Null
+        } else {
+            $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            # A headless/pseudo console can have no HWND; ERROR_ACCESS_DENIED means already attached.
+            if ($errorCode -ne 5) { throw "Cannot allocate a console for fzf (Win32 $errorCode)." }
+        }
     }
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = Join-Path $config.runtime 'bin\bash.exe'

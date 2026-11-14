@@ -56,14 +56,14 @@ try {
 # Real native clipboard read/write, DPAPI encryption and NTFS permissions.
 & $bash --noprofile --norc (Join-Path $source 'tests\windows.sh')
 Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, callbacks, private temps and vault checks'
-& (Join-Path $source 'tests\windows-fzf.ps1')
-Assert ($LASTEXITCODE -eq 0) 'real native fzf preview and action callbacks'
 & $launcher update
 Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
 Assert (@($userPath | Where-Object { $_ -eq (Join-Path $root 'bin') }).Count -eq 1) 'update keeps one user PATH entry'
 & (Join-Path $source 'tests\windows-ssh.ps1')
 Assert ($LASTEXITCODE -eq 0) 'real Windows SSH key and password login'
+& (Join-Path $source 'tests\windows-fzf.ps1')
+Assert ($LASTEXITCODE -eq 0) 'real native fzf preview and action callbacks'
 Set-Content -LiteralPath (Join-Path $root 'sentinel') -Value 'unrelated data'
 & (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall
 Assert (!(Test-Path -LiteralPath (Join-Path $root 'app')) -and !(Test-Path -LiteralPath (Join-Path $root 'runtime'))) 'uninstall removes application and runtime'
