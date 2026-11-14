@@ -2699,9 +2699,9 @@ check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "
 # added, removed or replaced changes one of them; equal times count as changed, as -nt may have 1 s precision) (#5).
 deps_cached(){
   local s=$STATE/deps p
-  [ -f "$s" ] || return 1
+  [ -r "$s" ] || return 1
   { IFS= read -r p && [ "$p" = "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN" ] || return 1
-    while IFS= read -r p; do [ "$s" -nt "$p" ] || return 1; done; } < "$s"
+    while IFS= read -r p; do [ -x "$p" ] && [ "$s" -nt "$p" ] || return 1; done; } < "$s"   # -x: a symlink whose target is gone fails
   local IFS=:; for p in $PATH; do [ -z "$p" ] || [ "$s" -nt "$p" ] || return 1; done
   return 0
 }
@@ -2717,7 +2717,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   if have gum; then v=$(gum --version | awk '{print $3}' | sed 's/^v//')
     if ver_ge "$v" "$GUM_MIN"; then [ "${1:-}" = report ] && ok "gum $v"; else err "gum $v quá cũ, cần >= $GUM_MIN"; bad=1; fi
   else err "Thiếu gum"; bad=1; fi
-  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN"; type -P git age age-plugin-batchpass fzf gum; } > "$STATE/deps"; return 0; }
+  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN"; type -P git age age-plugin-batchpass fzf gum; } 2>/dev/null > "$STATE/deps"; return 0; }
   [ "${1:-}" = report ] || dim "$(install_hint)"
   return 1
 }
