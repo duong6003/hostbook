@@ -83,8 +83,8 @@ mkdir -p "$T/fakebin"; printf '#!/bin/sh\necho "$@" >> "%s/nc.calls"\n' "$T" > "
 pz=$(PATH="$T/fakebin:$PATH" "$S" _preview h:z-ghost | strip); t1=$(perl -MTime::HiRes=time -e 'print int(time*1000)')
 check "xem trước server không với tới được: < 300 ms, không gọi nc" '[ $((t1-t0)) -lt 300 ] && [ ! -e "$T/nc.calls" ] && printf "%s" "$pz" | grep -q "HostName 192.0.2.1"'
 check "xem trước chưa có kết quả kiểm tra: gợi ý Kiểm tra kết nối" 'printf "%s" "$pz" | grep -q "→ Kiểm tra kết nối"'
-printf 'z-ghost\tfail\tkhông có phản hồi\na-web1\tok\tđăng nhập được\n' > "$HOSTBOOK_STATE/last-check.tsv"
-check "xem trước hiện kết quả kiểm tra gần nhất" '"$S" _preview h:z-ghost | strip | grep -q "Kiểm tra lần cuối: không vào được (không có phản hồi) · 0 phút trước" && "$S" _preview h:a-web1 | strip | grep -q "Kiểm tra lần cuối: vào được · 0 phút trước"'
+printf 'z-ghost\tfail\tkhông có phản hồi\t%s\na-web1\tok\tđăng nhập được\t%s\na-web2\tskip\tbỏ qua: máy trung gian a-bastion không vào được\n' "$(( $(date +%s) - 7300 ))" "$(date +%s)"  > "$HOSTBOOK_STATE/last-check.tsv"
+check "xem trước hiện kết quả kiểm tra gần nhất" '"$S" _preview h:z-ghost | strip | grep -q "✗ Kiểm tra lần cuối: không vào được (không có phản hồi) · 2 giờ trước" && "$S" _preview h:a-web1 | strip | grep -q "✓ Kiểm tra lần cuối: vào được · vừa xong" && "$S" _preview h:a-web2 | strip | grep -q "Kiểm tra lần cuối: bỏ qua, máy trung gian a-bastion không vào được$"'
 rm -f "$HOSTBOOK_STATE/last-check.tsv" "$HOSTBOOK_DIR/project-z.conf"
 
 check "đọc địa chỉ user@ip:port" '[ "$("$S" _parse ops@10.3.0.50:2200 | tr "\n" " ")" = "ops 10.3.0.50 2200 " ]'

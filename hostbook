@@ -437,12 +437,13 @@ cmd_preview(){
   case $t in
     h) ensure_index
        # One awk does everything and no network I/O: host row, secret meta, history and the cached result of the last check.
-       local lc=$STATE/last-check.tsv mt=0
-       [ -f "$lc" ] && mt=$(stat -c %Y "$lc" 2>/dev/null || stat -f %m "$lc" 2>/dev/null)
+       local lc=$STATE/last-check.tsv kx=0 l r i
+       while IFS= read -r l; do [ "${l%%$TAB*}" = "$n" ] && { r=$l; break; }; done < "$IDX"   # key path: test it here, never read it in awk (directory/FIFO)
+       if [ -n "${r:-}" ]; then for i in 1 2 3 4 5 6; do r=${r#*$TAB}; done; r=${r%%$TAB*}; [ -n "$r" ] && [ -f "${r/#\~/$HOME}" ] && kx=1; fi
        awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" -v cy="$CY" -v cg="$CG" -v iprod="$ICON_PROD" \
-         -v home="$HOME" -v sec="$SEC" -v hist="$HIST" -v lc="$lc" -v mt="${mt:-0}" '
+         -v iok="$ICON_OK" -v ierr="$ICON_ERR" -v kx="$kx" -v home="$HOME" -v sec="$SEC" -v hist="$HIST" -v lc="$lc" '
          function tilde(s,  o, i) { if (home=="") return s; while ((i=index(s,home))) { o=o substr(s,1,i-1) "~"; s=substr(s,i+length(home)) } return o s }
-         function ago(d) { return d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày" }
+         function ago(d) { if (d<0) d=0; return d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày" }
          function meta(f, k,  l, v) { while ((getline l < f) > 0) if (index(l, k "=")==1) { v=substr(l, length(k)+2); break }; close(f); return v }
          BEGIN { srand(); now=srand() }   # srand() returns the previous seed, which is the current time: no date fork
          { sub(/\r$/,"") } $1==n { r=$0; split($0, f, "\t"); exit }
@@ -464,15 +465,16 @@ cmd_preview(){
              if ((getline x < mf) >= 0) { close(mf); ty=meta(mf, "type"); lb=(ty=="password" ? "mật khẩu" : "key " meta(mf, "keytype"))
                printf "%sĐăng nhập:%s %s %s(%s)%s\n", cd, c0, ps, cd, lb, c0 }
              else printf "%sĐăng nhập: secret %s không còn trong kho secret%s\n", cr, ps, c0
-           } else if (f[7]!="") { kf=f[7]; if (substr(kf,1,1)=="~") kf=home substr(kf,2)
-             if ((getline x < kf) >= 0) printf "%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n", cy, c0 }
+           } else if (kx) printf "%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n", cy, c0
            while ((getline l < hist) > 0) { split(l, h, "\t"); if (h[2]==n) { c++; if (h[1]>last) last=h[1] } }
            if (!c) printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0
-           else printf "%sLần gần nhất: %s trước · %d lần%s\n", cd, ago(now-last), c, c0
-           while ((getline l < lc) > 0) { split(l, h, "\t"); if (h[1]==n) { st=h[2]; why=h[3]; break } }
+           else printf "%sLần gần nhất: %s · %d lần%s\n", cd, ago(now-last) " trước", c, c0
+           while ((getline l < lc) > 0) { split(l, h, "\t"); if (h[1]==n) { st=h[2]; why=h[3]; ep=h[4]; break } }
+           when=(ep=="" ? "" : " · " (now-ep<60 ? "vừa xong" : ago(now-ep) " trước"))   # old 3-column rows have no time
            if (st=="") printf "%s→ Kiểm tra kết nối%s\n", cd, c0
-           else if (st=="ok") printf "%s%s Kiểm tra lần cuối: vào được · %s trước%s\n", cg, iprod, ago(now-mt), c0
-           else printf "%s%s Kiểm tra lần cuối: không vào được (%s) · %s trước%s\n", (st=="skip"? cd : cy), iprod, why, ago(now-mt), c0
+           else if (st=="ok") printf "%s%s Kiểm tra lần cuối: vào được%s%s\n", cg, iok, when, c0
+           else if (st=="skip") { sub(/^bỏ qua: /, "", why); printf "%s· Kiểm tra lần cuối: bỏ qua, %s%s%s\n", cd, why, when, c0 }
+           else printf "%s%s Kiểm tra lần cuối: không vào được (%s)%s%s\n", cy, ierr, why, when, c0
          }' "$IDX" ;;
     g) local h; ensure_index
        printf '%s%s%s\n%sNhóm · mở bằng: %s%s\n\n' "$CU$CB" "$n" "$C0" "$CD" "$(mode_label "$(group_field "$n" 2)")" "$C0"
@@ -1816,17 +1818,18 @@ check_one(){ # name directory → write <directory>/<name>.res = "ok|fail<TAB>re
   if kill -0 $pid 2>/dev/null; then kill $pid 2>/dev/null; echo "hostbook: hết 8 giây chờ" >> "$d/$h.log"; rc=124; else wait $pid; rc=$?; fi
   if [ $rc -eq 0 ]; then printf 'ok\tđăng nhập được%s\n' "${sc:+ bằng $sc}" > "$d/$h.res"; else printf 'fail\t%s\n' "$(classify_log "$h" "$d/$h.log")" > "$d/$h.res"; fi
 }
+check_rec(){ printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date +%s)" >> "$4/run.tsv"; }   # name result reason dir; the epoch is the per-host check time
 # Check servers by jump-host depth, eight in parallel per batch. Write results to $STATE/last-check.tsv.
 check_run(){ # name…
   local d=$STATE/check all="$*" h j pending done_ok=" " done_bad=" " batch n=0 total=$# lvl st why res
-  [ -d "$d" ] && rm -rf "${d:?}"; mkdir -p "$d"; : > "$STATE/last-check.tsv"
+  [ -d "$d" ] && rm -rf "${d:?}"; mkdir -p "$d"; : > "$d/run.tsv"
   prepare_login "$@" || return 1
   [ -f "$STATE/askpass" ] || { printf '#!/bin/sh\nexec %s _askpass "$@"\n' "$(printf %q "$SELF")" > "$STATE/askpass"; chmod 700 "$STATE/askpass"; }
   pending=" $all "
   while [ -n "${pending// /}" ]; do
     lvl=""
     for h in $pending; do j=$(host_field "$h" 6 | cut -d, -f1)
-      case $done_bad in *" $j "*) [ -n "$j" ] && { printf '%s\tskip\tbỏ qua: máy trung gian %s không vào được\n' "$h" "$j" >> "$STATE/last-check.tsv"; done_bad="$done_bad$h "; pending=${pending/ $h / }; n=$((n+1)); [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K  %s·%s %s  %sbỏ qua: máy trung gian %s không vào được%s\n' "$CD" "$C0" "$h" "$CD" "$j" "$C0"; continue; };; esac
+      case $done_bad in *" $j "*) [ -n "$j" ] && { check_rec "$h" skip "bỏ qua: máy trung gian $j không vào được" "$d"; done_bad="$done_bad$h "; pending=${pending/ $h / }; n=$((n+1)); [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K  %s·%s %s  %sbỏ qua: máy trung gian %s không vào được%s\n' "$CD" "$C0" "$h" "$CD" "$j" "$C0"; continue; };; esac
       case " $pending " in *" $j "*) [ -n "$j" ] && continue;; esac   # jump host still awaiting a check: defer this server to the next batch
       lvl="$lvl $h"; done
     [ -n "$lvl" ] || break
@@ -1835,13 +1838,15 @@ check_run(){ # name…
       batch=""; for h in "$1" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"; do [ -n "$h" ] && { batch="$batch $h"; check_one "$h" "$d" & }; done
       [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K  %s… đang kiểm tra %s/%s%s' "$CD" "$n" "$total" "$C0"
       wait
-      for h in $batch; do IFS="$TAB" read -r st why < "$d/$h.res"; printf '%s\t%s\t%s\n' "$h" "$st" "$why" >> "$STATE/last-check.tsv"; n=$((n+1)); pending=${pending/ $h / }
+      for h in $batch; do IFS="$TAB" read -r st why < "$d/$h.res"; check_rec "$h" "$st" "$why" "$d"; n=$((n+1)); pending=${pending/ $h / }
         if [ "$st" = ok ]; then done_ok="$done_ok$h "; [ -z "${HB_PLAIN:-}" ] && printf "\r\033[K  %s${ICON_OK}%s %s  %s%s%s\n" "$CG" "$C0" "$h" "$CD" "$why" "$C0"
         else done_bad="$done_bad$h "; [ -z "${HB_PLAIN:-}" ] && printf "\r\033[K  %s${ICON_ERR}%s %s  %s\n" "$CR" "$C0" "$h" "$why"; fi; done
       shift $(( $# < 8 ? $# : 8 ))
     done
   done
   [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K'
+  # last-check.tsv keeps the latest result of every host: replace only the rows of hosts checked now
+  { [ -f "$STATE/last-check.tsv" ] && awk -F'\t' 'NR==FNR{r[$1]=1; next} !($1 in r)' "$d/run.tsv" "$STATE/last-check.tsv"; cat "$d/run.tsv"; } > "$STATE/last-check.tsv.new" && mv "$STATE/last-check.tsv.new" "$STATE/last-check.tsv"
   return 0
 }
 check_hosts(){ # name…
@@ -1850,12 +1855,12 @@ check_hosts(){ # name…
   while :; do
     clear; title "Kiểm tra kết nối · $# server"; dim "Mỗi server thử đăng nhập rồi thoát ngay, không chạy lệnh nào."; echo
     check_run "$@" || { pause; return 1; }
-    nok=$(awk -F'\t' '$2=="ok"' "$STATE/last-check.tsv" | grep -c .); nbad=$(awk -F'\t' '$2!="ok"' "$STATE/last-check.tsv" | grep -c .)
+    nok=$(awk -F'\t' '$2=="ok"' "$STATE/check/run.tsv" | grep -c .); nbad=$(awk -F'\t' '$2!="ok"' "$STATE/check/run.tsv" | grep -c .)
     echo; printf "%s${ICON_OK} %s vào được%s%s\n" "$CG" "$nok" "$C0" "$( [ "$nbad" -gt 0 ] && printf " · %s${ICON_ERR} %s không vào được%s" "$CR" "$nbad" "$C0")"; echo
     [ "$nbad" -gt 0 ] || { pause; return 0; }
     case $(pick "" "Xem chi tiết lỗi" "Thử lại các server lỗi" "Xong") in
-      0) h=$(awk -F'\t' '$2=="fail"{print $1}' "$STATE/last-check.tsv" | gum choose --header "Server nào?") && { clear; explain "$h" "$STATE/check/$h.log" pane; pause; };;
-      1) set -- $(awk -F'\t' '$2!="ok"{print $1}' "$STATE/last-check.tsv");;
+      0) h=$(awk -F'\t' '$2=="fail"{print $1}' "$STATE/check/run.tsv" | gum choose --header "Server nào?") && { clear; explain "$h" "$STATE/check/$h.log" pane; pause; };;
+      1) set -- $(awk -F'\t' '$2!="ok"{print $1}' "$STATE/check/run.tsv");;
       *) return 0;;
     esac
   done
@@ -2738,7 +2743,7 @@ case ${1:-} in
   _import_classify) x=$(pack_open "$2") && pack_classify "$x";;
   _import_apply) ensure_index; x=$(pack_open "$2") || exit 1; { ls "$x"/secrets/*.meta >/dev/null 2>&1 && ! vault_exists; } && { vault_create "$HOSTBOOK_MASTER" >/dev/null; }
                  pack_classify "$x" > "$x/classes"; pack_decide "$x" "$3" > "$x/decisions"; apply_change "Nhập gói" pack_apply_raw "$x" "$x/decisions";;
-  _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/last-check.tsv";;
+  _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/check/run.tsv";;
   share) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then share_flow $(search_hosts "$*"); else share_flow $(cut -f1 "$IDX"); fi;;
   check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
