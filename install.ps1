@@ -12,6 +12,7 @@ $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 $bin = Join-Path $InstallRoot 'bin'
 $app = Join-Path $InstallRoot 'app'
 $configFile = Join-Path $InstallRoot 'install.json'
+$runtime = Join-Path $InstallRoot 'runtime\2.56.1'
 function Set-UserPath([bool]$Add) {
     $current = [Environment]::GetEnvironmentVariable('Path', 'User')
     $parts = @($current -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ine $bin.TrimEnd('\') })
@@ -27,7 +28,7 @@ if (Test-Path -LiteralPath $configFile) {
 if ($Uninstall) {
     if (!(Test-Path -LiteralPath $configFile)) { throw "No hostbook installation at $InstallRoot" }
     Set-UserPath $false
-    foreach ($owned in @('app', 'bin', 'runtime', 'install.json')) {
+    foreach ($owned in @('app', 'bin', 'runtime', 'runtime.path', 'install.json')) {
         $path = Join-Path $InstallRoot $owned
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
@@ -36,7 +37,7 @@ if ($Uninstall) {
     return
 }
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-@{ managedBy = 'hostbook'; runtime = (Join-Path $InstallRoot 'runtime') } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+@{ managedBy = 'hostbook'; runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('hostbook-install-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 function Download([string]$Url, [string]$Hash) {
@@ -61,15 +62,14 @@ function Release-Zip([string]$Repo, [string]$Version, [string]$Name, [string]$Su
     return $dest
 }
 try {
-    $runtime = Join-Path $InstallRoot 'runtime'
     if (!(Test-Path -LiteralPath (Join-Path $runtime 'bin\bash.exe'))) {
         Write-Host 'Setting up a private Git for Windows runtime (Bash, Git, OpenSSH and Unix tools)...'
         $archive = Download 'https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/PortableGit-2.56.1-64-bit.7z.exe' '9dd04a608ceb5f6ab32a73709e0ecb159d211da71b697c45ff81f6dd0c6b49c7'
-        $runtime = Join-Path $InstallRoot 'runtime'
-        # The official SFX requires doubled backslashes and runs post-install.bat itself.
-        $process = Start-Process -FilePath $archive -ArgumentList @('-y', '-gm2', ('-InstallPath="' + $runtime.Replace('\', '\\') + '"')) -Wait -PassThru
+            # Current Git SFX uses -o (the older -gm2/-InstallPath documentation no longer applies).
+        $process = Start-Process -FilePath $archive -ArgumentList @('-y', ('-o"' + $runtime + '"')) -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw "Git runtime extraction failed ($($process.ExitCode))." }
     }
+    if (!(Test-Path -LiteralPath (Join-Path $runtime 'bin\bash.exe'))) { throw "Portable runtime was not extracted to $runtime" }
     $bash = Join-Path $runtime 'bin\bash.exe'
     $env:PATH = "$bin;$runtime\usr\bin;$runtime\mingw64\bin;$runtime\cmd;$env:PATH"
     & $bash --noprofile --norc -c 'for t in git awk ssh ssh-agent ssh-add ssh-keygen curl tar cygpath mktemp; do command -v "$t" >/dev/null || exit 1; done'
@@ -91,15 +91,23 @@ try {
         & $git -c core.autocrlf=false clone --depth 1 -- $Repository $app
     }
     if ($LASTEXITCODE -ne 0) { throw 'Cannot download/update hostbook. Your existing host data has not been changed.' }
-    Copy-Item -LiteralPath (Join-Path $app 'windows\launch.ps1') -Destination (Join-Path $bin 'hostbook-launch.ps1') -Force
-    Copy-Item -LiteralPath (Join-Path $app 'windows\hostbook.cmd') -Destination $bin -Force
-    @{ managedBy = 'hostbook'; runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
-    & (Join-Path $bin 'hostbook-launch.ps1') setup
+    $launcher = Join-Path $bin 'hostbook.exe'
+    $launcherSource = Join-Path $app 'windows\launcher.cs'
+    $launcherHash = (Get-FileHash -LiteralPath $launcherSource -Algorithm SHA256).Hash
+    if (!(Test-Path -LiteralPath $launcher) -or $existing.launcherHash -ne $launcherHash) {
+        $compiled = Join-Path $temp 'hostbook.exe'
+        Add-Type -TypeDefinition ([IO.File]::ReadAllText($launcherSource)) -OutputAssembly $compiled -OutputType ConsoleApplication
+        if (Test-Path -LiteralPath $launcher) { Move-Item -LiteralPath $launcher -Destination "$launcher.old" -Force }
+        Copy-Item -LiteralPath $compiled -Destination $launcher
+    }
+    @{ managedBy = 'hostbook'; runtime = $runtime; launcherHash = $launcherHash } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+    [IO.File]::WriteAllText((Join-Path $InstallRoot 'runtime.path'), $runtime, (New-Object Text.UTF8Encoding($false)))
+    & $launcher setup
     if ($LASTEXITCODE -ne 0) { throw 'hostbook setup failed.' }
     Set-UserPath $true
     Write-Host "Installed hostbook at $InstallRoot"
     Write-Host 'Close and reopen Windows Terminal (all windows), then type hostbook in PowerShell.'
-    Write-Host ('Use now: & "' + (Join-Path $bin 'hostbook.cmd') + '"')
+    Write-Host ('Use now: & "' + (Join-Path $bin 'hostbook.exe') + '"')
     Write-Host 'Windows supports single-host sessions; tmux multi-host sessions require macOS, Linux or WSL.'
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue

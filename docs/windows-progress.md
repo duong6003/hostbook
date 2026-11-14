@@ -50,3 +50,19 @@ https://github.com/junegunn/fzf/releases/tag/v0.75.0
 https://github.com/charmbracelet/gum/releases/tag/v2.0.2
 https://github.com/FiloSottile/age/releases/tag/v1.3.2
 https://www.msys2.org/docs/filesystem-paths/
+
+## CI iteration 1
+
+Run 43602375742 (05ed793): Ubuntu and macOS complete green, including Ubuntu real Docker SSH.
+Windows failed at runtime extraction, before app install. The current official Git SFX
+source recognizes `-y -o`; its older official wiki still describes obsolete
+`-gm2 -InstallPath` flags, which returned zero while extracting elsewhere. Updated
+against https://github.com/git-for-windows/7-Zip (current SFXSetup.cpp), keeping the
+same Unicode/apostrophe destination probe.
+
+Independent review fixes: installer refuses unrelated nonempty roots and removes only
+owned files; checksum files are decoded explicitly; slash-leading age passwords are
+excluded from MSYS env conversion. Public launcher is now a tiny native .NET executable
+compiled with the built-in Windows C# compiler, because a CMD hop interprets fzf search
+operators such as `|`. Runtime remains internal Bash; no app rewrite or new framework.
+Versioned runtime directories allow runtime updates without replacing a running Bash.

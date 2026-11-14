@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 $root = $env:HOSTBOOK_WINDOWS_ROOT
 if (!$root) { throw 'Set HOSTBOOK_WINDOWS_ROOT to the installation under test.' }
-$launcher = Join-Path $root 'bin\hostbook-launch.ps1'
+$launcher = Join-Path $root 'bin\hostbook.exe'
 $runtime = (Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json).runtime
 $bash = Join-Path $runtime 'bin\bash.exe'
 $git = Join-Path $runtime 'cmd\git.exe'
@@ -17,13 +17,13 @@ function Quote-Native([string]$Value) {
 }
 function Invoke-Hostbook([string[]]$Arguments, [switch]$AllowFailure) {
     $start = New-Object Diagnostics.ProcessStartInfo
-    $start.FileName = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $start.FileName = $launcher
     $start.UseShellExecute = $false
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
     $start.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
-    $start.Arguments = ((@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcher) + $Arguments | ForEach-Object { Quote-Native $_ }) -join ' ')
+    $start.Arguments = (($Arguments | ForEach-Object { Quote-Native $_ }) -join ' ')
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()

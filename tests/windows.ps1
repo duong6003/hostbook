@@ -22,14 +22,15 @@ Write-Host 'ok    installer refuses an unrelated nonempty directory'
 function Assert([bool]$Ok, [string]$Message) { if (!$Ok) { throw $Message }; Write-Host "ok    $Message" }
 & (Join-Path $source 'install.ps1') -InstallRoot $root
 Assert ($LASTEXITCODE -eq 0) 'portable runtime installation completes'
-$launcher = Join-Path $root 'bin\hostbook.cmd'
+$launcher = Join-Path $root 'bin\hostbook.exe'
 $env:HOSTBOOK_WINDOWS_ROOT = $root
 $env:HOSTBOOK_PLATFORM_HELPER = Join-Path $root 'app\windows\platform.ps1'
-$bash = Join-Path $root 'runtime\bin\bash.exe'
-$env:PATH = "$root\bin;$root\runtime\usr\bin;$root\runtime\mingw64\bin;$root\runtime\cmd;$env:PATH"
-Assert ((& $launcher --version) -match '^hostbook ') 'cmd launcher supports version under spaced Unicode path'
-# A fresh command lookup finds the CMD shim even when PowerShell script policy is Restricted.
-Assert ((Get-Command hostbook).Source -eq $launcher) 'bare hostbook resolves the cmd launcher'
+$runtime = (Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | ConvertFrom-Json).runtime
+$bash = Join-Path $runtime 'bin\bash.exe'
+$env:PATH = "$root\bin;$runtime\usr\bin;$runtime\mingw64\bin;$runtime\cmd;$env:PATH"
+Assert ((& $launcher --version) -match '^hostbook ') 'native launcher supports version under spaced Unicode path'
+# A fresh command lookup finds the native executable even when PowerShell script policy is Restricted.
+Assert ((Get-Command hostbook).Source -eq $launcher) 'bare hostbook resolves the native launcher'
 & $bash --noprofile --norc -c 'cd "$1" && bash tests/platform.sh' test $source
 Assert ($LASTEXITCODE -eq 0) 'shared callback quoting and Windows capability checks'
 # Probe launcher argument transport independently of application argument interpretation.
@@ -39,9 +40,18 @@ $env:HB_ARG_FILE = Join-Path $testRoot 'arguments'
 try {
     [IO.File]::WriteAllText($entry, '#!/usr/bin/env bash' + "`n" + 'printf "%s\0" "$@" > "$(cygpath -u "$HB_ARG_FILE")"' + "`n", (New-Object Text.UTF8Encoding($false)))
     $values = @('a space', "apostrophe's", 'unicode-' + [char]0x1ec7, '', 'quote"inside', 'trailing\')
-    & (Join-Path $root 'bin\hostbook-launch.ps1') @values
+    $probe = New-Object Diagnostics.ProcessStartInfo
+    $probe.FileName = $launcher
+    $probe.UseShellExecute = $false
+    $probe.Arguments = (($values | ForEach-Object { '"' + [regex]::Replace([regex]::Replace($_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"' }) -join ' ')
+    $process = [Diagnostics.Process]::Start($probe)
+    $process.WaitForExit()
+    Assert ($process.ExitCode -eq 0) 'native launcher argument probe exits successfully'
     $actual = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($env:HB_ARG_FILE)).Split([char]0)
     Assert (($actual[0..($values.Count - 1)] -join '|') -ceq ($values -join '|')) 'launcher preserves spaces, Unicode, apostrophes, empty arguments, quotes and trailing slash'
+    & $launcher 'db|cache&literal'
+    $query = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($env:HB_ARG_FILE)).TrimEnd([char]0)
+    Assert ($query -eq 'db|cache&literal') 'PowerShell search operators are passed literally without a CMD hop'
 } finally { [IO.File]::WriteAllBytes($entry, $saved) }
 # Real native clipboard read/write, DPAPI encryption and NTFS permissions.
 & $bash --noprofile --norc (Join-Path $source 'tests\windows.sh')
