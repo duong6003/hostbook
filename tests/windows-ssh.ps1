@@ -16,6 +16,7 @@ function Quote-Native([string]$Value) {
     '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
 }
 function Invoke-Hostbook([string[]]$Arguments, [switch]$AllowFailure) {
+    Write-Host "probe hostbook $($Arguments[0])"
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $launcher
     $start.UseShellExecute = $false
@@ -31,6 +32,7 @@ function Invoke-Hostbook([string[]]$Arguments, [switch]$AllowFailure) {
         & taskkill.exe /PID $process.Id /T /F | Out-Null
         throw "hostbook $($Arguments[0]) timed out."
     }
+    if (!$stdout.Wait(5000) -or !$stderr.Wait(5000)) { throw "hostbook $($Arguments[0]) exited, but a descendant kept captured output handles open." }
     $result = [pscustomobject]@{ ExitCode = $process.ExitCode; Out = $stdout.Result.TrimEnd("`r", "`n"); Error = $stderr.Result }
     if ($result.ExitCode -ne 0 -and !$AllowFailure) { throw "hostbook $($Arguments[0]) failed ($($result.ExitCode)): $($result.Error)" }
     return $result
@@ -131,11 +133,16 @@ ForceCommand C:/Windows/System32/cmd.exe /c echo HOSTBOOK_WINDOWS_SSH_OK
     $binary = '"' + $sshd + '" -f "' + $serverConfig + '" -E "' + $serverLog + '"'
     New-Service -Name $service -BinaryPathName $binary -StartupType Manual | Out-Null
     $serviceCreated = $true
+    Write-Host 'Starting isolated Windows SSH server'
     Start-Service -Name $service
+    Write-Host 'Windows SSH service started'
     $listening = $false
     for ($attempt = 0; $attempt -lt 40; $attempt++) {
         $client = New-Object Net.Sockets.TcpClient
-        try { $client.Connect('127.0.0.1', $port); $listening = $true; break } catch { Start-Sleep -Milliseconds 250 } finally { $client.Dispose() }
+        try {
+            $connect = $client.ConnectAsync('127.0.0.1', $port)
+            if ($connect.Wait(250) -and $client.Connected) { $listening = $true; break }
+        } catch { Start-Sleep -Milliseconds 250 } finally { $client.Dispose() }
     }
     if (!$listening) { throw 'The fixture SSH server did not start.' }
 
