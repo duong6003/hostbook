@@ -58,6 +58,12 @@ web1 ubuntu@10.0.1.11 #prod #web
 api1 deploy@10.0.1.12:2222 #staging #api
 ```
 
+After import, the result shows how many hosts were added, updated, or skipped,
+with names, addresses, and projects. Choose **Xem các server vừa nhập** to open
+the list filtered to that import; press Escape to return to all hosts. Existing
+aliases are skipped when importing a text list or SSH config. Use a share bundle
+when you need to review and update conflicting hosts.
+
 ## File transfer and forwarding
 
 Select a host and press Right. The port-forwarding menu suggests ports from tags

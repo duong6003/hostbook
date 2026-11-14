@@ -90,6 +90,33 @@ for width in 60 100 200; do
  printf 'ok    TUI settings ở %s cột: xem trước và esc không lưu\n' "$width"
 done
 
+# The CLI result must open the actual imported subset, rather than exit after selection.
+cat > "$T/import.conf" <<'CONF'
+# tags: dev
+Host dev-api
+  HostName 192.0.2.10
+  User ubuntu
+Host dev-db
+  HostName 192.0.2.11
+  User ubuntu
+CONF
+start 100 "import $T/import.conf"
+wait_for 'Nhập?'
+tmux -L "$socket" send-keys -t ui Enter
+wait_for 'Tiếp theo'
+grep -q '2 mới' "$T/screen"
+grep -q '192.0.2.10' "$T/screen"
+cp "$T/screen" "$ARTIFACTS/import-result.txt"
+tmux -L "$socket" send-keys -t ui Enter
+wait_for 'Đang xem 2 server vừa nhập'
+wait_for dev-api
+if grep -q booking-api "$T/screen"; then cat "$T/screen"; exit 1; fi
+cp "$T/screen" "$ARTIFACTS/import-filtered.txt"
+tmux -L "$socket" send-keys -t ui Escape
+wait_for booking-api
+tmux -L "$socket" kill-session -t ui
+printf 'ok    TUI import CLI: kết quả, xem riêng server vừa nhập, esc về tất cả\n'
+
 # Fresh install: apply the suggested light theme only after the fzf list has loaded.
 for width in 60 100 200; do
  export HOME=$T/first-$width/home XDG_CONFIG_HOME=$T/first-$width/config HOSTBOOK_DIR=$T/first-$width/hosts HOSTBOOK_STATE=$T/first-$width/state HOSTBOOK_SSH_CONFIG=$T/first-$width/ssh_config
