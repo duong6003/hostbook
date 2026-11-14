@@ -35,6 +35,9 @@ bash tests/tui.sh
 bash tests/e2e.sh
 ```
 
+Changes to anything that runs per key press (preview, fzf binds, list, header, footer) must follow the
+performance rules and budgets in [AGENTS.md](https://github.com/duong6003/hostbook/blob/main/AGENTS.md).
+
 TUI tests skip if tmux is missing; E2E tests skip if Docker is unavailable. A skipped
 check is not evidence of a pass. CI runs on macOS, Ubuntu, and Windows. Ubuntu runs
 Docker SSH tests;
