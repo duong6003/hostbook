@@ -121,7 +121,7 @@ try {
     Set-UserPath $true
     Write-Host "Installed hostbook at $InstallRoot"
     Write-Host 'Close and reopen Windows Terminal (all windows), then type hostbook in PowerShell.'
-    Write-Host ('Use now: & "' + (Join-Path $bin 'hostbook.exe') + '"')
+    Write-Host ("Use now: & '" + $launcher.Replace("'", "''") + "'")
     Write-Host 'Windows supports single-host sessions; tmux multi-host sessions require macOS, Linux or WSL.'
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue

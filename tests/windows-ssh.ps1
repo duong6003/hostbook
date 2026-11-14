@@ -98,7 +98,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$t/client_key"
     Protect-ServerFile (Join-Path $fixture 'host_key')
     New-LocalUser -Name $user -Password (ConvertTo-SecureString $password -AsPlainText -Force) -AccountNeverExpires | Out-Null
     $userCreated = $true
-    Get-LocalGroup -SID 'S-1-5-32-545' | Add-LocalGroupMember -Member $user
+    Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-545').Name -Member $user
     # sshd authenticates a real non-admin Windows account. Its public auth file is fixture-only.
     $sid = (Get-LocalUser -Name $user).SID
     $acl = Get-Acl -LiteralPath $fixture
@@ -114,6 +114,7 @@ ssh-keygen -q -t ed25519 -N '' -f "$t/client_key"
     Write-Utf8 $serverConfig @"
 Port $port
 ListenAddress 127.0.0.1
+PidFile "$serverPath/sshd.pid"
 HostKey "$serverPath/host_key"
 AuthorizedKeysFile "$serverPath/client_key.pub"
 AllowUsers $user
@@ -164,7 +165,7 @@ Host *
     foreach ($hostName in @('e-key', 'e-pass')) {
         $result = Invoke-Hostbook @('_run', $hostName, 'echo', 'ignored-by-fixture-forcecommand')
         if ($result.Out -ne 'HOSTBOOK_WINDOWS_SSH_OK') { throw "Unexpected SSH result for $hostName`: $($result.Out) $($result.Error)" }
-        Write-Host "ok    real SSH login using $hostName via PowerShell launcher"
+        Write-Host "ok    real SSH login using $hostName via the native launcher from PowerShell"
     }
     Invoke-Hostbook @('lock') | Out-Null
     $agentProbe = Join-Path $fixture 'agent-probe.sh'

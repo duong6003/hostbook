@@ -2530,7 +2530,7 @@ shortcut_free(){ local out; out=$("${SHELL:-/bin/sh}" -ic "type $1" </dev/null 2
   case $out in *hostbook*) return 0;; esac; return 1; }
 shortcut_name(){ grep -hoE '^alias (hb|hop)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
 install_hint(){
-  if is_windows; then printf 'Cài lại từ PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File "%s"\n' "$(native_path "$(dirname "$SELF")/install.ps1")"
+  if is_windows; then printf "Cài lại từ PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File '%s'\n" "$(native_path "$(dirname "$SELF")/install.ps1" | sed "s/'/''/g")"
   else printf 'Cài lại: curl -fsSL %s/raw/main/install.sh | bash\n' "$REPO_URL"; fi
 }
 check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "Cần age >= $AGE_MIN cho kho secret" >&2; install_hint >&2; return 1; }; }

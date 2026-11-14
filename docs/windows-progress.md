@@ -78,3 +78,14 @@ Run 43603552810 (5238024) additionally passed CRLF hosts/settings/groups. Its ad
 first-machine sourced-function probe incorrectly imposed `set -e` on an app written
 without errexit; corrected the harness to match app semantics, retaining commit assertion.
 Real SSH, native interactive callbacks, update/uninstall still pending full runner pass.
+
+## Combined Windows run
+
+Run 43604623891 (9964fa7): managed install, argv/search operators, native security/
+clipboard, first machine without global Git identity, update/PATH idempotence,
+**real native interactive fzf start and preview callbacks**, and safe uninstall all
+passed. The only remaining failure was the SSH test's Add-LocalGroupMember pipeline
+parameter binding before server startup; changed to an explicit group argument.
+Native Git/age paths are now converted explicitly: MSYS heuristics failed for a literal
+apostrophe in the installation path. Platform checks now also exercise quoted legacy
+migration and index refresh inside a spaced directory (11 total).
