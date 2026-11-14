@@ -29,8 +29,8 @@ from paying that cost on every key press.
    install-time facts on every invocation (`check_deps` versions; #5).
 5. **Background work reloads the UI only when something changed** (`notify_fzf` after sync; #6).
 6. **Every child process must die with its terminal.**
-   - `trap … EXIT` makes bash 3.2 defer SIGHUP while a `gum`/`fzf` child runs, so closing the terminal can orphan
-     both (#4).
+   - `trap … EXIT` makes bash 3.2 defer SIGHUP while a `gum`/`fzf` child runs, so closing the terminal could orphan
+     both (#4). Top-level commands therefore run under a trap-free parent (top of `hostbook`); keep it trap-free.
    - Tests that drive the app through tmux must leave screens with keys, or kill the pane's process group. A bare
      `kill-session` is not enough (#3).
    - After TUI tests, this must print nothing:

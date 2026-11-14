@@ -4,8 +4,8 @@ set -eu
 command -v tmux >/dev/null || { echo 'Bỏ qua TUI: chưa có tmux'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
 T=$(mktemp -d); socket=hb-ui-$$
-# kill-session only HUPs the pane leader; hostbook defers it while gum/fzf runs and gum never exits.
-# So kill each pane's whole process group first (pane pid is its session and group leader).
+# Do not rely on the app for teardown (#3): kill each pane's whole process group first (pane pid is its session and
+# group leader). close_check below tests what a real terminal close does.
 end_ui(){
   local p groups=''
   for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do
@@ -139,6 +139,25 @@ tmux -L "$socket" send-keys -t ui Escape
 wait_for booking-api
 end_ui
 printf 'ok    TUI import CLI: kết quả, xem riêng server vừa nhập, esc về tất cả\n'
+
+# Closing the terminal on a gum menu must end hostbook and gum and clear $STATE/tmp (#4).
+# A closing terminal only HUPs the pane leader, which is exactly a plain kill-session: do not use end_ui here.
+export HOSTBOOK_STATE=$T/close-state; "$S" _index >/dev/null
+close_check(){
+  tmux -L "$socket" list-panes -a -F '#{pane_pid}' >> "$T/pgids"
+  tmux -L "$socket" kill-session -t ui
+  leak_check
+  if [ -n "$(ls "$HOSTBOOK_STATE/tmp" 2>/dev/null)" ]; then ls "$HOSTBOOK_STATE/tmp"; echo "FAIL TUI: đóng terminal ở $1 còn file tạm"; exit 1; fi
+  printf 'ok    TUI đóng terminal ở %s: không còn process, đã xoá file tạm\n' "$1"
+}
+start 100
+wait_for booking-api
+tmux -L "$socket" send-keys -t ui Down Right   # the group row comes first
+wait_for 'SSH vào server'
+close_check 'menu server'
+start 100 settings
+wait_for 'Kiểu danh sách'
+close_check 'Giao diện'
 
 # Cursor moves must not wait for a hostbook boot (#1, ~100 ms each), and → still acts on the focused row.
 export HOSTBOOK_DIR=$T/many/hosts HOSTBOOK_STATE=$T/many/state HOSTBOOK_SSH_CONFIG=$T/many/ssh_config

@@ -9,6 +9,14 @@
 #
 # Requires git, fzf >= 0.63, gum >= 0.14, and tmux to open multiple servers. Bash 3.2 compatible; Windows uses the managed Git for Windows runtime.
 set -u
+# Closing the terminal must end hostbook and its gum/fzf (#4). "trap cleanup EXIT" makes bash defer SIGHUP until the
+# foreground child exits, and gum ignores a revoked terminal. So the terminal's process is this trap-free parent: it
+# dies on SIGHUP at once, the kernel then hangs up the whole foreground group, and the app below runs cleanup.
+# Internal _* callbacks skip it (hot paths), and so do Windows and tests that source this file.
+if [ -z "${HOSTBOOK_APP:-}" ] && [ "${BASH_SOURCE:-}" = "$0" ]; then
+  case ${1:-}:$OSTYPE in _*|*:msys*|*:cygwin*) ;; *) HOSTBOOK_APP=1 "$BASH" "$0" "$@"; exit;; esac
+fi
+unset HOSTBOOK_APP
 umask 077   # only the machine owner can read the server list and state
 VERSION=0.4.0
 FZF_MIN=0.63; GUM_MIN=0.14; AGE_MIN=1.3.0
@@ -47,8 +55,10 @@ E=$'\033'; C0="$E[0m"; CB="$E[1m"
 
 # ---------- helpers ----------
 LOCK_HELD=""
-cleanup(){ rm -rf "$STATE/tmp/$$".* 2>/dev/null; [ -n "$LOCK_HELD" ] && rmdir "$STATE/sync.lock" 2>/dev/null; return 0; }
-trap cleanup EXIT
+# A closing terminal can send SIGHUP twice. Bash's default handling of a second one kills it before the EXIT trap,
+# so trap HUP explicitly, and keep rm/rmdir from dying of it.
+cleanup(){ trap '' HUP; rm -rf "$STATE/tmp/$$".* 2>/dev/null; [ -n "$LOCK_HELD" ] && rmdir "$STATE/sync.lock" 2>/dev/null; return 0; }
+trap cleanup EXIT; trap 'exit 129' HUP
 # Only the owner can read temporary directories; plaintext secrets must stay here. Removed automatically on exit.
 tmpd(){ private_dir "$STATE/tmp" || return 1; mktemp -d "$STATE/tmp/$$.XXXXXX"; }
 # Only ciphertext is shared with askpass children. Each top-level invocation gets a fresh DPAPI cache.
