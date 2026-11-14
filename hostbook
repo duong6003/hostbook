@@ -266,11 +266,14 @@ cmd_header(){
       *) long="${CD}kho ở $(kho_addr) · chưa kiểm tra${C0}"; short="${CD}chưa kiểm tra kho${C0}";;
     esac
   fi
-  line1="${CU}${CB}hostbook${C0} ${CD}$(hostname -s) · $n server${C0}"; p1=$(strip_ansi "$line1")
-  pl=$(strip_ansi "$long")
+  local hn ps room; hn=$(hostname -s); room=$(( cols - ${#n} - 22 ))   # tên máy dài (máy CI, máy công ty) thì cắt bớt
+  [ ${#hn} -gt $room ] && { [ $room -gt 4 ] && hn="${hn:0:$((room - 1))}…" || hn=""; }
+  line1="${CU}${CB}hostbook${C0} ${CD}${hn:+$hn · }$n server${C0}"; p1=$(strip_ansi "$line1")
+  pl=$(strip_ansi "$long"); ps=$(strip_ansi "$short")
   if [ $(( ${#p1} + ${#pl} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$long"
   elif [ $(( ${#pl} + 4 )) -le "$cols" ]; then printf '%s\n%s\n' "$line1" "$long"
-  else printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$short"; fi
+  elif [ $(( ${#p1} + ${#ps} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$short"
+  else printf '%s\n%s\n' "$line1" "$short"; fi
   [ -n "$fl" ] && printf '%s\n' "$fl"
   if [ "$n" = 0 ]; then   # trạng thái trống: mỗi việc một dòng, không bị cắt ở màn hẹp
     printf '\n%sChưa có server nào.%s\n\n' "$CB" "$C0"

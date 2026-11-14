@@ -252,7 +252,9 @@ check "màn hẹp: phần nhìn thấy có tên, tag, IP" 'vis "$narrow" 56 | gr
 check "màn hẹp: user và dự án bị đẩy ra sau nhưng vẫn tìm được" '! vis "$narrow" 56 | grep -q "@ubuntu" && printf "%s" "$narrow" | grep -q "@ubuntu" && printf "%s" "$narrow" | grep -q "project-a"'
 check "màn rộng: thấy cả user, dự án, mô tả" 'vis "$wide" 120 | grep -q "@ubuntu.*project-a.*Cổng vào project A"'
 check "tag bị cắt vẫn tìm được" 'COLUMNS=60 "$S" _list | strip | grep "^h:a-db" | grep -q "#postgres"'
-check "phần đầu màn hẹp dùng thông báo ngắn, không bị cắt" '[ "$(COLUMNS=50 "$S" _header | strip | head -1 | wc -m | tr -d " ")" -le 50 ]'
+printf '#!/bin/sh\necho runner-very-long-hostname-from-a-ci-machine-1234567890\n' > "$T/fakebin/hostname"; chmod +x "$T/fakebin/hostname"
+check "phần đầu màn hẹp không tràn, kể cả khi tên máy rất dài" '[ -z "$(COLUMNS=50 PATH="$T/fakebin:$PATH" "$S" _header | strip | awk "length(\$0) > 48")" ] && COLUMNS=50 PATH="$T/fakebin:$PATH" "$S" _header | strip | grep -q "server"'
+rm -f "$T/fakebin/hostname"
 
 # ---- giải thích lỗi kết nối từ nhật ký ssh ----
 out=$(printf 'debug1: Connecting to 203.0.113.10 [203.0.113.10] port 22.\nssh: connect to host 203.0.113.10 port 22: Operation timed out\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
