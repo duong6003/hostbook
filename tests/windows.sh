@@ -34,3 +34,13 @@ echo 'ok    native age can decrypt a slash-leading passphrase unchanged across p
 # Filtering is a CLI-only probe; windows-fzf.ps1 tests real interactive callbacks.
 printf 'host\n' | fzf --filter host >/dev/null
 echo 'ok    native fzf CLI filter'
+# Simulate the first-machine choice with only UI decisions stubbed; no global Git identity exists.
+(
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+  pick(){ echo 1; }; confirm(){ return 1; }; setting_pick(){ return 1; }
+  clear(){ :; }; box(){ :; }; title(){ :; }; pause(){ :; }
+  first_run
+  g log -1 --format=%s | grep -q .
+)
+echo 'ok    first-machine setup creates its first commit without a preconfigured Git identity'

@@ -36,6 +36,14 @@ if ($Uninstall) {
     Write-Host 'Removed hostbook and its managed runtime/dependencies. Your SSH hosts, vault and settings remain.'
     return
 }
+# Protect the managed code before placing executable files in a custom installation directory.
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+if (Test-Path -LiteralPath $InstallRoot) { Set-Acl -LiteralPath $InstallRoot -AclObject $acl }
+else { [IO.Directory]::CreateDirectory($InstallRoot, $acl) | Out-Null }
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 @{ managedBy = 'hostbook'; runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('hostbook-install-' + [Guid]::NewGuid().ToString('N'))
@@ -65,7 +73,7 @@ try {
     if (!(Test-Path -LiteralPath (Join-Path $runtime 'bin\bash.exe'))) {
         Write-Host 'Setting up a private Git for Windows runtime (Bash, Git, OpenSSH and Unix tools)...'
         $archive = Download 'https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/PortableGit-2.56.1-64-bit.7z.exe' '9dd04a608ceb5f6ab32a73709e0ecb159d211da71b697c45ff81f6dd0c6b49c7'
-            # Current Git SFX uses -o (the older -gm2/-InstallPath documentation no longer applies).
+        # Current Git SFX uses -o (the older -gm2/-InstallPath documentation no longer applies).
         $process = Start-Process -FilePath $archive -ArgumentList @('-y', ('-o"' + $runtime + '"')) -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw "Git runtime extraction failed ($($process.ExitCode))." }
     }

@@ -8,6 +8,7 @@ mkdir -p "$HOME"
 sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
 # shellcheck disable=SC1090
 . "$T/lib"
+trap 'cleanup; rm -rf "$T"' EXIT
 : > "$IDX"
 pass=0; fail=0
 check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
@@ -22,6 +23,14 @@ mkdir -p "$DIR"
 printf 'Host example\n%s\n' "$(login_lines "$T/a space.pub")" > "$DIR/fixture.conf"
 : > "$T/a space.pub"
 check 'legacy key discovery keeps the entire quoted path' '[ "$(legacy_keys | cut -f1)" = "$T/a space.pub" ]'
+printf 'Host crlf\r\n  HostName 127.0.0.1\r\n  User fixture\r\n' > "$DIR/crlf.conf"
+printf 'Include "%s/*.conf"\n' "$DIR" > "$T/crlf-ssh"
+SSHCFG=$T/crlf-ssh
+check 'CRLF Host lines remain discoverable' '[ "$(index_file "$DIR/crlf.conf" | cut -f1)" = crlf ]'
+mkdir -p "$CONF"; printf 'list = compact\r\n' > "$CFG"
+check 'CRLF settings preserve values' '[ "$(cfg list cards)" = compact ]'
+printf 'fixture\ttabs\tcrlf example\r\n' > "$GRP"
+check 'CRLF groups preserve host names' '[ "$(group_field fixture 3)" = "crlf example" ]'
 is_windows(){ return 0; }
 export HOSTBOOK_KEYCHAIN="file:$T/cache/identity"
 check 'Windows refuses plaintext file identity cache overrides' '[ "$(kc_backend)" = windows ]'

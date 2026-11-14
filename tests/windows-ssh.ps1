@@ -166,6 +166,12 @@ Host *
         if ($result.Out -ne 'HOSTBOOK_WINDOWS_SSH_OK') { throw "Unexpected SSH result for $hostName`: $($result.Out) $($result.Error)" }
         Write-Host "ok    real SSH login using $hostName via PowerShell launcher"
     }
+    Invoke-Hostbook @('lock') | Out-Null
+    $agentProbe = Join-Path $fixture 'agent-probe.sh'
+    Write-Utf8 $agentProbe '. "$HOSTBOOK_STATE/agent.env"; ssh-add -l >/dev/null 2>&1; [ $? -eq 1 ]'
+    & $bash --noprofile --norc $agentProbe.Replace('\', '/')
+    if ($LASTEXITCODE -ne 0) { throw 'hostbook lock did not remove keys from its fallback agent.' }
+    Write-Host 'ok    lock finds the private agent across separate PowerShell invocations'
     if (!(Test-Path -LiteralPath (Join-Path $fixture 'askpass.log')) -or
         !(Select-String -LiteralPath (Join-Path $fixture 'askpass.log') -Pattern 'password' -Quiet)) { throw 'Password SSH did not exercise hostbook askpass.' }
     Write-Host 'ok    native Git SSH invokes the hostbook askpass script'
