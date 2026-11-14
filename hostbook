@@ -409,13 +409,13 @@ list_rows_minimal(){ list_rows minimal "$1"; }
 cmd_list(){ ensure_index; local style=${1:-$(cfg list cards)}; list_data | "list_rows_$style" "$(list_width)"; }
 # The CLI always uses single-line rows, regardless of the selected display style.
 search_hosts(){ cmd_list compact | grep '^h:' | fzf --filter "$*" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 | sed 's/^h://'; }
-fzf_opts(){ # one argument per line for a Bash array, without eval
+fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eval
   local border preview
   border=$(cfg border rounded); preview=$(cfg preview right)
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
   else printf '%s\n' "--style=full:$border" '--input-label= Tìm ' "--list-label= $(wc -l < "$IDX" | tr -d ' ') server " '--preview-label= Chi tiết '; fi
   case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
-  printf '%s\n' "--bind=ctrl-/:toggle-preview+reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footer {1})" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
+  printf '%s\n' "--bind=ctrl-/:toggle-preview+reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footers $(printf %q "$1") {1})" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
     echo --read0
     if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=╌'; fi
@@ -502,9 +502,20 @@ cmd_header(){
 }
 
 cmd_footer(){
-  local t=${1%%:*} c=${FZF_SELECT_COUNT:-0}
-  [ -n "${1:-}" ] && printf '%s\n' "$1" > "$STATE/current"   # current row for → and ^e (fzf returns selected rows only)
-  local cols used=2; cols=$(list_width)
+  [ -z "${1:-}" ] || printf '%s\n' "$1" > "$STATE/current"   # current row for → and ^e (fzf returns selected rows only)
+  footer_line "${1%%:*}" "${FZF_SELECT_COUNT:-0}" "$(list_width)"
+}
+# The focus/multi binds read these files inline: booting hostbook there blocked every cursor move ~100 ms (#1).
+cmd_footers(){ # dir [row]: write f-h f-g f-s f-x and f-m<digits> (printf format, %s = count); with row, print its footer
+  local cols t n o; cols=$(list_width)
+  for t in h g s x; do footer_line "$t" 0 "$cols" > "$1/f-$t"; done
+  for n in 1 10 100 1000; do   # the count's digits change which keys fit
+    o=$(footer_line '' "$n" "$cols"); o=${o//\%/%%}; printf '%s\n' "${o/"mở $n server"/mở %s server}" > "$1/f-m${#n}"
+  done
+  [ $# -lt 2 ] || { [ -z "$2" ] || printf '%s\n' "$2" > "$STATE/current"; footer_line "${2%%:*}" "${FZF_SELECT_COUNT:-0}" "$cols"; }
+}
+footer_line(){ # row-type select-count list-width
+  local t=$1 c=$2 cols=$3 used=2
   k(){ local w=$(( ${#1} + ${#2} + 4 )); [ $(( used + w )) -gt "$cols" ] && return 0; used=$(( used + w )); printf '%s%s%s %s%s%s   ' "$CP" "$1" "$C0" "$CD" "$2" "$C0"; }   # omit lower-priority keys at the end when space runs out
   if [ "$c" -gt 0 ]; then k enter "mở $c server"; k '→' 'thao tác khác'; k '^y' 'chia sẻ'; k esc 'bỏ chọn'; k '^g' 'lưu thành nhóm'; k tab 'chọn thêm'
   else case $t in
@@ -2518,24 +2529,30 @@ cmd_demo(){ # fixed sample data; no network checks or changes to real configurat
 
 # ---------- main screen ----------
 home(){
-  local q=${1:-} out rc key sel first t n hosts opt opts=()
+  local q=${1:-} out rc key sel first t n hosts opt opts=() fd foot ft
   # fzf control-port token: only child processes of this invocation may send commands
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err 'Không tạo được khoá cho ô tìm'; return 1; }; export FZF_API_KEY
   clip_offer
+  fd=$(tmpd) || return 1
+  # Runs in $SHELL on every focus/multi event: POSIX only, builtins only (no hostbook boot; #1).
+  foot="t={1}; [ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$STATE/current"); c=\${FZF_SELECT_COUNT:-0}
+    if [ \"\$c\" -gt 0 ]; then n=\${#c}; [ \$n -lt 4 ] || n=4; IFS= read -r f < $(printf %q "$fd")/f-m\$n; printf \"\$f\\n\" \"\$c\"
+    else case \$t in [hgs]:*) n=\${t%%:*};; *) n=x;; esac; IFS= read -r f < $(printf %q "$fd")/f-\$n; printf '%s\n' \"\$f\"; fi"
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }
     ADDED=""; rm -f "$STATE/current" "$STATE/share-request"
-    opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts)
+    cmd_footers "$fd"; IFS= read -r ft < "$fd/f-x"
+    opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts "$fd")
     out=$(cmd_list | fzf "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost='Tìm theo tên, #tag, @user, IP, mô tả…' --marker='+' \
-      --header "$(cmd_header)" --footer "$(cmd_footer)" \
+      --header "$(cmd_header)" --footer "$ft" \
       --preview "$(self_cmd) _preview {1}" --gutter=' ' --ellipsis='' --no-hscroll \
-      --bind "resize:reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footer {1})" \
+      --bind "resize:reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footers $(printf %q "$fd") {1})" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
       --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
-      --bind "focus:transform-footer($(self_cmd) _footer {1})" --bind "multi:transform-footer($(self_cmd) _footer {1})" \
+      --bind "focus:transform-footer:$foot" --bind "multi:transform-footer:$foot" \
       --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list
@@ -2675,7 +2692,7 @@ apply_theme
 # ---------- entry point ----------
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
-  _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";;
+  _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
              printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _explain) ensure_index; explain "$2" "$3" pane;;

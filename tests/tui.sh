@@ -137,6 +137,27 @@ wait_for booking-api
 end_ui
 printf 'ok    TUI import CLI: kết quả, xem riêng server vừa nhập, esc về tất cả\n'
 
+# Cursor moves must not wait for a hostbook boot (#1, ~100 ms each), and → still acts on the focused row.
+export HOSTBOOK_DIR=$T/many/hosts HOSTBOOK_STATE=$T/many/state HOSTBOOK_SSH_CONFIG=$T/many/ssh_config
+mkdir -p "$HOSTBOOK_DIR"; printf 'Include %s/*.conf\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
+for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20; do printf 'Host many%s\n  HostName 127.0.0.1\n' "$i"; done > "$HOSTBOOK_DIR/many.conf"
+git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
+"$S" _index >/dev/null
+printf 'list = compact\n' > "$XDG_CONFIG_HOME/hostbook/config"
+start 100
+wait_for many01
+sleep 1   # let the first focus and preview settle
+ms=$(perl -MTime::HiRes=time,sleep -e '
+  sub row { my @l = split /\n/, `tmux -L $ARGV[0] capture-pane -p -t ui`; for (0..$#l) { return $_ if $l[$_] =~ /^│ ▌/ } -1 }
+  my $want = row() + 10; my $s = time; system("tmux", "-L", $ARGV[0], "send-keys", "-t", "ui", ("Down") x 10);
+  while (time - $s < 5) { if (row() == $want) { printf "%.0f", (time - $s) * 1000; exit } sleep .005 } print 9999' "$socket")
+if [ "$ms" -ge 300 ]; then cat "$T/screen"; echo "FAIL TUI: 10 × ↓ mất $ms ms (cần < 300 ms)"; exit 1; fi
+tmux -L "$socket" send-keys -t ui Tab Right   # one row selected, focus on the next: → acts on the focused row
+wait_for 'SSH vào server'
+grep -q many12 "$T/screen" || { cat "$T/screen"; echo 'FAIL TUI: → không mở server đang trỏ'; exit 1; }
+end_ui
+printf 'ok    TUI 10 × ↓ trong %s ms, → mở server đang trỏ khi có chọn bằng tab\n' "$ms"
+
 # Fresh install: apply the suggested light theme only after the fzf list has loaded.
 for width in 60 100 200; do
  export HOME=$T/first-$width/home XDG_CONFIG_HOME=$T/first-$width/config HOSTBOOK_DIR=$T/first-$width/hosts HOSTBOOK_STATE=$T/first-$width/state HOSTBOOK_SSH_CONFIG=$T/first-$width/ssh_config

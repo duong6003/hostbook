@@ -147,6 +147,9 @@ check "có lại kết nối: đẩy phần đang chờ" '[ "$(sed -n 1p "$HOSTB
 
 check "chân màn hình đổi khi chọn nhiều" 'FZF_SELECT_COUNT=3 "$S" _footer h:a-web1 | strip | grep -q "mở 3 server"'
 check "chân màn hình cho nhóm" 'FZF_SELECT_COUNT=0 "$S" _footer g:prod-web | strip | grep -q "mở nhóm"'
+check "chân màn hình tính sẵn khớp _footer (focus/multi không boot lại)" '( mkdir -p "$T/ft"; "$S" _footers "$T/ft" >/dev/null
+  for t in h g s x; do [ "$(cat "$T/ft/f-$t")" = "$(FZF_SELECT_COUNT=0 "$S" _footer $t:a)" ] || exit 1; done
+  for c in 3 12; do [ "$(printf "$(cat "$T/ft/f-m${#c}")" $c)" = "$(FZF_SELECT_COUNT=$c "$S" _footer h:a-web1)" ] || exit 1; done )'
 
 # ---- regression tests for bugs found during review ----
 printf 'webs\t\ta-web1 a-web2\n' >> "$HOSTBOOK_DIR/groups.tsv"
