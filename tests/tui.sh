@@ -7,20 +7,23 @@ T=$(mktemp -d); socket=hb-ui-$$
 # kill-session only HUPs the pane leader; hostbook defers it while gum/fzf runs and gum never exits.
 # So kill each pane's whole process group first (pane pid is its session and group leader).
 end_ui(){
-  local p
+  local p groups=''
   for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do
-    echo "$p" >> "$T/pgids"; kill -TERM -- "-$p" 2>/dev/null || :
+    case $p in ''|*[!0-9]*|0|1) continue;; esac   # -0/-1 would signal our own group or every process
+    echo "$p" >> "$T/pgids"; groups="$groups $p"; kill -TERM -- "-$p" 2>/dev/null || :
   done
   sleep .2
-  for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -KILL -- "-$p" 2>/dev/null || :; done
+  # A pane closes once its leader exits while gum may survive in the group, so KILL the groups just signalled, not live panes.
+  for p in $groups; do kill -KILL -- "-$p" 2>/dev/null || :; done
   tmux -L "$socket" kill-server 2>/dev/null || :
 }
 leak_check(){
   local i=0 left
   while :; do
-    left=$(ps -axo pgid=,ppid=,command= | awk -v f="$T/pgids" 'BEGIN{while((getline l<f)>0)g[l]=1} ($1 in g)')
+    left=$(ps -axo pgid=,pid=,command= | awk -v f="$T/pgids" 'BEGIN{while((getline l<f)>0)g[l]=1} ($1 in g)')
     [ -z "$left" ] && return 0
-    i=$((i+1)); [ "$i" -lt 30 ] || { printf '%s\n' "$left"; echo 'FAIL TUI: process còn sót sau khi đóng session'; return 1; }
+    i=$((i+1)); [ "$i" -lt 30 ] || { printf '%s\n' "$left"; echo 'FAIL TUI: process còn sót sau khi đóng session'
+      kill -KILL $(printf '%s\n' "$left" | awk '{print $2}') 2>/dev/null || :; return 1; }   # report, then do not leave them running
     sleep .1
   done
 }
