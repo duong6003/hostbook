@@ -2350,7 +2350,7 @@ setting_pick(){
     fzf --ansi --layout=reverse --height=100% --delimiter="$TAB" --with-nth=2 --accept-nth=1 \
       --prompt='> ' --header "$heading · enter lưu · esc huỷ" --color="$(fzf_colors)" \
       --preview "'$SELF' _demo '$key='{1}" --preview-window='right,65%,wrap' \
-      ${selected:+--bind="start:pos($selected)"}) || return 1
+      ${selected:+--bind="load:pos($selected)"}) || return 1
   if [ "$key" = preset ]; then apply_preset "$out"; else cfg_set "$key" "$out"; fi
   apply_theme
 }

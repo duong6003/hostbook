@@ -45,8 +45,8 @@ wait_for(){
 }
 start(){
   local cmd
-  printf -v cmd 'env HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q /bin/bash %q %s' \
-    "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "$S" "${2:-}"
+  printf -v cmd 'env HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash COLORFGBG=%q /bin/bash %q %s' \
+    "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
   tmux -L "$socket" new-session -d -x "$1" -y 36 -s ui "$cmd"
 }
 for width in 60 100 200; do
@@ -88,4 +88,25 @@ for width in 60 100 200; do
  cmp "$T/before" "$XDG_CONFIG_HOME/hostbook/config"
  tmux -L "$socket" kill-session -t ui
  printf 'ok    TUI settings ở %s cột: xem trước và esc không lưu\n' "$width"
+done
+
+# Cài mới: gợi ý theme Sáng chỉ được áp dụng sau khi danh sách fzf nạp xong.
+for width in 60 100 200; do
+ export HOME=$T/first-$width/home XDG_CONFIG_HOME=$T/first-$width/config HOSTBOOK_DIR=$T/first-$width/hosts HOSTBOOK_STATE=$T/first-$width/state HOSTBOOK_SSH_CONFIG=$T/first-$width/ssh_config
+ export COLORFGBG='0;15'
+ mkdir -p "$HOME"
+ start "$width"
+ wait_for 'Bắt đầu thế nào?'
+ tmux -L "$socket" send-keys -t ui Down Enter
+ wait_for 'Kết nối kho ngay'
+ tmux -L "$socket" send-keys -t ui Right Enter
+ wait_for 'light · right'
+ tmux -L "$socket" send-keys -t ui Enter
+ wait_for 'enter để bắt đầu'
+ grep -qx 'theme = light' "$XDG_CONFIG_HOME/hostbook/config"
+ grep -qx 'list = cards' "$XDG_CONFIG_HOME/hostbook/config"
+ tmux -L "$socket" send-keys -t ui Enter
+ wait_for 'Chưa có server nào'
+ tmux -L "$socket" kill-session -t ui
+ printf 'ok    TUI cài mới ở %s cột: nền sáng chọn light, lưu và mở app\n' "$width"
 done
