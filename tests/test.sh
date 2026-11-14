@@ -267,12 +267,12 @@ out=$(printf 'debug1: Remote protocol version 2.0\nHost key verification failed.
 check "host key đổi: cảnh báo, hỏng ở bước xác minh" 'printf "%s" "$out" | grep -q "Host key của a-gate đã thay đổi" && printf "%s" "$out" | grep -q "✗ Xác minh host key"'
 
 # ---- lối tắt khi cài ----
-H1=$(mktemp -d); printf 's(){ echo "lệnh s riêng của người dùng"; }\n' > "$H1/.bashrc"
+H1=$(mktemp -d); printf 'hb(){ echo "lệnh hb riêng của người dùng"; }\n' > "$H1/.bashrc"
 HOME=$H1 SHELL=/bin/bash "$S" setup >/dev/null 2>&1
-check "s đã có người dùng: không đè, dùng hb" 'grep -qx "alias hb=hostbook" "$H1/.bashrc" && ! grep -q "alias s=hostbook" "$H1/.bashrc"'
-H2=$(mktemp -d); : > "$H2/.bashrc"
+check "hb đã có người dùng: không đè, dùng hop" 'grep -qx "alias hop=hostbook" "$H1/.bashrc" && ! grep -q "alias hb=hostbook" "$H1/.bashrc"'
+H2=$(mktemp -d); printf '# hostbook: tìm và kết nối server SSH\nalias s=hostbook\n' > "$H2/.bashrc"
 HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1; HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1
-check "s còn trống: dùng s, chạy setup lại không thêm trùng" '[ "$(grep -c "alias s=hostbook" "$H2/.bashrc")" = 1 ] && ! grep -q "alias hb=" "$H2/.bashrc"'
+check "máy cũ có alias s: chuyển sang hb, chạy lại không thêm trùng" '[ "$(grep -c "alias hb=hostbook" "$H2/.bashrc")" = 1 ] && ! grep -q "alias s=" "$H2/.bashrc" && [ "$(grep -c "^# hostbook" "$H2/.bashrc")" = 1 ]'
 rm -rf "$H1" "$H2"
 
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]

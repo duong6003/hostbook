@@ -1255,7 +1255,7 @@ home(){
 # để thấy cả alias do plugin (oh-my-zsh…) tạo ra chứ không chỉ những gì nằm trong PATH.
 shortcut_free(){ local out; out=$("${SHELL:-/bin/sh}" -ic "type $1" </dev/null 2>/dev/null) || return 0
   case $out in *hostbook*) return 0;; esac; return 1; }
-shortcut_name(){ grep -hoE '^alias (s|hb)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
+shortcut_name(){ grep -hoE '^alias (hb|hop)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
 check_deps(){ # report: in từng dòng; im lặng: trả về 1 và in hướng dẫn nếu thiếu
   local bad=0 v
   have git || { err "Thiếu git"; bad=1; }
@@ -1281,13 +1281,15 @@ setup(){
   else ok "~/.ssh/config đã có Include"; fi
   case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac
   if [ -n "$rc_file" ]; then
-    if grep -qs '^alias s=sshm$' "$rc_file"; then sed -i.bak 's/^alias s=sshm$/alias s=hostbook/; s/^# sshm: tìm và kết nối server SSH$/# hostbook: tìm và kết nối server SSH/' "$rc_file" && rm -f "$rc_file.bak"; ok "Lối tắt s giờ mở hostbook"
-    elif ! grep -qsE '^alias (s|hb)=hostbook$' "$rc_file"; then
+    # bản cũ dùng lối tắt "s" (quá chung chung, dễ trùng): bỏ đi, chuyển sang hb
+    if grep -qsE '^alias s=(sshm|hostbook)$' "$rc_file"; then
+      sed -i.bak -E '/^# (sshm|hostbook): tìm và kết nối server SSH$/d; /^alias s=(sshm|hostbook)$/d' "$rc_file" && rm -f "$rc_file.bak"; ok "Đã bỏ lối tắt cũ s"; fi
+    if ! grep -qsE '^alias (hb|hop)=hostbook$' "$rc_file"; then
       local sc="" c
-      for c in s hb; do shortcut_free "$c" && { sc=$c; break; }; done
+      for c in hb hop; do shortcut_free "$c" && { sc=$c; break; }; done
       if [ -n "$sc" ]; then printf '\n# hostbook: tìm và kết nối server SSH\nalias %s=hostbook\n' "$sc" >> "$rc_file"
-        if [ "$sc" = s ]; then ok "Đã thêm lối tắt s vào $(basename "$rc_file")"; else ok "s đã được dùng cho việc khác trên máy này, lối tắt là hb"; fi
-      else warn "s và hb đều đã được dùng cho việc khác, không thêm lối tắt: gõ hostbook"; fi
+        if [ "$sc" = hb ]; then ok "Lối tắt: hb"; else ok "hb đã được dùng cho việc khác trên máy này, lối tắt là hop"; fi
+      else warn "hb và hop đều đã được dùng cho việc khác, không thêm lối tắt: gõ hostbook"; fi
     fi
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) grep -qs '.local/bin' "$rc_file" || { printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$rc_file"; ok "Đã thêm ~/.local/bin vào PATH"; };; esac
   fi

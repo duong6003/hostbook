@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh 
 
 Chạy được trên macOS và Linux, không cần sudo, mọi thứ cài vào `~/.local`. Trình cài lấy fzf và gum bản phát hành chính thức (có kiểm tra checksum) khi máy chưa có hoặc bản có sẵn quá cũ. Chạy lại lệnh trên, hoặc `hostbook update`, để cập nhật.
 
-Mở terminal mới rồi gõ `hostbook`, hoặc lối tắt `s` (nếu máy đã có lệnh tên `s` thì lối tắt là `hb`, trình cài sẽ báo). Lần đầu, app hỏi một câu để biết máy này là máy nào:
+Mở terminal mới rồi gõ `hostbook`, hoặc lối tắt `hb` (nếu máy đã có lệnh tên `hb` thì lối tắt là `hop`, trình cài sẽ báo). Lần đầu, app hỏi một câu để biết máy này là máy nào:
 
 - **Dùng kho ở máy khác**: lấy danh sách server về máy này.
 - **Đây là máy đầu tiên**: tạo danh sách mới, có thể nhập từ `~/.ssh/config` sẵn có.
@@ -82,7 +82,7 @@ Các trường hợp được nhận ra: không có phản hồi, từ chối c�
 
 Server có tag `prod` luôn hiện màu đỏ. Khi mở chế độ chạy đồng loạt trên server prod, app hỏi lại và mặc định là **Không**.
 
-Từ dòng lệnh: `hostbook web1` (vào thẳng nếu đúng tên), `hostbook add ubuntu@10.0.1.13`, `hostbook import [file]`, `hostbook sync`, `hostbook doctor`, `hostbook update`.
+Từ dòng lệnh: `hb web1` (vào thẳng nếu đúng tên), `hostbook add ubuntu@10.0.1.13`, `hostbook import [file]`, `hostbook sync`, `hostbook doctor`, `hostbook update`.
 
 Giao diện co giãn theo kích thước terminal: màn hẹp chỉ hiện cột quan trọng (tên, tag, IP), các cột còn lại vẫn tìm được; ô xem trước tự ẩn khi không đủ chỗ.
 
@@ -122,7 +122,7 @@ Vì là ssh config chuẩn, `ssh a-web1`, VS Code Remote-SSH, scp… đều dùn
 rm -rf ~/.local/share/hostbook ~/.local/state/hostbook ~/.local/bin/hostbook
 ```
 
-Rồi xoá dòng `alias s=hostbook` trong `~/.zshrc` hoặc `~/.bashrc`. Danh sách server trong `~/ssh-hosts` vẫn còn và vẫn dùng được với `ssh`.
+Rồi xoá dòng `alias hb=hostbook` trong `~/.zshrc` hoặc `~/.bashrc`. Danh sách server trong `~/ssh-hosts` vẫn còn và vẫn dùng được với `ssh`.
 
 ## Phát triển
 
