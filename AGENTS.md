@@ -31,8 +31,8 @@ from paying that cost on every key press.
 6. **Every child process must die with its terminal.**
    - `trap … EXIT` makes bash 3.2 defer SIGHUP while a `gum`/`fzf` child runs, so closing the terminal could orphan
      both (#4). Top-level commands therefore run under a trap-free parent (top of `hostbook`); keep it trap-free.
-   - Tests that drive the app through tmux must leave screens with keys, or kill the pane's process group. A bare
-     `kill-session` is not enough (#3).
+   - Tests that drive the app through tmux end sessions with `end_ui` in `tests/tui.sh` (kills each pane's process
+     group, #3). A bare `kill-session` is only for tests that simulate a terminal close (`close_check`).
    - After TUI tests, this must print nothing:
      `ps -axo ppid=,command= | awk '$1==1 && /hostbook|gum choose/'`
 7. **Budgets.** Measure them on macOS, the slowest platform for forks.

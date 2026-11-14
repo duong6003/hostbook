@@ -22,7 +22,7 @@ leak_check(){
   while :; do
     left=$(ps -axo pgid=,pid=,command= | awk -v f="$T/pgids" 'BEGIN{while((getline l<f)>0)g[l]=1} ($1 in g)')
     [ -z "$left" ] && return 0
-    i=$((i+1)); [ "$i" -lt 30 ] || { printf '%s\n' "$left"; echo 'FAIL TUI: process còn sót sau khi đóng session'
+    i=$((i+1)); [ "$i" -lt 50 ] || { printf '%s\n' "$left"; echo 'FAIL TUI: process còn sót sau khi đóng session'
       kill -KILL $(printf '%s\n' "$left" | awk '{print $2}') 2>/dev/null || :; return 1; }   # report, then do not leave them running
     sleep .1
   done

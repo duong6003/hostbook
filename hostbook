@@ -13,6 +13,7 @@ set -u
 # foreground child exits, and gum ignores a revoked terminal. So the terminal's process is this trap-free parent: it
 # dies on SIGHUP at once, the kernel then hangs up the whole foreground group, and the app below runs cleanup.
 # Internal _* callbacks skip it (hot paths), and so do Windows and tests that source this file.
+# Limit: SIGTERM sent to this parent alone (e.g. `timeout`) is not forwarded; signal the process group instead.
 if [ -z "${HOSTBOOK_APP:-}" ] && [ "${BASH_SOURCE:-}" = "$0" ]; then
   case ${1:-}:$OSTYPE in _*|*:msys*|*:cygwin*) ;; *) HOSTBOOK_APP=1 "$BASH" "$0" "$@"; exit;; esac
 fi
