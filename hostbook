@@ -185,6 +185,7 @@ cfg_set(){
   { [ ! -f "$CFG" ] || awk -F= -v k="$1" '{s=$1; gsub(/^[ \t]+|[ \t]+$/,"",s); if(s!=k)print}' "$CFG"; printf '%s = %s\n' "$1" "$2"; } > "$t"
   mv "$t" "$CFG" && cfg_load
 }
+cfg_mem(){ cfg_valid "$1" "$2" || return 1; [ "${CFG_SRC-}" = "$CFG" ] || cfg_load; CFG_MEM="$CFG_MEM$1=$2"$'\n'; }   # like cfg_set, in memory only
 cfg_init(){ [ -e "$CFG" ] || { [ ! -d "$DIR/.git" ] || cfg_set list compact; }; }
 cfg_errors(){
   [ -f "$CFG" ] || return 0
@@ -2519,7 +2520,8 @@ preset_data(){
 }
 apply_preset(){
   local values; values=$(preset_data "$1") || return 1; set -- $values
-  cfg_set list "$1" && cfg_set border "$2" && cfg_set preview "$3" && cfg_set separator "$4" && cfg_set icons "$5" && cfg_set theme "$6"
+  local put=${PRESET_SET:-cfg_set}   # _demo swaps in cfg_mem so previews never touch the file
+  $put list "$1" && $put border "$2" && $put preview "$3" && $put separator "$4" && $put icons "$5" && $put theme "$6"
 }
 setting_options(){
   case $1 in
@@ -2592,33 +2594,59 @@ demo_rows(){
     'g:booking-prod|booking-prod|||||nhóm · 3 server · chia ô||booking-api booking-web booking-db' | tr '|' '\t'
 }
 cmd_demo(){ # fixed sample data; no network checks or changes to real configuration
-  local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record rule IDX CFG
-  d=$(tmpd) || return 1; CFG=$d/config; IDX=$d/index
-  [ ! -f "$CONF/config" ] || cp "$CONF/config" "$CFG"
+  local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record rule style sep theme IDX
+  d=$(tmpd) || return 1; IDX=$d/index
   key=${arg%%=*}; value=${arg#*=}
-  if [ "$key" = preset ]; then apply_preset "$value" || return 1; else cfg_set "$key" "$value" || return 1; fi
+  if [ "$key" = preset ]; then PRESET_SET=cfg_mem apply_preset "$value" || return 1; else cfg_mem "$key" "$value" || return 1; fi
   apply_theme
   demo_rows | awk -F'\t' '$1~/^h:/ {print $2 "\t" $3}' > "$IDX"
   cols=${FZF_PREVIEW_COLUMNS:-80}; [[ $cols =~ ^[0-9]+$ ]] || cols=80; [ "$cols" -ge 20 ] || cols=20
-  border=$(cfg border rounded); preview=$(cfg preview right); width=$((cols - 6))
+  cfg border rounded border; cfg preview right preview; cfg list cards style; cfg separator on sep; cfg theme hostbook theme; width=$((cols - 6))
   if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then width=$((cols * 60 / 100 - 6)); fi
-  demo_rows | list_rows "$(cfg list cards)" "$width" > "$d/rows"
-  if [ "$(cfg list cards)" = cards ]; then
+  demo_rows | list_rows "$style" "$width" > "$d/rows"
+  if [ "$style" = cards ]; then
     rule=$(printf '%*s' "$width" '' | tr ' ' '-')
     rendered=$(while IFS= read -r -d '' record; do
       record=${record#*"$TAB"}; printf '%s\n' "${record%"$TAB"*}"
-      [ "$(cfg separator on)" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
+      [ "$sep" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
     done < "$d/rows")
   else rendered=$(cut -f2 "$d/rows"); fi
   left=$(printf '%sTìm > booking%s\n\n%s\n\n%senter ssh · tab chọn · ^t đổi kiểu%s' "$CP" "$C0" "$rendered" "$CD" "$C0")
   right=$(printf '%sbooking-api  %sprod%s\n10.0.1.11 · @ubuntu\nĐăng nhập: key-prod\nLần dùng: 2 giờ trước' "$CU$CB" "$CR" "$C0")
-  if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then
+  local split=0; [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ] && split=1
+  if [ $split = 0 ]; then
+    if [ "$preview" = bottom ]; then left=$(printf '%s\n\n%sChi tiết%s\n%s' "$left" "$CU" "$C0" "$right"); fi
+    right=
+  fi
+  printf '%s%s · %s · %s%s\n' "$CU" "$style" "$theme" "$preview" "$C0"
+  # Piped output (fzf preview) makes gum drop all colour, so a single awk draws the same plain box instead of three gum
+  # processes. A tty or any line wider than its column (gum would wrap it) falls back to gum.
+  if [ ! -t 1 ] && demo_box "$left" "$right" "$((width + 2))" "$((cols - width - 8))" "$((cols - 2))" "$border"; then return 0; fi
+  if [ $split = 1 ]; then
     body=$(gum join --horizontal --align top "$(gum style --width "$((width + 2))" "$left")" "$(gum style --width "$((cols - width - 8))" "$right")")
-  elif [ "$preview" = bottom ]; then body=$(printf '%s\n\n%sChi tiết%s\n%s' "$left" "$CU" "$C0" "$right")
   else body=$left; fi
-  printf '%s%s · %s · %s%s\n' "$CU" "$(cfg list cards)" "$(cfg theme hostbook)" "$preview" "$C0"
   case $border in sharp) border=normal;; bold) border=thick;; esac
   gum style --border "$border" --border-foreground "$(gum_color "$TH_BORDER")" --width "$((cols - 2))" "$body"
+}
+demo_box(){ # left right wl wr total border; plain box like "gum join | gum style --border"; status 1 when a line would wrap
+  L=$1 R=$2 LC_ALL=C awk -v wl="$3" -v wr="$4" -v tw="$5" -v border="$6" '
+    function vlen(s){gsub(/\033\[[0-9;]*m/,"",s); gsub(/[\200-\277]/,"",s); return length(s)}
+    function strip(s){gsub(/\033\[[0-9;]*m/,"",s); return s}
+    function sp(n, o){o=sprintf("%" (n>0?n:1) "s",""); return n>0?o:""}
+    function pad(s,w){if(vlen(s)>w)bad=1; return s sp(w-vlen(s))}
+    BEGIN {
+      nl=split(ENVIRON["L"],l,"\n"); nr=(ENVIRON["R"]=="")?0:split(ENVIRON["R"],r,"\n"); n=nl>nr?nl:nr
+      for(i=1;i<=n;i++) line[i]=nr?pad(strip(l[i]),wl) pad(strip(r[i]),wr):strip(l[i])
+      if(border=="none"){for(i=1;i<=n;i++)out=out pad(line[i],tw) "\n"; if(bad)exit 1; printf "%s",out; exit}
+      if(border=="sharp"){tl="┌";tr="┐";bl="└";br="┘";h="─";v="│"}
+      else if(border=="bold"){tl="┏";tr="┓";bl="┗";br="┛";h="━";v="┃"}
+      else if(border=="double"){tl="╔";tr="╗";bl="╚";br="╝";h="═";v="║"}
+      else {tl="╭";tr="╮";bl="╰";br="╯";h="─";v="│"}
+      rule=sp(tw-2); gsub(/ /,h,rule)
+      out=tl rule tr "\n"
+      for(i=1;i<=n;i++)out=out v pad(line[i],tw-2) v "\n"
+      if(bad)exit 1; printf "%s%s\n",out,bl rule br
+    }'
 }
 
 # ---------- main screen ----------

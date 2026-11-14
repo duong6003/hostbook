@@ -116,4 +116,7 @@ cfg_set list cards
 FZF_PREVIEW_COLUMNS=80 "$S" _demo separator=on > "$T/with-gap"
 FZF_PREVIEW_COLUMNS=80 "$S" _demo separator=off > "$T/without-gap"
 check 'xem trước thể hiện lựa chọn đường kẻ' '! cmp -s "$T/with-gap" "$T/without-gap"'
+FZF_PREVIEW_COLUMNS=100 "$S" _demo preset=cards >/dev/null; t0=$(perl -MTime::HiRes=time -e 'print int(time*1000)')
+FZF_PREVIEW_COLUMNS=100 "$S" _demo preset=cards >/dev/null; t1=$(perl -MTime::HiRes=time -e 'print int(time*1000)')
+check "demo preset=cards < 200 ms và không ghi config" '[ $((t1-t0)) -lt 200 ] && [ "$(cfg list cards)" = cards ]'
 printf '\n%s kiểm tra UI đạt\n'  "$pass"
