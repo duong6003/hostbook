@@ -160,7 +160,7 @@ wait_for 'Kiểu danh sách'
 close_check 'Giao diện'
 
 # Cursor moves must not wait for a hostbook boot (#1, ~100 ms each), and → still acts on the focused row.
-export HOSTBOOK_DIR=$T/many/hosts HOSTBOOK_STATE=$T/many/state HOSTBOOK_SSH_CONFIG=$T/many/ssh_config
+export HOSTBOOK_DIR=$T/many/hosts HOSTBOOK_STATE="$T/many/it's state" HOSTBOOK_SSH_CONFIG=$T/many/ssh_config
 mkdir -p "$HOSTBOOK_DIR"; printf 'Include %s/*.conf\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
 for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20; do printf 'Host many%s\n  HostName 127.0.0.1\n' "$i"; done > "$HOSTBOOK_DIR/many.conf"
 git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
@@ -182,28 +182,47 @@ printf 'ok    TUI 10 × ↓ trong %s ms, → mở server đang trỏ khi có ch�
 
 # Opening the home screen with no remote and no change must not reload the list (#6): count _list callbacks.
 # The initial list is piped in by the process itself, so any _list call here comes from a sync notification or a resize.
-sed 's|^  _list) cmd_list;;|  _list) echo x >> "$HB_LIST_LOG"; cmd_list;;|' "$S" > "$T/hostbook-count"
-grep -q HB_LIST_LOG "$T/hostbook-count" || { echo 'FAIL TUI: không gắn được bộ đếm _list'; exit 1; }
-export HB_LIST_LOG=$T/list.log; : > "$HB_LIST_LOG"
+# The state dir above holds a space and an apostrophe: the resize scripts must quote it.
+sed 's|^  _list) cmd_list;;|  _list) echo x >> "$HB_LIST_LOG"; cmd_list;;|; s|_bg_sync) cmd_bg_sync;;|_bg_sync) echo x >> "$HB_SYNC_LOG"; cmd_bg_sync;;|' "$S" > "$T/hostbook-count"
+grep -q HB_LIST_LOG "$T/hostbook-count" && grep -q HB_SYNC_LOG "$T/hostbook-count" || { echo 'FAIL TUI: không gắn được bộ đếm _list'; exit 1; }
+export HB_LIST_LOG=$T/list.log HB_SYNC_LOG=$T/sync.log; : > "$HB_LIST_LOG"; : > "$HB_SYNC_LOG"
 S_REAL=$S; S=$T/hostbook-count
 start 100
 wait_for many01
-sleep 2   # the background sync starts after the first frame and ends well within this time
+i=0; until [ -s "$HB_SYNC_LOG" ]; do sleep .1; i=$((i+1)); [ "$i" -lt 50 ] || { echo 'FAIL TUI: _bg_sync không chạy'; exit 1; }; done
+i=0; while ps -axo command= | grep -q 'hostbook-count _bg_sync$'; do sleep .1; i=$((i+1)); [ "$i" -lt 100 ] || { echo 'FAIL TUI: _bg_sync không kết thúc'; exit 1; }; done
+sleep .3   # a control-port message sent at its end would arrive by now
 [ ! -s "$HB_LIST_LOG" ] || { echo "FAIL TUI: mở màn hình không thay đổi gì nhưng _list chạy $(wc -l < "$HB_LIST_LOG") lần"; exit 1; }
-# A resize reloads the list once, and the footer must match the new width, also after the preview auto-hides (<36 cols) and a cursor move.
+# The footer is not allowed to write the current row back (a stale write would make → open the wrong server).
+foot=$(ls -t "$HOSTBOOK_STATE"/tmp/*/foot | sed -n 1p)
+if grep -E '>.*current' "$foot" >/dev/null; then cat "$foot"; echo 'FAIL TUI: script footer sau resize ghi lại current'; exit 1; fi
+# The footer line after a resize must equal what _footer prints for that width (a reference pane of that width), also after the
+# preview auto-hides (<36 cols), after a cursor move, after widening again and after two quick resizes.
+footer_at(){ # width → _footer's line for a host row
+  local line='' i=0
+  tmux -L "$socket" new-session -d -x "$1" -y 5 -s ref "env HOME=$(printf %q "$HOME") XDG_CONFIG_HOME=$(printf %q "$XDG_CONFIG_HOME") HOSTBOOK_DIR=$(printf %q "$HOSTBOOK_DIR") HOSTBOOK_STATE=$(printf %q "$HOSTBOOK_STATE") HOSTBOOK_SSH_CONFIG=$(printf %q "$HOSTBOOK_SSH_CONFIG") /bin/bash $(printf %q "$S_REAL") _footer h:many02; sleep 30"
+  while [ -z "$line" ] && [ "$i" -lt 50 ]; do line=$(tmux -L "$socket" capture-pane -p -t ref | sed -n 1p | sed 's/ *$//'); i=$((i+1)); sleep .1; done
+  tmux -L "$socket" kill-session -t ref; printf '%s' "$line"
+}
+screen_footer(){ tmux -L "$socket" capture-pane -p -t ui | sed -e 's/^│ *//' -e 's/ *│.*$//' -e 's/ *$//'; }   # lines without the border; the footer is one of them
+wait_footer(){ # width: poll until a whole line equals the reference footer, then check it stays
+  local want i=0; want=$(footer_at "$1"); [ -n "$want" ] || { echo 'FAIL TUI: không lấy được footer mẫu'; exit 1; }
+  until screen_footer | grep -qxF -- "$want"; do i=$((i+1)); [ "$i" -lt 60 ] || { tmux -L "$socket" capture-pane -p -t ui; echo "FAIL TUI: footer ở $1 cột khác _footer: '$want'"; exit 1; }; sleep .1; done
+  sleep .7; screen_footer | grep -qxF -- "$want" || { tmux -L "$socket" capture-pane -p -t ui; echo "FAIL TUI: footer ở $1 cột bị ghi đè bằng footer cũ"; exit 1; }
+}
 tmux -L "$socket" resize-window -t ui -x 30
 tmux -L "$socket" send-keys -t ui Down
-sleep 1.5
-tmux -L "$socket" capture-pane -p -t ui > "$T/screen"
-tmux -L "$socket" new-session -d -x 30 -y 36 -s ref "env HOME=$HOME XDG_CONFIG_HOME=$XDG_CONFIG_HOME HOSTBOOK_DIR=$HOSTBOOK_DIR HOSTBOOK_STATE=$HOSTBOOK_STATE HOSTBOOK_SSH_CONFIG=$HOSTBOOK_SSH_CONFIG /bin/bash $S_REAL _footer h:many02; sleep 30"
-want=''; i=0; while [ -z "$want" ] && [ "$i" -lt 50 ]; do want=$(tmux -L "$socket" capture-pane -p -t ref | sed -n 1p | sed 's/ *$//'); i=$((i+1)); sleep .1; done
-[ -n "$want" ] || { echo 'FAIL TUI: không lấy được footer mẫu'; exit 1; }
-grep -qF "$want" "$T/screen" || { cat "$T/screen"; echo "FAIL TUI: footer sau resize khác _footer: '$want'"; exit 1; }
-if grep -q 'chọn nhiều' "$T/screen"; then cat "$T/screen"; echo 'FAIL TUI: footer còn theo bề rộng cũ sau resize'; exit 1; fi
-[ "$(wc -l < "$HB_LIST_LOG" | tr -d ' ')" -le 1 ] || { echo 'FAIL TUI: resize reload _list nhiều hơn một lần'; exit 1; }
+wait_footer 30
+tmux -L "$socket" resize-window -t ui -x 100
+tmux -L "$socket" send-keys -t ui Down
+wait_footer 100
+tmux -L "$socket" resize-window -t ui -x 50; tmux -L "$socket" resize-window -t ui -x 30
+wait_footer 30
+n=$(wc -l < "$HB_LIST_LOG" | tr -d ' ')
+[ "$n" -le 4 ] || { echo "FAIL TUI: 4 lần resize reload _list $n lần"; exit 1; }
 S=$S_REAL
 end_ui
-printf 'ok    TUI mở màn hình không reload; resize reload một lần và footer đúng bề rộng mới\n'
+printf 'ok    TUI mở màn hình không reload; footer đúng bề rộng sau resize, thu nhỏ, mở rộng và resize liên tiếp\n'
 
 # Fresh install: apply the suggested light theme only after the fzf list has loaded.
 for width in 60 100 200; do
