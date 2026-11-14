@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh 
 
 Chạy được trên macOS và Linux, không cần sudo, mọi thứ cài vào `~/.local`. Trình cài lấy fzf và gum bản phát hành chính thức (có kiểm tra checksum) khi máy chưa có hoặc bản có sẵn quá cũ. Chạy lại lệnh trên, hoặc `hostbook update`, để cập nhật.
 
-Mở terminal mới rồi gõ `hostbook` (hoặc `s`). Lần đầu, app hỏi một câu để biết máy này là máy nào:
+Mở terminal mới rồi gõ `hostbook`, hoặc lối tắt `s` (nếu máy đã có lệnh tên `s` thì lối tắt là `hb`, trình cài sẽ báo). Lần đầu, app hỏi một câu để biết máy này là máy nào:
 
 - **Dùng kho ở máy khác**: lấy danh sách server về máy này.
 - **Đây là máy đầu tiên**: tạo danh sách mới, có thể nhập từ `~/.ssh/config` sẵn có.

@@ -1200,7 +1200,7 @@ show_help(){
     h 'Từ dòng lệnh'
     r 'hostbook web1' 'vào thẳng nếu đúng tên, hoặc chỉ một server khớp'; r 'hostbook add ubuntu@10.0.1.13' 'thêm nhanh, các mục khác tự đoán'
     r 'hostbook import [file]' 'nhập nhiều server: tên user@ip #tag mỗi dòng'; r 'hostbook sync · doctor' 'đồng bộ · kiểm tra'
-    r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r 's' 'lối tắt của hostbook' )
+    r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r "$(shortcut_name || true)" 'lối tắt của hostbook trên máy này' )
   clear
   if [ "$(printf '%s\n' "$out" | wc -l)" -gt $(( rows - 3 )) ]; then printf '%s\n' "$out" | less -R   # dài hơn màn hình: cuộn được, q để quay lại
   else printf '%s\n' "$out"; pause; fi
@@ -1251,6 +1251,11 @@ home(){
 }
 
 # ---------- cài đặt, phiên bản ----------
+# Lối tắt chỉ được thêm khi chưa có lệnh, alias hay hàm nào trùng tên. Hỏi chính shell của người dùng ở chế độ tương tác,
+# để thấy cả alias do plugin (oh-my-zsh…) tạo ra chứ không chỉ những gì nằm trong PATH.
+shortcut_free(){ local out; out=$("${SHELL:-/bin/sh}" -ic "type $1" </dev/null 2>/dev/null) || return 0
+  case $out in *hostbook*) return 0;; esac; return 1; }
+shortcut_name(){ grep -hoE '^alias (s|hb)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
 check_deps(){ # report: in từng dòng; im lặng: trả về 1 và in hướng dẫn nếu thiếu
   local bad=0 v
   have git || { err "Thiếu git"; bad=1; }
@@ -1277,7 +1282,13 @@ setup(){
   case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac
   if [ -n "$rc_file" ]; then
     if grep -qs '^alias s=sshm$' "$rc_file"; then sed -i.bak 's/^alias s=sshm$/alias s=hostbook/; s/^# sshm: tìm và kết nối server SSH$/# hostbook: tìm và kết nối server SSH/' "$rc_file" && rm -f "$rc_file.bak"; ok "Lối tắt s giờ mở hostbook"
-    elif ! grep -qs 'alias s=hostbook' "$rc_file"; then printf '\n# hostbook: tìm và kết nối server SSH\nalias s=hostbook\n' >> "$rc_file"; ok "Đã thêm lối tắt s vào $(basename "$rc_file")"; fi
+    elif ! grep -qsE '^alias (s|hb)=hostbook$' "$rc_file"; then
+      local sc="" c
+      for c in s hb; do shortcut_free "$c" && { sc=$c; break; }; done
+      if [ -n "$sc" ]; then printf '\n# hostbook: tìm và kết nối server SSH\nalias %s=hostbook\n' "$sc" >> "$rc_file"
+        if [ "$sc" = s ]; then ok "Đã thêm lối tắt s vào $(basename "$rc_file")"; else ok "s đã được dùng cho việc khác trên máy này, lối tắt là hb"; fi
+      else warn "s và hb đều đã được dùng cho việc khác, không thêm lối tắt: gõ hostbook"; fi
+    fi
     case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) grep -qs '.local/bin' "$rc_file" || { printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$rc_file"; ok "Đã thêm ~/.local/bin vào PATH"; };; esac
   fi
   if [ -d /Applications/Ghostty.app ] || have ghostty; then

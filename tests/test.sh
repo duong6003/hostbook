@@ -266,4 +266,13 @@ check "qua máy trung gian: vào được máy trung gian, hỏng ở chặng sa
 out=$(printf 'debug1: Remote protocol version 2.0\nHost key verification failed.\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
 check "host key đổi: cảnh báo, hỏng ở bước xác minh" 'printf "%s" "$out" | grep -q "Host key của a-gate đã thay đổi" && printf "%s" "$out" | grep -q "✗ Xác minh host key"'
 
+# ---- lối tắt khi cài ----
+H1=$(mktemp -d); printf 's(){ echo "lệnh s riêng của người dùng"; }\n' > "$H1/.bashrc"
+HOME=$H1 SHELL=/bin/bash "$S" setup >/dev/null 2>&1
+check "s đã có người dùng: không đè, dùng hb" 'grep -qx "alias hb=hostbook" "$H1/.bashrc" && ! grep -q "alias s=hostbook" "$H1/.bashrc"'
+H2=$(mktemp -d); : > "$H2/.bashrc"
+HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1; HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1
+check "s còn trống: dùng s, chạy setup lại không thêm trùng" '[ "$(grep -c "alias s=hostbook" "$H2/.bashrc")" = 1 ] && ! grep -q "alias hb=" "$H2/.bashrc"'
+rm -rf "$H1" "$H2"
+
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]
