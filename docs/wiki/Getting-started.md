@@ -83,13 +83,14 @@ Appearance settings respect `XDG_CONFIG_HOME`. For contributor/test overrides, s
 
 Update with `hostbook update`, or rerun the installer.
 
-On Windows, remove the app/runtime and its user PATH entry with:
+On Windows, close hostbook, then remove the app/runtime and its user PATH entry with:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hostbook\app\install.ps1" -Uninstall
 ```
 
-Your host list, encrypted vault, settings, and SSH config remain. For a custom
+Uninstall also stops this installation's private SSH agent. Your host list, encrypted
+vault, settings, and SSH config remain. For a custom
 `-InstallRoot`, pass that same path to uninstall. Update with `hostbook update` or
 rerun the Windows installer.
 

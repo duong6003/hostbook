@@ -107,3 +107,18 @@ so native SSH tilde expansion cannot accidentally resolve the real profile.
 
 Still pending: full key/password/wrong-password/agent-lock SSH pass, final review and
 recording the final green matrix. No main merge, live installation or wiki publication.
+
+## Real Windows SSH authentication passed
+
+Run 43608481627 (625e076) passed real vault-key and password sessions through the
+native launcher, askpass execution, wrong-password rejection, agent persistence/lock
+across invocations, and parallel key/password checks. ShellExecute with explicit Bash
+resolved the captured-handle issue. The final SSH scan used `Select-String -Quiet`
+wrongly: multiple false pipeline results form a truthy PowerShell array. It now collects
+actual match paths, preserving the assertion and exposing any real residue without
+printing credentials.
+
+A new active-agent uninstall probe caught the managed MSYS DLL being locked. Uninstall
+now stops only ssh-agent processes whose executable lies below this installation's
+`runtime\\` prefix (including old managed versions), waits for termination, and then
+removes owned files. System/native/global Git agents are outside that path scope.

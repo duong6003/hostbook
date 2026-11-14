@@ -27,6 +27,16 @@ if (Test-Path -LiteralPath $configFile) {
 }
 if ($Uninstall) {
     if (!(Test-Path -LiteralPath $configFile)) { throw "No hostbook installation at $InstallRoot" }
+    # Persistent private agents keep the managed MSYS DLL locked after the UI exits.
+    $runtimePrefix = $InstallRoot.TrimEnd('\') + '\runtime\'
+    foreach ($agent in @(Get-Process -Name ssh-agent -ErrorAction SilentlyContinue)) {
+        $agentPath = $null
+        try { $agentPath = $agent.Path } catch { continue }
+        if ($agentPath -and $agentPath.StartsWith($runtimePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -InputObject $agent -Force
+            if (!$agent.WaitForExit(5000)) { throw 'The private SSH agent did not stop. Close hostbook and retry uninstall.' }
+        }
+    }
     Set-UserPath $false
     foreach ($owned in @('app', 'bin', 'runtime', 'runtime.path', 'install.json')) {
         $path = Join-Path $InstallRoot $owned
