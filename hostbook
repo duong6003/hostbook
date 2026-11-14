@@ -45,7 +45,7 @@ ok(){ printf '%s✓%s %s\n' "$CG" "$C0" "$*"; }
 warn(){ printf '%s!%s %s\n' "$CY" "$C0" "$*"; }
 err(){ printf '%s✗%s %s\n' "$CR" "$C0" "$*"; }
 dim(){ printf '%s%s%s\n' "$CD" "$*" "$C0"; }
-term_cols(){ local c; c=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2); echo "${c:-${COLUMNS:-80}}"; }
+term_cols(){ local c; c=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2); echo "${c:-${COLUMNS:-80}}"; }
 box(){ # màu dòng... · dòng dài hơn màn hình thì gói lại trong khung thay vì làm vỡ khung
   local c=$1 l v max=0 cols; shift; cols=$(term_cols)
   for l in "$@"; do v=$(printf '%s' "$l" | sed $'s/\033\\[[0-9;]*m//g'); [ ${#v} -gt $max ] && max=${#v}; done
@@ -63,20 +63,28 @@ is_mac(){ [ "$(uname)" = Darwin ]; }
 copy(){ if have pbcopy; then pbcopy; elif have wl-copy; then wl-copy; elif have xclip; then xclip -selection clipboard; elif have xsel; then xsel -b; else return 1; fi; }
 has_remote(){ [ -n "$(g remote 2>/dev/null)" ]; }
 remote_url(){ g remote get-url origin 2>/dev/null; }
-kho_addr(){ local u; u=$(remote_url); case $u in /*) echo 'máy này';; *://*) u=${u#*://}; u=${u#*@}; echo "${u%%/*}";; *@*:*) echo "${u%%:*}";; *) echo "$u";; esac; }
+kho_addr(){ local u; u=$(remote_url); case $u in /*) echo 'máy này';; file://*) echo "thư mục ${u#file://}" | sed "s|$HOME|~|";; *://*) u=${u#*://}; u=${u#*@}; echo "${u%%/*}";; *@*:*) echo "${u%%:*}";; *) echo "$u";; esac; }
 is_url(){ case $1 in *://*|*@*:*) return 0;; esac; return 1; }   # URL git (ssh://…, git@host:đường/dẫn) thay vì user@máy
 valid_name(){ case $1 in ""|*[!A-Za-z0-9._-]*) return 1;; esac; }   # tên server chỉ gồm chữ, số, . _ - (tên lạ trong kho không được chạy như lệnh)
 ver_ge(){ [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$2" ]; }   # $1 >= $2
 
 # pick HEADER ITEM... → in ra số thứ tự (0-based) của mục được chọn. Mục có dạng "Nhãn|mô tả".
 pick(){
-  local header=$1; shift; local items=() i=0 sel x
-  for x in "$@"; do if [ "$x" != "${x#*|}" ]; then items[i]="${x%%|*}  ·  ${x#*|}"; else items[i]=$x; fi; i=$((i+1)); done
+  local header=$1; shift; local items=() i=0 sel x room
+  room=$(( $(term_cols) - 4 ))
+  for x in "$@"; do if [ "$x" != "${x#*|}" ]; then items[i]="${x%%|*}  ·  ${x#*|}"; else items[i]=$x; fi
+    [ ${#items[i]} -gt $room ] && items[i]="${items[i]:0:$((room - 1))}…"   # màn hẹp: cắt mô tả có dấu "…" thay vì để gum cắt cụt
+    i=$((i+1)); done
   sel=$(gum choose --height $(( ${#items[@]} > 20 ? 20 : ${#items[@]} + 1 )) --header "$header" "${items[@]}") || return 1
   i=0; for x in "${items[@]}"; do [ "$x" = "$sel" ] && { echo $i; return 0; }; i=$((i+1)); done
   return 1
 }
-row(){ printf '%s%*s %s%s\n' "$1" $((18-${#1})) '' "$2" "${3:+   ${CD}← $3${C0}}"; }   # căn lề theo số ký tự, không theo byte
+row(){ # nhãn giá-trị [nguồn đoán] · căn lề theo số ký tự (không theo byte); màn hẹp thì nguồn đoán xuống dòng riêng, thụt lề
+  local cols; cols=$(term_cols)
+  local src=${3:-} room=$(( cols - 6 - 19 - 2 ))
+  [ ${#src} -gt $room ] && [ $room -gt 8 ] && src="${src:0:$((room - 1))}…"
+  if [ -n "$src" ] && [ $(( 19 + ${#2} + 5 + ${#3} )) -gt $(( cols - 6 )) ]; then printf '%s%*s %s\n%19s%s← %s%s\n' "$1" $((18-${#1})) '' "$2" '' "$CD" "$src" "$C0"
+  else printf '%s%*s %s%s\n' "$1" $((18-${#1})) '' "$2" "${3:+   ${CD}← $3${C0}}"; fi; }
 confirm(){ gum confirm --affirmative "Có" --negative "Không" "$@"; }   # nút tiếng Việt; lời gọi nào truyền nút riêng thì nút đó thắng
 ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
 
@@ -151,31 +159,54 @@ set_group_mode(){ awk -F'\t' -v OFS='\t' -v n="$1" -v m="$2" '$1==n{$2=m} {print
 
 # ---------- danh sách cho fzf ----------
 mode_label(){ case $1 in sync) echo 'chạy đồng loạt';; split) echo 'chia ô';; tabs) echo 'mỗi server một tab';; *) echo 'hỏi khi mở';; esac; }
+# Bề rộng vùng danh sách của fzf: trừ ô xem trước (38%) khi nó hiện (ô xem trước ẩn khi hẹp hơn 36 cột)
+list_width(){ local c; c=$(term_cols); if [ $(( c * 38 / 100 )) -ge 36 ]; then echo $(( c - c * 38 / 100 - 5 )); else echo $(( c - 4 )); fi; }
+# Danh sách co giãn theo màn hình: cột quan trọng trước (tên, tag, IP, user, dự án, lần dùng, mô tả), cột nào không đủ chỗ thì
+# đẩy ra sau phần nhìn thấy: không hiện nhưng vẫn tìm được (fzf tìm trên cả dòng).
 cmd_list(){
   ensure_index
-  local s line
+  local s line W namew=12 l
+  W=$(list_width)
+  # tên nhóm/phiên/server dài nhất quyết định độ rộng cột tên (tối đa 26, màn hẹp tối đa 18)
+  namew=$( { cut -f1 "$IDX"; [ -f "$GRP" ] && cut -f1 "$GRP" | sed 's/^/  /'; } | awk -v W="$W" '{ if (length($0)>m) m=length($0) } END { cap=(W<70?16:(W<110?20:26)); if (m>cap) m=cap; if (m<10) m=10; print m }')
+  fit(){ LC_ALL=C awk -v s="$1" -v w="$2" 'function vlen(x,  t){ t=x; gsub(/[\200-\277]/,"",t); return length(t) }
+    BEGIN { if (vlen(s)<=w) { printf "%s%" (w-vlen(s)) "s", s, ""; exit }
+            o=""; c=0; for (i=1;i<=length(s);i++) { if (substr(s,i,1) !~ /[\200-\277]/) { if (c>=w-1) break; c++ } o=o substr(s,i,1) } printf "%s…", o }'; }   # cắt theo ký tự, không cắt đôi chữ có dấu
   if have tmux; then
     local alive
     for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep '^hb-'); do
       alive=$(tmux list-panes -s -t "$s" -F '#{pane_dead}' 2>/dev/null | grep -c 0)
       if [ "$alive" = 0 ]; then tmux kill-session -t "$s" 2>/dev/null; continue; fi   # mọi kết nối đã thoát: dọn phiên
-      printf 's:%s\t%s↺ %-12s%s%sphiên tmux · %s ô còn kết nối · enter để vào lại%s\n' "$s" "$CG" "${s#hb-}" "$C0" "$CD" "$alive" "$C0"
+      printf 's:%s\t%s↺ %s%s %sphiên tmux · %s ô còn kết nối · enter để vào lại%s\n' "$s" "$CG" "$(fit "${s#hb-}" $((namew - 1)))" "$C0" "$CD" "$alive" "$C0"
     done
   fi
   [ -f "$GRP" ] && while IFS= read -r line; do
     [ -n "$line" ] || continue; group_line "$line"; set -- $GH
-    printf 'g:%s\t%s▦ %-12s%s%snhóm · %s server · %s%s\n' "$GN" "$CU" "$GN" "$C0" "$CD" "$#" "$(mode_label "$GM")" "$C0"
+    printf 'g:%s\t%s▦ %s%s %snhóm · %s server · %s%s\n' "$GN" "$CU" "$(fit "$GN" $((namew - 1)))" "$C0" "$CD" "$#" "$(mode_label "$GM")" "$C0"
   done < "$GRP"
-  LC_ALL=C awk -F'\t' -v now="$(date +%s)" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" '
+  LC_ALL=C awk -F'\t' -v now="$(date +%s)" -v W="$W" -v NW="$((namew + 2))" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" '
     function vlen(s,  t){ t=s; gsub(/[\200-\277]/,"",t); return length(t) }
-    function pad(s,w){ if (vlen(s)>w) return substr(s,1,w-1) "~"; return s sprintf("%" (w-vlen(s)) "s","") }
+    function cut1(s,w,  o,i,c){ o=""; c=0; for (i=1;i<=length(s);i++) { if (substr(s,i,1) !~ /[\200-\277]/) { if (c>=w-1) break; c++ } o=o substr(s,i,1) } return o "…" }
+    function pad(s,w){ if (vlen(s)>w) return cut1(s,w); return s sprintf("%" (w-vlen(s)) "s","") }
     function ago(t,  d){ if (!t) return "-"; d=now-t; if (d<3600) return (d<120?1:int(d/60)) "m"; if (d<86400) return int(d/3600) "h"; return int(d/86400) "d" }
-    function tagcol(s,  n,a,i,out,w,tk){ n=split(s,a," "); out=""; w=0
-      for (i=1;i<=n;i++){ tk="#" a[i]; if (w+length(tk)+1>23) { out=out cd "~" c0; w++; break }
-        out=out (a[i]=="prod"?cr:cu) tk c0 " "; w+=length(tk)+1 }
-      return out sprintf("%" (24-w>0?24-w:1) "s","") }
+    function tagcol(s,w,  n,a,i,out,u,tk){ n=split(s,a," "); out=""; u=0
+      for (i=1;i<=n;i++){ tk="#" a[i]; if (u+length(tk)+(i<n?2:0)>w) { out=out cd "…" c0; u++; tagcut=1; break }
+        out=out (a[i]=="prod"?cr:cu) tk c0 (i<n?" ":""); u+=length(tk)+(i<n?1:0) }
+      return out sprintf("%" (w-u>0?w-u:0) "s","") }
     FILENAME==ARGV[1] { a=now-$1; sc[$2]+=(a<3600?4:a<86400?2:a<604800?1:0.5); if ($1>last[$2]) last[$2]=$1; next }
-    { printf "%010.2f\th:%s\t%s %s%s%s%s%s%s%s %s%s%s\n", sc[$1], $1, pad($1,14), cd, pad($2,11), c0, tagcol($8), cd, pad("@" $4,10), pad($3,16), sprintf("%4s",ago(last[$1])), "  " $9, c0 }
+    {
+      # các cột theo thứ tự ưu tiên; cột vừa thì hiện, không vừa thì đưa vào phần đuôi (ngoài màn hình, vẫn tìm được)
+      used=NW; vis=pad($1,NW-2) "  "; hid=""
+      TG=18; IPW=16; UW=11; PW=13; AW=5
+      tagcut=0; t8=$8; gsub(/ /," #",t8)
+      if (used+TG+1<=W) { vis=vis tagcol($8,TG) " "; used+=TG+1; if (tagcut) hid=hid " #" t8 } else if ($8!="") hid=hid " #" t8
+      if (used+IPW<=W)  { vis=vis cd pad($3,IPW) c0; used+=IPW } else hid=hid " " $3
+      if (used+UW<=W)   { vis=vis cd pad("@" $4,UW) c0; used+=UW } else hid=hid " @" $4
+      if (used+PW<=W)   { vis=vis cd pad($2,PW) c0; used+=PW } else hid=hid " " $2
+      if (used+AW<=W)   { vis=vis cd sprintf("%4s ",ago(last[$1])) c0; used+=AW }
+      if (used+12<=W && $9!="") { vis=vis cd pad($9,W-used) c0; used=W } else hid=hid " " $9
+      if (used<W) vis=vis sprintf("%" (W-used) "s","")
+      printf "%010.2f\th:%s\t%s%s%s\n", sc[$1], $1, vis, (hid!=""? "     " cd hid c0 : ""), "" }
   ' "$HIST" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
 }
 
@@ -203,9 +234,9 @@ cmd_preview(){
     g) local h; ensure_index
        printf '%s%s%s\n%sNhóm · mở bằng: %s%s\n\n' "$CU$CB" "$n" "$C0" "$CD" "$(mode_label "$(group_field "$n" 2)")" "$C0"
        for h in $(group_field "$n" 3); do
-         if ! host_exists "$h"; then printf '  %s%-14s đã bị xoá%s\n' "$CD" "$h" "$C0"
-         elif is_prod "$h"; then printf '  %s%-14s%s %s\n' "$CR" "$h" "$C0" "$(host_field "$h" 3)"
-         else printf '  %-14s %s%s%s\n' "$h" "$CD" "$(host_field "$h" 3)" "$C0"; fi; done
+         if ! host_exists "$h"; then printf '  %s%s  đã bị xoá%s\n' "$CD" "$h" "$C0"
+         elif is_prod "$h"; then printf '  %s%s%s  %s%s%s\n' "$CR" "$h" "$C0" "$CD" "$(host_field "$h" 3)" "$C0"
+         else printf '  %s  %s%s%s\n' "$h" "$CD" "$(host_field "$h" 3)" "$C0"; fi; done
        printf '\n%s→ để đổi kiểu mở hoặc xoá nhóm%s\n' "$CD" "$C0" ;;
     s) printf '%s%s%s\n%sPhiên tmux đang chạy nền. Đóng terminal không mất phiên.%s\n\n' "$CG$CB" "${n#hb-}" "$C0" "$CD" "$C0"
        tmux list-panes -s -t "$n" -F '  #{pane_title}#{?pane_dead, (đã thoát),}' 2>/dev/null
@@ -213,39 +244,53 @@ cmd_preview(){
   esac
 }
 
+strip_ansi(){ printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g'; }
 cmd_header(){
-  local n state msg="" t f fl=""
-  n=$( [ -s "$IDX" ] && wc -l < "$IDX" | tr -d ' ' || echo 0)
+  local n state long="" short="" t f fl="" cols line1 p1 pl
+  ensure_index
+  n=$( [ -s "$IDX" ] && wc -l < "$IDX" | tr -d ' ' || echo 0); cols=$(( $(list_width) + 2 ))   # phần đầu nằm trong cột danh sách, không tràn sang ô xem trước
   if [ -f "$FLASH" ]; then IFS="$TAB" read -r t f < "$FLASH"; [ $(( $(date +%s) - t )) -lt 30 ] && fl=$f; fi
-  if ! has_remote; then msg="${CY}● Chưa có kho, danh sách chỉ nằm trên máy này${C0}${CD} · ^o kết nối kho${C0}"
+  # mỗi trạng thái có bản dài và bản ngắn; màn hẹp dùng bản ngắn
+  state=$(sed -n 1p "$ST" 2>/dev/null); f=$(sed -n 2p "$ST" 2>/dev/null)
+  if [ "$state" = invalid ]; then long="${CR}✗ File lỗi, chưa đồng bộ: $f${C0}"; short="${CR}✗ File lỗi: ${f%%:*}${C0}"   # báo cả khi chưa có kho
+  elif ! has_remote; then long="${CY}● Chưa có kho, danh sách chỉ nằm trên máy này${C0}${CD} · ^o kết nối kho${C0}"; short="${CY}● Chưa có kho${C0}${CD} · ^o${C0}"
   else
-    state=$(sed -n 1p "$ST" 2>/dev/null); f=$(sed -n 2p "$ST" 2>/dev/null)
     case $state in
-      ok) msg="${CD}✓ đã đồng bộ với kho${C0}";;
-      checking) msg="${CP}… đang kiểm tra kho${C0}";;
-      offline) msg="${CY}⏸ Không kết nối được kho ($(kho_addr))${C0}${CD} · ^s thử lại${C0}";;
-      pending) msg="${CY}⏸ $f thay đổi chờ đẩy lên kho${C0}${CD} · ^s thử lại${C0}";;
-      conflict) msg="${CR}✗ Kho và máy này cùng sửa một chỗ${C0}${CD} · ^o → Gộp xung đột${C0}";;
-      invalid) msg="${CR}✗ File lỗi, chưa đồng bộ: $f${C0}";;
-      pulled) msg="${CG}↓ $f${C0}";;
-      *) msg="${CD}kho ở $(kho_addr) · chưa kiểm tra${C0}";;
+      ok) long="${CD}✓ đã đồng bộ với kho${C0}"; short="${CD}✓ đã đồng bộ${C0}";;
+      checking) long="${CP}… đang kiểm tra kho${C0}"; short=$long;;
+      offline) long="${CY}⏸ Không kết nối được kho ($(kho_addr))${C0}${CD} · ^s thử lại${C0}"; short="${CY}⏸ Không thấy kho${C0}${CD} · ^s${C0}";;
+      pending) long="${CY}⏸ $f thay đổi chờ đẩy lên kho${C0}${CD} · ^s thử lại${C0}"; short="${CY}⏸ $f chờ đẩy${C0}${CD} · ^s${C0}";;
+      conflict) long="${CR}✗ Kho và máy này cùng sửa một chỗ${C0}${CD} · ^o → Gộp xung đột${C0}"; short="${CR}✗ Xung đột${C0}${CD} · ^o${C0}";;
+      invalid) long="${CR}✗ File lỗi, chưa đồng bộ: $f${C0}"; short="${CR}✗ File lỗi${C0}${CD} · ^o kiểm tra${C0}";;
+      pulled) long="${CG}↓ $f${C0}"; short="${CG}↓ Có thay đổi từ máy khác${C0}";;
+      *) long="${CD}kho ở $(kho_addr) · chưa kiểm tra${C0}"; short="${CD}chưa kiểm tra kho${C0}";;
     esac
   fi
-  printf '%shostbook%s %s %s · %s server · %s%s\n' "$CU$CB" "$C0" "$CD" "$(hostname -s)" "$n" "$C0" "$msg"
+  line1="${CU}${CB}hostbook${C0} ${CD}$(hostname -s) · $n server${C0}"; p1=$(strip_ansi "$line1")
+  pl=$(strip_ansi "$long")
+  if [ $(( ${#p1} + ${#pl} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$long"
+  elif [ $(( ${#pl} + 4 )) -le "$cols" ]; then printf '%s\n%s\n' "$line1" "$long"
+  else printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$short"; fi
   [ -n "$fl" ] && printf '%s\n' "$fl"
-  [ "$n" = 0 ] && printf '\n%sChưa có server nào.%s %s^a%s thêm server đầu tiên, dán user@ip là đủ · %s^o%s kết nối kho để lấy danh sách\n' "$CB" "$C0" "$CP" "$C0" "$CP" "$C0"
+  if [ "$n" = 0 ]; then   # trạng thái trống: mỗi việc một dòng, không bị cắt ở màn hẹp
+    printf '\n%sChưa có server nào.%s\n\n' "$CB" "$C0"
+    printf '  %s^a%s  thêm server đầu tiên %s(dán user@ip là đủ)%s\n' "$CP" "$C0" "$CD" "$C0"
+    printf '  %s^o%s  công cụ: nhập nhiều server, kết nối kho\n' "$CP" "$C0"
+    printf '  %s?%s   trợ giúp\n' "$CP" "$C0"
+  fi
   return 0
 }
 
 cmd_footer(){
   local t=${1%%:*} c=${FZF_SELECT_COUNT:-0}
   [ -n "${1:-}" ] && printf '%s\n' "$1" > "$STATE/current"   # dòng đang trỏ, cho → và ^e (fzf chỉ trả về các dòng đã chọn)
-  k(){ printf '%s%s%s %s%s%s   ' "$CP" "$1" "$C0" "$CD" "$2" "$C0"; }
+  local cols used=2; cols=$(term_cols)
+  k(){ local w=$(( ${#1} + ${#2} + 4 )); [ $(( used + w )) -gt "$cols" ] && return 0; used=$(( used + w )); printf '%s%s%s %s%s%s   ' "$CP" "$1" "$C0" "$CD" "$2" "$C0"; }   # hết chỗ thì bỏ phím ít quan trọng (đứng sau)
   if [ "$c" -gt 0 ]; then k enter "mở $c server"; k '^g' 'lưu thành nhóm'; k tab 'chọn thêm'; k esc 'bỏ chọn'
   else case $t in
-    h) k enter ssh; k '→' 'thao tác'; k tab 'chọn nhiều'; k '^a' thêm; k '^e' sửa; k '^o' 'công cụ'; k '?' 'trợ giúp';;
-    g) k enter 'mở nhóm'; k '→' 'đổi kiểu mở / xoá'; k '^a' thêm; k '^o' 'công cụ'; k '?' 'trợ giúp';;
-    s) k enter 'vào lại phiên'; k '→' 'đóng hẳn'; k '^a' thêm; k '^o' 'công cụ'; k '?' 'trợ giúp';;
+    h) k enter ssh; k '→' 'thao tác'; k '?' 'trợ giúp'; k '^a' thêm; k '^o' 'công cụ'; k tab 'chọn nhiều'; k '^e' sửa;;
+    g) k enter 'mở nhóm'; k '→' 'đổi kiểu mở / xoá'; k '?' 'trợ giúp'; k '^a' thêm; k '^o' 'công cụ';;
+    s) k enter 'vào lại phiên'; k '→' 'đóng hẳn'; k '?' 'trợ giúp'; k '^a' thêm; k '^o' 'công cụ';;
     *) k '^a' 'thêm server'; k '^o' 'công cụ'; k '?' 'trợ giúp';;
   esac; fi
   echo
@@ -742,7 +787,7 @@ import_flow(){ # [file]
     printf '%s\n' "# Dán danh sách server bên dưới, lưu rồi đóng trình soạn thảo. Dòng bắt đầu bằng \"# \" được bỏ qua." \
       "# Mỗi dòng: tên địa_chỉ [#tag …]   ví dụ:  a-web1 ubuntu@10.0.1.11 #prod #web" \
       "# Dán nguyên một ssh config (các khối Host) cũng được." "" > "$tf"
-    $ed "$tf"; raw=$(grep -v '^# ' "$tf"); rm -f "$tf"
+    $ed "$tf"; raw=$(grep -v '^# ' "$tf" | sed '/./,$!d'); rm -f "$tf"   # bỏ dòng trống đầu để số dòng báo lỗi khớp với phần đã dán
     [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || return 1
   fi
   if printf '%s\n' "$raw" | grep -qiE '^[[:space:]]*host[[:space:]]'; then   # dán nguyên ssh config: giữ nguyên, tách theo tên
@@ -986,7 +1031,8 @@ discover(){
     while IFS= read -r inst; do ( dns-sd -L "$inst" _ssh._tcp local. > "$tmp/r.$RANDOM" 2>/dev/null & q=$!; sleep 1; kill $q 2>/dev/null ) & done < "$tmp/names"; wait
     cat "$tmp"/r.* 2>/dev/null | sed -n 's/.*reached at \([^ ]*\)\.:[0-9]*.*/\1/p' | sort -u | grep -vx "$me" | sed 's/$/|cùng mạng LAN/'
   elif have avahi-browse; then avahi-browse -tpr _ssh._tcp 2>/dev/null | awk -F';' '$1=="=" {print $7}' | sort -u | grep -vx "$(hostname).local" | sed 's/$/|cùng mạng LAN/'; fi
-  if have tailscale; then tailscale status 2>/dev/null | awk 'NR>1 && $1 ~ /^100\./ && !/offline/ {print $2 "|qua Tailscale"}'; fi
+  # điện thoại (iOS, Android) không chứa kho được nên không liệt kê
+  if have tailscale; then tailscale status 2>/dev/null | awk 'NR>1 && $1 ~ /^100\./ && !/offline/ && tolower($4) !~ /^(ios|android)$/ {print $2 "|qua Tailscale"}'; fi
   rm -rf "$tmp"
 }
 pick_machine(){ # header [url] → in đúng một dòng "user@máy" (hoặc URL git nếu cho phép) ra stdout; lời nhắn đi stderr vì hàm này được gọi trong $(...)
@@ -1128,23 +1174,33 @@ tools(){
   esac
 }
 show_help(){
-  clear; title "Trợ giúp · hostbook $VERSION"
-  r(){ printf '  %s%s%*s%s %s\n' "$CP" "$1" $((26-${#1})) '' "$C0" "$2"; }
-  printf '%sTìm kiếm%s\n' "$CU" "$C0"
-  r 'web prod' 'khớp cả hai (dấu cách nghĩa là VÀ)'; r 'aweb1' 'tìm mờ, khớp a-web1'; r '#prod' 'có tag prod'; r '@deploy' 'user là deploy'
-  r '^b-' 'tên bắt đầu bằng b-'; r '!staging' 'loại server có chữ staging'; r 'db | cache' 'db HOẶC cache'; r '10.8' 'theo IP'
-  printf '\n%sPhím%s\n' "$CU" "$C0"
-  r enter 'ssh, mở nhóm, hoặc vào lại phiên'; r '→' 'thao tác: chuyển tiếp cổng, copy IP, tab mới…'; r tab 'chọn nhiều server'
-  r '^g' 'lưu các server đã chọn thành nhóm'; r '^a / ^e' 'thêm / sửa server'; r '^s' 'đồng bộ ngay (thường không cần)'
-  r '→ trên server' 'đổi tên, chuyển dự án, xoá, gửi/tải file'
-  r '^o' 'công cụ: nhập nhiều server, kho, sao chép key, hoàn tác'; r esc 'xoá ô tìm, nhấn lần nữa để bỏ chọn, lần nữa để thoát'
+  local cols rows out; cols=$(term_cols); rows=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f1); rows=${rows:-24}
+  # màn rộng: hai cột; màn hẹp: phím một dòng, mô tả thụt lề ở dòng dưới
+  r(){ if [ "$cols" -ge 80 ]; then printf '  %s%s%*s%s %s\n' "$CP" "$1" $((28-${#1})) '' "$C0" "$2"
+       else printf '  %s%s%s\n' "$CP" "$1" "$C0"; printf '%s\n' "$2" | fold -s -w $((cols - 8)) | sed 's/^/      /'; fi; }
+  h(){ printf '\n%s%s%s\n' "$CU" "$1" "$C0"; }
   local pf; pf=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pf=${pf:-^b}
-  printf '\n%sTrong phiên nhiều server (tmux)%s\n' "$CU" "$C0"
-  r "$pf d" 'ẩn phiên, vẫn chạy nền'; r "$pf mũi tên" 'đổi ô'; r "$pf n / p" 'tab sau / trước'; r "$pf x" 'đóng ô đang chọn'
-  printf '\n%sTừ dòng lệnh%s\n' "$CU" "$C0"
-  r 'hostbook web1' 'vào thẳng nếu đúng tên, hoặc chỉ một server khớp'; r 'hostbook add ubuntu@10.0.1.13' 'thêm nhanh, các mục khác tự đoán'
-  r 'hostbook import [file]' 'nhập nhiều server: tên user@ip #tag mỗi dòng'; r 'hostbook sync · doctor' 'đồng bộ · kiểm tra'; r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r 's' 'lối tắt của hostbook'
-  pause
+  out=$( printf '%s‹%s %sTrợ giúp · hostbook %s%s\n' "$CD" "$C0" "$CU$CB" "$VERSION" "$C0"
+    h 'Tìm kiếm'
+    r 'web prod' 'khớp cả hai (dấu cách nghĩa là VÀ)'; r 'aweb1' 'tìm mờ, khớp a-web1'; r '#prod' 'có tag prod'; r '@deploy' 'user là deploy'
+    r '^b-' 'tên bắt đầu bằng b-'; r '!staging' 'loại server có chữ staging'; r 'db | cache' 'db HOẶC cache'; r '10.8' 'theo IP'
+    h 'Phím'
+    r enter 'ssh, mở nhóm, hoặc vào lại phiên'; r '→' 'thao tác: chuyển tiếp cổng, gửi/tải file, đổi tên, chuyển dự án, xoá'
+    r tab 'chọn nhiều server'; r '^g' 'lưu các server đã chọn thành nhóm'; r '^a / ^e' 'thêm / sửa server'
+    r '^s' 'đồng bộ ngay (thường không cần)'; r '^o' 'công cụ: nhập nhiều server, kho, sao chép key, hoàn tác'
+    r esc 'xoá ô tìm, nhấn lần nữa để bỏ chọn, lần nữa để thoát'
+    h 'Khi kết nối'
+    r 'dòng tiến trình' "cho biết đang ở bước nào và đã chờ bao lâu; quá $CTO giây thì dừng và nói hỏng ở bước nào"
+    r 'ctrl-c' 'huỷ kết nối đang chờ, quay lại hostbook'
+    h 'Trong phiên nhiều server (tmux)'
+    r "$pf d" 'ẩn phiên, vẫn chạy nền'; r "$pf mũi tên" 'đổi ô'; r "$pf n / p" 'tab sau / trước'; r "$pf x" 'đóng ô đang chọn'
+    h 'Từ dòng lệnh'
+    r 'hostbook web1' 'vào thẳng nếu đúng tên, hoặc chỉ một server khớp'; r 'hostbook add ubuntu@10.0.1.13' 'thêm nhanh, các mục khác tự đoán'
+    r 'hostbook import [file]' 'nhập nhiều server: tên user@ip #tag mỗi dòng'; r 'hostbook sync · doctor' 'đồng bộ · kiểm tra'
+    r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r 's' 'lối tắt của hostbook' )
+  clear
+  if [ "$(printf '%s\n' "$out" | wc -l)" -gt $(( rows - 3 )) ]; then printf '%s\n' "$out" | less -R   # dài hơn màn hình: cuộn được, q để quay lại
+  else printf '%s\n' "$out"; pause; fi
 }
 
 # ---------- màn chính ----------
@@ -1158,7 +1214,8 @@ home(){
       --delimiter="$TAB" --with-nth=2 --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost='Tìm theo tên, #tag, @user, IP, mô tả…' --pointer='▌' --marker='+' \
       --header "$(cmd_header)" --footer "$(cmd_footer)" \
-      --preview "'$SELF' _preview {1}" --preview-window='right,38%,border-left,<36(hidden)' --gutter=' ' \
+      --preview "'$SELF' _preview {1}" --preview-window='right,38%,border-left,wrap,<36(hidden)' --gutter=' ' --ellipsis='' --no-hscroll \
+      --bind "resize:reload('$SELF' _list)+transform-header('$SELF' _header)+transform-footer('$SELF' _footer {1})" \
       --color='fg+:bold,hl:212,hl+:212,pointer:212,marker:212,prompt:212,header:-1,info:244,border:238,ghost:244' \
       --listen --bind "start:execute-silent('$SELF' _bg_sync >/dev/null 2>&1 &)" \
       --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
@@ -1261,6 +1318,7 @@ case ${1:-} in
   _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
              printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
+  _explain) ensure_index; explain "$2" "$3" pane;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
   _infer) infer "$2" "$3" "${4:-}" "${5:-}";; _prefix) name_prefix "$2";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;

@@ -116,7 +116,7 @@ printf '\nHost a-web4\n  HostName 10.0.1.14\n' >> "$HOSTBOOK_DIR/project-a.conf"
 check "sửa ngoài sshm: kiểm tra, commit, đẩy" '[ "$(git -C "$T/kho.git" log -1 --format=%s)" = "Sửa ngoài hostbook" ]'
 printf 'Host bad\n  HostNmae 1\n' > "$HOSTBOOK_DIR/bad.conf"
 "$S" _sync_now
-check "file lỗi: không commit, header báo lỗi" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = invalid ] && [ -n "$(git -C "$HOSTBOOK_DIR" status --porcelain)" ] && "$S" _header | strip | grep -q "File lỗi, chưa đồng bộ: bad.conf"'
+check "file lỗi: không commit, header báo lỗi" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = invalid ] && [ -n "$(git -C "$HOSTBOOK_DIR" status --porcelain)" ] && "$S" _header | strip | grep -q "File lỗi.*bad.conf"'
 rm "$HOSTBOOK_DIR/bad.conf"
 git -C "$HOSTBOOK_DIR" remote set-url origin "$T/khong-co.git"
 printf '\nHost a-web5\n  HostName 10.0.1.15\n' >> "$HOSTBOOK_DIR/project-a.conf"
@@ -242,5 +242,26 @@ check "sau khi gộp, kho có cả hai phía" 'git -C "$T/kho.git" show HEAD:pro
 
 check "tên kho hiển thị gọn" '[ "$(cd "$HOSTBOOK_DIR" && git remote set-url origin git@github.com:me/hosts.git && "$S" _kho_addr)" = "git@github.com" ] && [ "$(cd "$HOSTBOOK_DIR" && git remote set-url origin ssh://git@gitea.lan:2222/me/hosts.git && "$S" _kho_addr)" = "gitea.lan:2222" ]'
 git -C "$HOSTBOOK_DIR" remote set-url origin "$T/kho.git"
+
+# ---- layout co giãn theo màn hình ----
+"$S" _index >/dev/null
+narrow=$(COLUMNS=60 "$S" _list | strip | grep '^h:a-gate' | cut -f2)
+wide=$(COLUMNS=200 "$S" _list | strip | grep '^h:a-gate' | cut -f2)
+vis(){ printf '%s' "$1" | awk -v w="$2" '{ print substr($0,1,w) }'; }
+check "màn hẹp: phần nhìn thấy có tên, tag, IP" 'vis "$narrow" 56 | grep -q "a-gate.*#prod.*203.0.113.10"'
+check "màn hẹp: user và dự án bị đẩy ra sau nhưng vẫn tìm được" '! vis "$narrow" 56 | grep -q "@ubuntu" && printf "%s" "$narrow" | grep -q "@ubuntu" && printf "%s" "$narrow" | grep -q "project-a"'
+check "màn rộng: thấy cả user, dự án, mô tả" 'vis "$wide" 120 | grep -q "@ubuntu.*project-a.*Cổng vào project A"'
+check "tag bị cắt vẫn tìm được" 'COLUMNS=60 "$S" _list | strip | grep "^h:a-db" | grep -q "#postgres"'
+check "phần đầu màn hẹp dùng thông báo ngắn, không bị cắt" '[ "$(COLUMNS=50 "$S" _header | strip | head -1 | wc -m | tr -d " ")" -le 50 ]'
+
+# ---- giải thích lỗi kết nối từ nhật ký ssh ----
+out=$(printf 'debug1: Connecting to 203.0.113.10 [203.0.113.10] port 22.\nssh: connect to host 203.0.113.10 port 22: Operation timed out\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
+check "hết thời gian: báo không có phản hồi, hỏng ở bước mạng" 'printf "%s" "$out" | grep -q "Không có phản hồi từ 203.0.113.10:22" && printf "%s" "$out" | grep -q "✗ Mạng tới"'
+out=$(printf 'debug1: Connecting to 203.0.113.10 [203.0.113.10] port 22.\ndebug1: Connection established.\ndebug1: Remote protocol version 2.0\ndebug1: Next authentication method: password\nPermission denied (publickey,password).\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
+check "sai mật khẩu: mạng và SSH ổn, hỏng ở đăng nhập" 'printf "%s" "$out" | grep -q "✓ Mạng tới" && printf "%s" "$out" | grep -q "✓ Server SSH trả lời" && printf "%s" "$out" | grep -q "✗ Đăng nhập" && printf "%s" "$out" | grep -q "Sai mật khẩu"'
+out=$(printf 'debug1: Remote protocol version 2.0\nAuthenticated to 203.0.113.10 ([203.0.113.10]:22) using "publickey".\nConnection timed out during banner exchange\nConnection to UNKNOWN port 65535 timed out\nKilled by signal 1.\n' > "$T/c.log"; "$S" _explain a-front1 "$T/c.log" | strip)
+check "qua máy trung gian: vào được máy trung gian, hỏng ở chặng sau" 'printf "%s" "$out" | grep -q "✓ Vào máy trung gian a-gate" && printf "%s" "$out" | grep -q "✗ Từ a-gate tới" && ! printf "%s" "$out" | grep -q "Killed by signal"'
+out=$(printf 'debug1: Remote protocol version 2.0\nHost key verification failed.\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
+check "host key đổi: cảnh báo, hỏng ở bước xác minh" 'printf "%s" "$out" | grep -q "Host key của a-gate đã thay đổi" && printf "%s" "$out" | grep -q "✗ Xác minh host key"'
 
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]
