@@ -1822,7 +1822,7 @@ share_build(){ # directory include-secrets(0|1) name…
     n=""; for h in $GH; do case " $* " in *" $h "*) n="$n${n:+ }$h";; esac; done
     [ "$(printf '%s\n' $n | grep -c .)" -ge 2 ] && printf '%s\t%s\t%s\n' "$GN" "$GM" "$n" >> "$out/groups.tsv"
   done < "$GRP"
-  printf 'version=1\nfrom=%s\ndate=%s\nhosts=%s\nsecrets=%s\n' "$(hostname -s)" "$(date +%FT%T)" "$#" "$(printf '%s\n' $used | grep -c .)" > "$out/manifest"
+  printf 'version=1\nfrom=%s\ndate=%s\nhosts=%s\nsecrets=%s\n' "$(hostname | cut -d. -f1)" "$(date +%FT%T)" "$#" "$(printf '%s\n' $used | grep -c .)" > "$out/manifest"
 }
 share_pack(){ # directory password → print the package
   printf '# hostbook-share v1 · %s server · từ %s\n' "$(sed -n 's/^hosts=//p' "$1/manifest")" "$(sed -n 's/^from=//p' "$1/manifest")"

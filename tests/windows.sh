@@ -55,6 +55,7 @@ host_block win-shared 127.0.0.1 fixture 22 '' shared-password '' '' > "$DIR/shar
 build_index full
 bundle=$(tmpd); bundle=$bundle/package
 check share_build "$bundle" 1 win-shared
+check test "$(sed -n 's/^from=//p' "$bundle/manifest")" = "$(hostname | cut -d. -f1)"
 share_pack "$bundle" '/shared-package-password' > "$T/share.hbshare"
 opened=$(HB_PACK_PW='/shared-package-password' pack_open "$T/share.hbshare") || exit 1
 check test "$(cat "$opened/secrets/shared-password.pass")" = synthetic-shared-secret
