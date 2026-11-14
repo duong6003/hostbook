@@ -124,7 +124,7 @@ PasswordAuthentication yes
 PubkeyAuthentication yes
 StrictModes no
 LogLevel VERBOSE
-ForceCommand C:/Windows/System32/cmd.exe /c echo HOSTBOOK_WINDOWS_SSH_OK
+ForceCommand echo HOSTBOOK_WINDOWS_SSH_OK
 "@
     Protect-ServerFile $serverConfig
     & $sshd -t -f $serverConfig

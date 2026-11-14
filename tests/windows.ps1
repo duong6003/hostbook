@@ -82,12 +82,30 @@ Run-Check 'Native interactive fzf callbacks' {
     Assert ($LASTEXITCODE -eq 0) 'real native fzf preview and action callbacks'
 }
 Run-Check 'Uninstall' {
-    Set-Content -LiteralPath (Join-Path $root 'sentinel') -Value 'unrelated data'
-    & (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall
-    Assert (!(Test-Path -LiteralPath (Join-Path $root 'app')) -and !(Test-Path -LiteralPath (Join-Path $root 'runtime'))) 'uninstall removes application and runtime'
-    Assert (Test-Path -LiteralPath (Join-Path $root 'sentinel')) 'uninstall preserves unrelated files in installation root'
-    Assert (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains (Join-Path $root 'bin')) 'uninstall removes user PATH entry'
-    Assert (Test-Path -LiteralPath $env:HOME) 'uninstall preserves user data'
+    # Uninstall must handle the app's persistent private agent without stopping an external Windows agent.
+    $secretDir = Join-Path $env:HOSTBOOK_DIR 'secrets'
+    New-Item -ItemType Directory -Force -Path $secretDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $secretDir 'agent-probe.meta') -Value 'type=password' -Encoding Ascii
+    & $launcher _load agent-probe
+    Assert ($LASTEXITCODE -eq 0) 'private agent starts before uninstall'
+    $prefix = $root.TrimEnd('\') + '\runtime\'
+    $ownedAgents = @(Get-Process -Name ssh-agent -ErrorAction SilentlyContinue | Where-Object {
+        try { $_.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+    })
+    Assert ($ownedAgents.Count -gt 0) 'private agent is still running when uninstall begins'
+    try {
+        Set-Content -LiteralPath (Join-Path $root 'sentinel') -Value 'unrelated data'
+        & (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall
+        Assert (!(Test-Path -LiteralPath (Join-Path $root 'app')) -and !(Test-Path -LiteralPath (Join-Path $root 'runtime'))) 'uninstall removes application and runtime with an active private agent'
+        Assert (Test-Path -LiteralPath (Join-Path $root 'sentinel')) 'uninstall preserves unrelated files in installation root'
+        Assert (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains (Join-Path $root 'bin')) 'uninstall removes user PATH entry'
+        Assert (Test-Path -LiteralPath (Join-Path $secretDir 'agent-probe.meta')) 'uninstall preserves host data'
+    } finally {
+        foreach ($agent in $ownedAgents) { if (!$agent.HasExited) { Stop-Process -Id $agent.Id -Force -ErrorAction SilentlyContinue } }
+        if (Test-Path -LiteralPath (Join-Path $root 'install.json')) {
+            try { & (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall } catch { Write-Host "Fixture cleanup: $_" }
+        }
+    }
 }
 if ($script:windowsFailures.Count) { throw ($script:windowsFailures -join "`n") }
 Write-Host 'Windows checks passed; physical terminal rendering and tmux tests are not covered here.'

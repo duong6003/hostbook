@@ -89,3 +89,21 @@ parameter binding before server startup; changed to an explicit group argument.
 Native Git/age paths are now converted explicitly: MSYS heuristics failed for a literal
 apostrophe in the installation path. Platform checks now also exercise quoted legacy
 migration and index refresh inside a spaced directory (11 total).
+
+## SSH capture diagnosis
+
+Run 43606469158 proved both forked and foreground MSYS agents can retain captured
+Windows output handles after `_run` exits. The harness now bounds process/output
+completion and prints original failures before reading a locked sshd log. This is
+an actual Windows CLI capture issue, not counted as passing SSH.
+
+The Windows boundary now starts a protected agent bootstrap script via ShellExecute
+(hidden, separate console/handles), keeping the ordinary OpenSSH daemon and private
+NTFS socket directory. Run 43607101218 reached that boundary but could not resolve
+its Bash executable; commit 2981198 passes the executing Bash's explicit native `.exe`
+path and working directory rather than relying on PowerShell PATH resolution.
+The SSH fixture's data directory is outside its fake HOME, like core/E2E fixtures,
+so native SSH tilde expansion cannot accidentally resolve the real profile.
+
+Still pending: full key/password/wrong-password/agent-lock SSH pass, final review and
+recording the final green matrix. No main merge, live installation or wiki publication.
