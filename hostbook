@@ -716,7 +716,7 @@ ssh_login(){ # chạy sshx với askpass khi cần. $1 = tên server (để ch�
   else sshx "$@"; fi
 }
 tty_ask(){ # prompt [ẩn] → hỏi trên terminal, in trả lời
-  local a; [ -n "${HB_ASKPASS_NOTTY:-}" ] && { echo; return 0; }
+  local a; [ -n "${HB_ASKPASS_NOTTY:-}" ] && { echo "${HB_ASKPASS_ANSWER:-}"; return 0; }   # HB_ASKPASS_ANSWER: chỉ dùng trong kiểm thử
   printf '%s' "$1" > /dev/tty
   if [ -n "${2:-}" ]; then stty -echo < /dev/tty 2>/dev/null; IFS= read -r a < /dev/tty; stty echo < /dev/tty 2>/dev/null; printf '\n' > /dev/tty
   else IFS= read -r a < /dev/tty; fi
@@ -726,13 +726,16 @@ tty_ask(){ # prompt [ẩn] → hỏi trên terminal, in trả lời
 # nếu server hỏi lại nghĩa là mật khẩu đó sai, khi ấy hỏi người dùng.
 cmd_askpass(){
   local prompt=${1:-} who host user s="" cnt=${HB_ASKPASS_COUNT:-/dev/null}
+  [ -n "${HB_ASKPASS_LOG:-}" ] && printf '%s\n' "$prompt" >> "$HB_ASKPASS_LOG"
   case $prompt in
     *yes/no*) tty_ask "$prompt"; return;;
     *[Pp]assword*)
       ensure_index
       who=$(printf '%s' "$prompt" | grep -oE '[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+' | head -1); user=${who%%@*}; host=${who#*@}
-      [ -n "$who" ] && s=$(awk -F'\t' -v h="$host" -v u="$user" '$3==h && $4==u && $12!="" {print $12; exit}' "$IDX")
-      [ -n "$s" ] && [ "$(secret_meta "$s" type)" = password ] || s=$(host_field "${HB_ASKPASS_HOST:-}" 12)
+      # câu hỏi dành cho chính server đang kết nối → secret của nó; dành cho máy khác (máy trung gian) → tra theo user@máy
+      local th=${HB_ASKPASS_HOST:-}
+      if [ -z "$who" ] || { [ "$(host_field "$th" 3)" = "$host" ] && [ "$(host_field "$th" 4)" = "$user" ]; }; then s=$(host_field "$th" 12)
+      else s=$(awk -F'\t' -v h="$host" -v u="$user" '$3==h && $4==u && $12!="" {print $12; exit}' "$IDX"); [ -n "$s" ] || s=$(host_field "$th" 12); fi
       if [ -n "$s" ] && [ "$(secret_meta "$s" type)" = password ] && ! grep -qxF "$s" "$cnt" 2>/dev/null; then
         echo "$s" >> "$cnt" 2>/dev/null; secret_get "$s"; return; fi
       [ -n "$s" ] && [ -z "${HB_ASKPASS_NOTTY:-}" ] && printf '%sMật khẩu đã lưu trong secret %s không đúng.%s\n' "$CY" "$s" "$C0" > /dev/tty
@@ -1637,25 +1640,6 @@ make_kho_here(){
   echo; box ok "${CG}Kho đã sẵn sàng.${C0}" "Máy khác vào được bằng: $addrs" "Mở hostbook trên máy khác cùng mạng, app sẽ tự tìm thấy kho này." "${CD}Khi khác mạng, dùng VPN hoặc Tailscale để các máy thấy kho.${C0}"
   pause
 }
-copy_keys(){
-  local m keys k sel used
-  title "Sao chép key từ máy khác"; dim "Sao chép private key qua ssh, quyền tự đặt về 600."; echo
-  m=$(pick_machine "Máy có key") || return 1
-  keys=$(sshx -o ConnectTimeout=8 "$m" 'cd ~/.ssh 2>/dev/null && for f in *; do case $f in *.pub|config|known_hosts*|authorized_keys*|agent|*.sock) ;; *) [ -f "$f" ] && head -c 40 "$f" | grep -q "PRIVATE KEY" && echo "$f";; esac; done') || { err "Không đọc được ~/.ssh trên $m"; pause; return 1; }
-  keys=$(printf '%s\n' "$keys" | grep -E '^[A-Za-z0-9._-]+$')
-  [ -n "$keys" ] || { warn "Không thấy private key nào trên $m"; pause; return 1; }
-  used=$(cut -f7 "$IDX" 2>/dev/null | sed 's|.*/||' | sort -u | tr '\n' ',')
-  sel=$(printf '%s\n' "$keys" | gum choose --no-limit --header "Chọn key cần sao chép · space đổi lựa chọn · đã chọn sẵn key đang dùng" --selected "$used") || return 1
-  [ -n "$sel" ] || return 1
-  confirm "Sao chép $(printf '%s\n' "$sel" | wc -l | tr -d ' ') key sang máy này?" || return 1
-  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
-  for k in $sel; do
-    if [ -f "$HOME/.ssh/$k" ]; then warn "$k đã có trên máy này, giữ nguyên"; continue; fi
-    scpx -q "$m:.ssh/$k" "$HOME/.ssh/$k" && chmod 600 "$HOME/.ssh/$k" && ok "$k → ~/.ssh/$k · chmod 600"
-    scpx -q "$m:.ssh/$k.pub" "$HOME/.ssh/$k.pub" 2>/dev/null
-  done
-  dim "Khi có thể, nên dùng key riêng cho mỗi máy."; pause
-}
 undo_last(){
   local msg; msg=$(g log -1 --format=%s 2>/dev/null) || return 1
   confirm --default=false "Hoàn tác \"$msg\"?" || return 1
@@ -1676,8 +1660,14 @@ doctor(){
   grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config" && ok "~/.ssh/config có Include ~/ssh-hosts/*.conf" || err "~/.ssh/config chưa Include ~/ssh-hosts/*.conf · chạy: hostbook setup"
   if e=$(validate); then ensure_index; ok "Cú pháp ssh config hợp lệ · $(wc -l < "$IDX" | tr -d ' ') server"; else err "ssh config lỗi: $(printf '%s' "$e" | head -1)"; fi
   [ -s "$STATE/skipped" ] && warn "Bỏ qua server có tên chứa ký tự lạ: $(sed "s|$DIR/||" "$STATE/skipped" | head -3 | tr '\n' ' ')"
-  for n in $(cut -f7 "$IDX" 2>/dev/null | sort -u); do n=${n/#\~/$HOME}; [ -f "$n" ] || continue
-    case $(perm "$n") in 600|400) ok "Quyền ${n/#$HOME/~} là 600";; *) warn "Quyền ${n/#$HOME/~} quá rộng · chmod 600 ${n/#$HOME/~}";; esac; done
+  if vault_exists; then
+    if kc_get >/dev/null 2>&1; then ok "Kho secret: đã mở trên máy này ($(kc_label)) · $(secret_names | grep -c .) secret"; else warn "Kho secret: chưa mở trên máy này · sẽ hỏi mật khẩu chính khi cần"; fi
+    for n in $(secret_names); do [ -f "$SEC/$n.pub" ] && [ "$(perm "$SEC/$n.pub")" != 600 ] && chmod 600 "$SEC/$n.pub"; done
+    n=$(awk -F'\t' '$12!=""{print $12}' "$IDX" | sort -u | while read -r e; do secret_exists "$e" || printf '%s ' "$e"; done)
+    [ -n "$n" ] && err "Server tham chiếu secret không còn trong kho secret: $n"
+    n=$(for e in $(secret_names); do [ -n "$(secret_users "$e")" ] || printf '%s ' "$e"; done); [ -n "$n" ] && dim "  secret không server nào dùng: $n"
+  else dim "· Chưa có kho secret (sẽ tạo khi bạn thêm secret đầu tiên)"; fi
+  n=$(legacy_keys | grep -c .); [ "$n" -gt 0 ] && warn "$n key còn nằm ngoài kho secret · Công cụ → Secret → Đưa key trên máy này vào kho secret"
   case $(perm "$DIR") in 700) ok "~/ssh-hosts chỉ chủ máy đọc được";; *) warn "~/ssh-hosts người khác trên máy đọc được · chmod 700 ~/ssh-hosts";; esac
   if [ -d "$HOME/.config/ghostty" ] || [ -d /Applications/Ghostty.app ]; then grep -qs 'ssh-env' "$HOME/.config/ghostty/config" && ok "Ghostty: ssh-env đang bật" || warn "Ghostty chưa bật ssh-env · chạy: hostbook setup"; fi
   [ -n "$(g status --porcelain 2>/dev/null)" ] && warn "Có thay đổi chưa commit" || ok "Không có thay đổi chờ lưu"
@@ -1713,7 +1703,11 @@ show_help(){
     h 'Phím'
     r enter 'ssh, mở nhóm, hoặc vào lại phiên'; r '→' 'thao tác: chuyển tiếp cổng, gửi/tải file, đổi tên, chuyển dự án, xoá'
     r tab 'chọn nhiều server'; r '^g' 'lưu các server đã chọn thành nhóm'; r '^a / ^e' 'thêm / sửa server'
-    r '^s' 'đồng bộ ngay (thường không cần)'; r '^o' 'công cụ: nhập nhiều server, kho, sao chép key, hoàn tác'
+    r '^s' 'đồng bộ ngay (thường không cần)'; r '^o' 'công cụ: nhập nhiều server, secret, kho, hoàn tác'
+    h 'Secret (key và mật khẩu đăng nhập)'
+    r '^o → Secret' 'thêm, thay, sửa, đổi tên, xoá; xem server nào đang dùng'
+    r 'hostbook unlock' "nạp mọi key vào ssh-agent ($((KEY_TTL/3600)) giờ) để ssh, scp, VS Code dùng được"
+    r 'hostbook lock' 'gỡ key khỏi ssh-agent (thêm --forget để hỏi lại mật khẩu chính)'
     r esc 'xoá ô tìm, nhấn lần nữa để bỏ chọn, lần nữa để thoát'
     h 'Khi kết nối'
     r 'dòng tiến trình' "cho biết đang ở bước nào và đã chờ bao lâu; quá $CTO giây thì dừng và nói hỏng ở bước nào"
@@ -1723,7 +1717,7 @@ show_help(){
     h 'Từ dòng lệnh'
     r 'hostbook web1' 'vào thẳng nếu đúng tên, hoặc chỉ một server khớp'; r 'hostbook add ubuntu@10.0.1.13' 'thêm nhanh, các mục khác tự đoán'
     r 'hostbook import [file]' 'nhập nhiều server: tên user@ip #tag mỗi dòng'; r 'hostbook sync · doctor' 'đồng bộ · kiểm tra'
-    r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r "$(shortcut_name || true)" 'lối tắt của hostbook trên máy này' )
+    r 'hostbook setup · update' 'cài cho máy này · cập nhật app'; r 'hostbook vault passwd · recover' 'đổi mật khẩu chính · dùng mã khôi phục'; r "$(shortcut_name || true)" 'lối tắt của hostbook trên máy này' )
   clear
   if [ "$(printf '%s\n' "$out" | wc -l)" -gt $(( rows - 3 )) ]; then printf '%s\n' "$out" | less -R   # dài hơn màn hình: cuộn được, q để quay lại
   else printf '%s\n' "$out"; pause; fi
@@ -1862,6 +1856,8 @@ case ${1:-} in
              printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _explain) ensure_index; explain "$2" "$3" pane;;
   _askpass) cmd_askpass "${2:-}";;
+  _run) ensure_index; h=$2; shift 2; prepare_login "$h" || exit 1; ssh_login "$h" ${HB_LOG:+-v -E "$HB_LOG"} -o ConnectTimeout=6 "$h" "$@" </dev/null;;
+  _secret_replace) ensure_index; secret_replace "$2" "$3" "${4:-yes}";;
   _vault_init) vault_exists || vault_create "$2";; _vault_recover) vault_recover "$2" "$3";; _vault_id) vault_identity >/dev/null && echo ok;;
   _secret_add_key) secret_add_key "$2" "${3:-}" "${4:-}";; _secret_add_password) secret_add_password "$2" "$3";; _secret_get) secret_get "$2";;
   _set_host_secret) ensure_index; apply_change "đổi đăng nhập" set_host_secret "$2" "${3:-}";; _migrate) migrate_keys_raw;;

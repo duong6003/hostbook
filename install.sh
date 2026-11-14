@@ -11,6 +11,7 @@ APP=${HOSTBOOK_HOME:-$HOME/.local/share/hostbook}
 BIN=$HOME/.local/bin
 FZF_VER=0.75.0; FZF_MIN=0.63
 GUM_VER=2.0.2;  GUM_MIN=0.14
+AGE_VER=1.3.2;  AGE_MIN=1.3.0   # cần plugin batchpass (có từ 1.3) cho kho secret và gói chia sẻ
 
 say(){ printf '\033[38;5;114m✓\033[0m %s\n' "$*"; }
 die(){ printf '\033[38;5;204m✗\033[0m %s\n' "$*" >&2; exit 1; }
@@ -38,7 +39,8 @@ fetch_bin(){
 }
 need(){ # TÊN BẢN_TỐI_THIỂU → 0 nếu đã đủ mới
   have "$1" || return 1
-  local v; case $1 in fzf) v=$(fzf --version | awk '{print $1}');; gum) v=$(gum --version | awk '{print $3}' | sed 's/^v//');; esac
+  local v; case $1 in fzf) v=$(fzf --version | awk '{print $1}');; gum) v=$(gum --version | awk '{print $3}' | sed 's/^v//');;
+    age) have age-plugin-batchpass && have age-keygen || return 1; v=$(age --version | sed 's/^v//');; esac
   ver_ge "$v" "$2"
 }
 
@@ -52,6 +54,22 @@ if ! need gum "$GUM_MIN"; then
   else fetch_bin gum "https://github.com/charmbracelet/gum/releases/download/v$GUM_VER/gum_${GUM_VER}_${o_gum}_$a_gum.tar.gz" \
     "https://github.com/charmbracelet/gum/releases/download/v$GUM_VER/checksums.txt" "gum_${GUM_VER}_${o_gum}_$a_gum/gum"; fi
 else say "gum $(gum --version | awk '{print $3}') đã có"; fi
+
+# age không phát hành file checksum, nên sha256 của bản ghim được ghi sẵn ở đây
+age_sha(){ case $1 in
+  linux-amd64) echo cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10;;
+  linux-arm64) echo 6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4;;
+  darwin-arm64) echo e2020b073c44f692685a24d6abc378817eb81ffaaf49fd0531ef8565f767f2f5;;
+  darwin-amd64) echo 1d1e4bc66e1427edad7739ae7616157de0e79db8b6d2a1497d7d9925fb06a539;;
+esac; }
+if ! need age "$AGE_MIN"; then
+  if [ "$os" = Darwin ] && have brew; then { brew upgrade age >/dev/null 2>&1 || brew install age >/dev/null; } && say "age (brew)"
+  else plat="${o_fzf}-$a_fzf"; tmp=$(mktemp -d); file=$tmp/age.tgz
+    curl -fsSL -o "$file" "https://github.com/FiloSottile/age/releases/download/v$AGE_VER/age-v$AGE_VER-$plat.tar.gz" || die "Không tải được age"
+    [ "$(sha256 "$file")" = "$(age_sha "$plat")" ] || die "Checksum của age không khớp, dừng cài"
+    tar -xzf "$file" -C "$tmp" && for b in age age-keygen age-plugin-batchpass; do install -m 755 "$tmp/age/$b" "$BIN/$b"; done
+    rm -rf "$tmp"; say "age $("$BIN/age" --version)"; fi
+else say "age $(age --version) đã có"; fi
 
 if [ -d "$APP/.git" ]; then git -C "$APP" pull -q --ff-only && say "Đã cập nhật hostbook"
 else rm -rf "$APP"; mkdir -p "$(dirname "$APP")"; git clone -q --depth 1 "$REPO" "$APP" && say "Đã tải hostbook"; fi
