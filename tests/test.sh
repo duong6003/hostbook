@@ -76,6 +76,17 @@ check "fzf: ^b- neo đầu tên" '[ "$(printf "%s\n" "$list" | fzf --filter "^b-
 prev=$("$S" _preview h:a-web1 | strip)
 check "xem trước có PROD, ProxyJump, mô tả" 'printf "%s" "$prev" | grep -q "● PROD" && printf "%s" "$prev" | grep -q "ProxyJump a-bastion" && printf "%s" "$prev" | grep -q "Nginx chính"'
 
+# Preview must do no network I/O: a fake nc records calls, and an unreachable TEST-NET address must return quickly
+printf 'Host z-ghost\n  HostName 192.0.2.1\n  User root\n' > "$HOSTBOOK_DIR/project-z.conf"
+mkdir -p "$T/fakebin"; printf '#!/bin/sh\necho "$@" >> "%s/nc.calls"\n' "$T" > "$T/fakebin/nc"; chmod +x "$T/fakebin/nc"
+"$S" _preview h:z-ghost >/dev/null; t0=$(perl -MTime::HiRes=time -e 'print int(time*1000)')
+pz=$(PATH="$T/fakebin:$PATH" "$S" _preview h:z-ghost | strip); t1=$(perl -MTime::HiRes=time -e 'print int(time*1000)')
+check "xem trước server không với tới được: < 300 ms, không gọi nc" '[ $((t1-t0)) -lt 300 ] && [ ! -e "$T/nc.calls" ] && printf "%s" "$pz" | grep -q "HostName 192.0.2.1"'
+check "xem trước chưa có kết quả kiểm tra: gợi ý Kiểm tra kết nối" 'printf "%s" "$pz" | grep -q "→ Kiểm tra kết nối"'
+printf 'z-ghost\tfail\tkhông có phản hồi\na-web1\tok\tđăng nhập được\n' > "$HOSTBOOK_STATE/last-check.tsv"
+check "xem trước hiện kết quả kiểm tra gần nhất" '"$S" _preview h:z-ghost | strip | grep -q "Kiểm tra lần cuối: không vào được (không có phản hồi) · 0 phút trước" && "$S" _preview h:a-web1 | strip | grep -q "Kiểm tra lần cuối: vào được · 0 phút trước"'
+rm -f "$HOSTBOOK_STATE/last-check.tsv" "$HOSTBOOK_DIR/project-z.conf"
+
 check "đọc địa chỉ user@ip:port" '[ "$("$S" _parse ops@10.3.0.50:2200 | tr "\n" " ")" = "ops 10.3.0.50 2200 " ]'
 check "đọc địa chỉ chỉ có IP" '[ "$("$S" _parse 10.0.1.13 | tr "\n" " ")" = " 10.0.1.13  " ]'
 check "từ chối địa chỉ có dấu cách / cổng sai" '! "$S" _parse "a b" >/dev/null && ! "$S" _parse "1.2.3.4:abc" >/dev/null'

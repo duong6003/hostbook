@@ -426,27 +426,44 @@ cmd_preview(){
   local t=${1%%:*} n=${1#*:}
   case $t in
     h) ensure_index
-       awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" -v iprod="$ICON_PROD" '$1==n {
-         prod=(" " $8 " " ~ / prod /)
-         printf "%s%s%s%s\n", cb, $1, c0, (prod? "  " cr cb iprod " PROD" c0 : "")
-         printf "%s%s%s\n", cd, ($9==""?"(chưa có mô tả)":$9), c0
-         t=$8; gsub(/ /," #",t); printf "%s%s%s\n\n", cu, ($8==""?"(chưa có tag)":"#" t), c0
-         printf "%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, $1, cd, c0, $3, cd, c0, $4
-         if ($5!="22") printf "  %sPort%s %s\n", cd, c0, $5
-         if ($6!="") printf "  %sProxyJump%s %s\n", cd, c0, $6
-         if ($12=="" && $7!="") printf "  %sIdentityFile%s %s\n", cd, c0, $7
-         printf "\n%s%s:%s%s\n", cd, $10, $11, c0 }' "$IDX" | sed "s|$HOME|~|g"
-       local psc; psc=$(host_field "$n" 12)
-       if [ -n "$psc" ]; then if secret_exists "$psc"; then printf '%sĐăng nhập:%s %s %s(%s)%s\n' "$CD" "$C0" "$psc" "$CD" "$(secret_label "$psc")" "$C0"; else printf '%sĐăng nhập: secret %s không còn trong kho secret%s\n' "$CR" "$psc" "$C0"; fi
-       elif [ -n "$(host_field "$n" 7)" ] && [ -f "$(host_field "$n" 7 | sed "s|^~|$HOME|")" ]; then printf '%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n' "$CY" "$C0"; fi
-       awk -F'\t' -v n="$n" -v now="$(date +%s)" -v cd="$CD" -v c0="$C0" '$2==n{c++; if($1>l)l=$1} END{
-         if (!c) { printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0; exit }
-         d=now-l; a=(d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày")
-         printf "%sLần gần nhất: %s trước · %d lần%s\n", cd, a, c, c0 }' "$HIST"
-       local ip po jp; ip=$(host_field "$n" 3); po=$(host_field "$n" 5); jp=$(host_field "$n" 6)
-       if [ -n "$jp" ]; then printf '%sĐi qua %s, không kiểm tra trực tiếp%s\n' "$CD" "$jp" "$C0"
-       elif port_open "$ip" "${po:-22}" 1; then printf "%s${ICON_PROD} mở cổng %s%s\n" "$CG" "${po:-22}" "$C0"
-       else printf "%s${ICON_PROD} không thấy cổng %s từ máy này%s\n" "$CY" "${po:-22}" "$C0"; fi ;;
+       # One awk does everything and no network I/O: host row, secret meta, history and the cached result of the last check.
+       local lc=$STATE/last-check.tsv mt=0
+       [ -f "$lc" ] && mt=$(stat -c %Y "$lc" 2>/dev/null || stat -f %m "$lc" 2>/dev/null)
+       awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" -v cy="$CY" -v cg="$CG" -v iprod="$ICON_PROD" \
+         -v home="$HOME" -v sec="$SEC" -v hist="$HIST" -v lc="$lc" -v mt="${mt:-0}" '
+         function tilde(s,  o, i) { if (home=="") return s; while ((i=index(s,home))) { o=o substr(s,1,i-1) "~"; s=substr(s,i+length(home)) } return o s }
+         function ago(d) { return d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày" }
+         function meta(f, k,  l, v) { while ((getline l < f) > 0) if (index(l, k "=")==1) { v=substr(l, length(k)+2); break }; close(f); return v }
+         BEGIN { srand(); now=srand() }   # srand() returns the previous seed, which is the current time: no date fork
+         { sub(/\r$/,"") } $1==n { r=$0; split($0, f, "\t"); exit }
+         END {
+           if (r=="") exit
+           prod=(" " f[8] " " ~ / prod /)
+           o=sprintf("%s%s%s%s\n", cb, f[1], c0, (prod? "  " cr cb iprod " PROD" c0 : ""))
+           o=o sprintf("%s%s%s\n", cd, (f[9]==""?"(chưa có mô tả)":f[9]), c0)
+           t=f[8]; gsub(/ /," #",t); o=o sprintf("%s%s%s\n\n", cu, (f[8]==""?"(chưa có tag)":"#" t), c0)
+           o=o sprintf("%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, f[1], cd, c0, f[3], cd, c0, f[4])
+           if (f[5]!="22") o=o sprintf("  %sPort%s %s\n", cd, c0, f[5])
+           if (f[6]!="") o=o sprintf("  %sProxyJump%s %s\n", cd, c0, f[6])
+           if (f[12]=="" && f[7]!="") o=o sprintf("  %sIdentityFile%s %s\n", cd, c0, f[7])
+           o=o sprintf("\n%s%s:%s%s\n", cd, f[10], f[11], c0)
+           printf "%s", tilde(o)
+           ps=f[12]
+           if (ps!="") {
+             mf=sec "/" ps ".meta"
+             if ((getline x < mf) >= 0) { close(mf); ty=meta(mf, "type"); lb=(ty=="password" ? "mật khẩu" : "key " meta(mf, "keytype"))
+               printf "%sĐăng nhập:%s %s %s(%s)%s\n", cd, c0, ps, cd, lb, c0 }
+             else printf "%sĐăng nhập: secret %s không còn trong kho secret%s\n", cr, ps, c0
+           } else if (f[7]!="") { kf=f[7]; if (substr(kf,1,1)=="~") kf=home substr(kf,2)
+             if ((getline x < kf) >= 0) printf "%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n", cy, c0 }
+           while ((getline l < hist) > 0) { split(l, h, "\t"); if (h[2]==n) { c++; if (h[1]>last) last=h[1] } }
+           if (!c) printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0
+           else printf "%sLần gần nhất: %s trước · %d lần%s\n", cd, ago(now-last), c, c0
+           while ((getline l < lc) > 0) { split(l, h, "\t"); if (h[1]==n) { st=h[2]; why=h[3]; break } }
+           if (st=="") printf "%s→ Kiểm tra kết nối%s\n", cd, c0
+           else if (st=="ok") printf "%s%s Kiểm tra lần cuối: vào được · %s trước%s\n", cg, iprod, ago(now-mt), c0
+           else printf "%s%s Kiểm tra lần cuối: không vào được (%s) · %s trước%s\n", (st=="skip"? cd : cy), iprod, why, ago(now-mt), c0
+         }' "$IDX" ;;
     g) local h; ensure_index
        printf '%s%s%s\n%sNhóm · mở bằng: %s%s\n\n' "$CU$CB" "$n" "$C0" "$CD" "$(mode_label "$(group_field "$n" 2)")" "$C0"
        for h in $(group_field "$n" 3); do
