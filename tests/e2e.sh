@@ -67,4 +67,12 @@ cp "$HOSTBOOK_DIR/secrets/key-a.pub" "$T/old.pub"
 check "thay key: key mới được đưa lên server và vào được" '[ "$("$S" _run e-key echo moi 2>/dev/null)" = moi ] && ! cmp -s "$T/old.pub" "$HOSTBOOK_DIR/secrets/key-a.pub"'
 check "thay key có gỡ key cũ: key cũ bị từ chối" '! ssh -F "$HOSTBOOK_SSH_CONFIG" -o BatchMode=yes -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile="$T/k1" -p $PORT root@127.0.0.1 true </dev/null 2>/dev/null'
 
+"$S" _index >/dev/null; t0=$(date +%s)
+res=$("$S" _check e-key e-pass e-wrong e-dead e-behind 2>/dev/null); t1=$(date +%s)
+rs(){ printf '%s\n' "$res" | awk -F'\t' -v n="$1" '$1==n{print $2}'; }
+check "kiểm tra kết nối: key và mật khẩu đúng thì vào được" '[ "$(rs e-key)" = ok ] && [ "$(rs e-pass)" = ok ]'
+check "kiểm tra kết nối: mật khẩu sai báo đúng lý do" '[ "$(rs e-wrong)" = fail ] && printf "%s\n" "$res" | grep "^e-wrong" | grep -q "mật khẩu trong secret mk-sai"'
+check "kiểm tra kết nối: server không tới được thì dừng trong thời hạn" '[ "$(rs e-dead)" = fail ] && [ $((t1 - t0)) -le 14 ]'
+check "kiểm tra kết nối: server sau máy trung gian hỏng được bỏ qua, không thử" '[ "$(rs e-behind)" = skip ]'
+
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]

@@ -389,4 +389,54 @@ rm -rf "$T/keychain"
 check "sau khi khôi phục: mật khẩu cũ và mã cũ hết hiệu lực" '! "$S" _vault_id 2>/dev/null | grep -q ok && ! "$S" _vault_recover "$code" "mat-khau-khac-12345" >/dev/null 2>&1'
 export HOSTBOOK_MASTER=mat-khau-moi-12345
 
+# ---- M3: chia sẻ và nhập gói ----
+check "bảng từ đủ 128, không trùng" '[ "$("$S" _share_words | wc -l | tr -d " ")" = 128 ] && [ -z "$("$S" _share_words | sort | uniq -d)" ]'
+check "mật khẩu gói: 4 từ và 2 chữ số" '"$S" _share_pw | grep -qE "^([a-z]+-){4}[0-9]{2}$"'
+"$S" _sync_now 2>/dev/null; "$S" _index >/dev/null
+printf 'g-chia-se\tsplit\ta-front1 s-web1 b-api\n' >> "$HOSTBOOK_DIR/groups.tsv"
+"$S" _share_build "$T/pk" 1 a-front1 s-web1 pw-1 >/dev/null 2>&1
+check "gói: khối được làm phẳng (user và máy trung gian thừa hưởng từ wildcard vẫn có)" 'sed -n "/^Host a-front1/,/^$/p" "$T/pk/conf/project-a.conf" | grep -q "User ubuntu" && sed -n "/^Host a-front1/,/^$/p" "$T/pk/conf/project-a.conf" | grep -q "ProxyJump a-gate"'
+check "gói: máy trung gian tự được kèm" 'grep -q "^Host a-gate" "$T/pk/conf/project-a.conf" && grep -q "^hosts=4" "$T/pk/manifest"'
+check "gói: chỉ kèm secret được dùng, đủ key và mật khẩu" 'grep -q "PRIVATE KEY" "$T/pk/secrets/key-chinh.key" && [ "$(cat "$T/pk/secrets/mk-x.pass")" = ban-cua-kho ] && [ ! -f "$T/pk/secrets/key-pp.key" ]'
+check "gói: nhóm chỉ giữ thành viên có trong gói" 'grep -q "^g-chia-se	split	a-front1 s-web1$" "$T/pk/groups.tsv"'
+"$S" _share_build "$T/pk0" 0 s-web1 >/dev/null 2>&1
+check "gói không kèm secret: không có secret, không còn dòng đăng nhập" '[ ! -d "$T/pk0/secrets" ] && ! grep -qE "secret|IdentityFile|IdentitiesOnly" "$T/pk0/conf/sec.conf"'
+"$S" _share_pack mat-khau-goi a-front1 s-web1 pw-1 > "$T/a.hbshare" 2>/dev/null
+check "gói đã mã hoá: có dòng đầu nhận diện, không lộ tên server hay key" 'head -1 "$T/a.hbshare" | grep -q "^# hostbook-share v1 · 4 server" && grep -q "BEGIN AGE ENCRYPTED FILE" "$T/a.hbshare" && ! grep -qE "a-front1|PRIVATE KEY|10\.0\.1" "$T/a.hbshare"'
+check "sai mật khẩu gói: không mở được" '! HB_PACK_PW=sai "$S" _import_classify "$T/a.hbshare" >/dev/null 2>&1'
+cls=$(HB_PACK_PW=mat-khau-goi "$S" _import_classify "$T/a.hbshare" 2>/dev/null)
+check "nhập lại vào chính máy gửi: mọi server giống hệt" '[ "$(printf "%s\n" "$cls" | grep -c .)" = 4 ] && [ "$(printf "%s\n" "$cls" | awk -F"\t" "\$2==\"same\"" | grep -c .)" = 4 ]'
+
+# máy B: đã có s-web1 (khác địa chỉ) và một server trùng địa chỉ với pw-1
+mkdir -p "$T/b"; printf 'Include %s/b/*.conf\n' "$T" > "$T/bcfg"
+printf 'Host s-web1\n  HostName 10.99.0.1\n  User ops\n\nHost trung-ip\n  HostName 10.70.0.1\n  User x\n' > "$T/b/sec.conf"
+git -C "$T/b" init -q; git -C "$T/b" add -A; git -C "$T/b" commit -qm init
+B(){ HOSTBOOK_DIR="$T/b" HOSTBOOK_STATE="$T/bs" HOSTBOOK_SSH_CONFIG="$T/bcfg" HOSTBOOK_KEYCHAIN="file:$T/bkc/id" HB_PACK_PW=mat-khau-goi "$S" "$@"; }
+cls=$(B _import_classify "$T/a.hbshare" 2>/dev/null)
+cl(){ printf '%s\n' "$cls" | awk -F'\t' -v n="$1" '$1==n{print $2}'; }
+check "máy khác: phân loại mới / khác / trùng địa chỉ" '[ "$(cl a-front1)" = new ] && [ "$(cl a-gate)" = new ] && [ "$(cl s-web1)" = diff ] && [ "$(cl pw-1)" = ipdup ] && printf "%s\n" "$cls" | grep "^s-web1" | grep -q "HostName 10.99.0.1 → 10.50.0.1"'
+cp -R "$T/b" "$T/b2"
+before=$(git -C "$T/b" rev-list --count HEAD)
+B _import_apply "$T/a.hbshare" pack >/dev/null 2>&1
+bidx=$(B _index); brow(){ printf '%s\n' "$bidx" | awk -F'\t' -v n="$1" -v c="$2" '$1==n{print $c}'; }
+check "nhập theo gói: server mới được thêm, server khác được cập nhật" '[ "$(brow a-front1 3)" = 10.0.1.211 ] && [ "$(brow a-front1 6)" = a-gate ] && [ "$(brow s-web1 3)" = 10.50.0.1 ] && [ "$(brow pw-1 3)" = 10.70.0.1 ] && B _validate'
+check "nhập: kho secret được tạo ở máy nhận, secret đọc được, server trỏ đúng secret" '[ "$(B _secret_get mk-x)" = ban-cua-kho ] && B _secret_get key-chinh | grep -q "PRIVATE KEY" && [ "$(brow s-web1 12)" = key-chinh ] && [ "$(brow pw-1 12)" = mk-x ]'
+check "nhập: nhóm đi theo" 'grep -q "^g-chia-se	split	a-front1 s-web1" "$T/b/groups.tsv"'
+check "nhập là một commit (hoàn tác được một lần)" 'git -C "$T/b" log -1 --format=%s | grep -q "Nhập gói" && git -C "$T/b" show --stat HEAD | grep -q "sec.conf" && ! git -C "$T/b" show HEAD~1:project-a.conf >/dev/null 2>&1'
+B2(){ HOSTBOOK_DIR="$T/b2" HOSTBOOK_STATE="$T/b2s" HOSTBOOK_SSH_CONFIG="$T/b2cfg" HOSTBOOK_KEYCHAIN="file:$T/b2kc/id" HB_PACK_PW=mat-khau-goi "$S" "$@"; }
+printf 'Include %s/b2/*.conf\n' "$T" > "$T/b2cfg"
+B2 _import_apply "$T/a.hbshare" mine >/dev/null 2>&1; bidx=$(B2 _index)
+check "giữ bản của tôi: chỉ thêm server mới, không đụng server đang có" '[ "$(brow a-front1 3)" = 10.0.1.211 ] && [ "$(brow s-web1 3)" = 10.99.0.1 ] && [ -z "$(brow pw-1 3)" ]'
+"$S" _share_pack mat-khau-goi s-web1 > "$T/again.hbshare" 2>/dev/null
+check "nhập lần hai một key đã có: dùng lại secret theo fingerprint, không tạo bản sao" 'B _import_classify "$T/again.hbshare" 2>/dev/null | grep -q "^s-web1	same" && [ "$(ls "$T/b/secrets" | grep -c "key-chinh")" = 3 ]'
+python3 - "$T" <<'PYEOF'
+import tarfile, io, sys
+t=sys.argv[1]
+with tarfile.open(t+'/evil.tgz','w:gz') as tf:
+    for name,data in (('manifest',b'version=1\nfrom=x\nhosts=1\n'),('../../evil.conf',b'Host evil\n')):
+        ti=tarfile.TarInfo(name); ti.size=len(data); tf.addfile(ti, io.BytesIO(data))
+PYEOF
+{ echo "# hostbook-share v1 · 1 server · từ x"; AGE_PASSPHRASE=mat-khau-goi age -e -j batchpass -a < "$T/evil.tgz"; } > "$T/evil.hbshare"
+check "gói có đường dẫn ../ bị từ chối" '! B _import_classify "$T/evil.hbshare" >/dev/null 2>&1 && [ ! -f "$T/evil.conf" ] && [ ! -f "$T/../evil.conf" ]'
+
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]
