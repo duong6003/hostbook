@@ -24,6 +24,16 @@ switch ($Action) {
             if ($entry.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $entry.AccessControlType -ne 'Allow') { throw 'Unexpected private directory ACL.' }
         }
     }
+    'agent-start' {
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = (Get-Command bash.exe -CommandType Application).Source
+        $start.Arguments = '--noprofile --norc "' + $Path.Replace('\', '/') + '"'
+        $start.UseShellExecute = $true
+        $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        $process = [Diagnostics.Process]::Start($start)
+        if (!$process.WaitForExit(10000)) { $process.Kill(); throw 'SSH agent startup timed out.' }
+        if ($process.ExitCode -ne 0) { throw 'SSH agent startup failed.' }
+    }
     'cache-set' {
         Add-Type -AssemblyName System.Security
         $plain = $utf8.GetBytes([Console]::In.ReadToEnd())
