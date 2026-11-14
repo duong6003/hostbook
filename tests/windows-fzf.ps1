@@ -105,6 +105,7 @@ try {
     if ($process.ExitCode -ne 0 -or $selection -cne $row) { throw ('fzf selection failed: ' + $stderr.GetAwaiter().GetResult()) }
 } finally {
     if ($process -and !$process.HasExited) { & taskkill.exe /PID $process.Id /T /F | Out-Null }
+    Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
     if ($allocatedConsole) { [HostbookFzfConsole]::FreeConsole() | Out-Null }
 }
 Write-Host 'ok    native fzf start and preview callbacks use Bash with spaced Unicode/apostrophe paths'

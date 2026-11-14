@@ -636,7 +636,7 @@ save_and_sync(){ # $1 = change description
 # ---------- secret vault ----------
 # Keys and passwords live in ~/ssh-hosts/secrets, encrypted with age to an identity (vault.pub). That identity is protected by
 # a master password (vault.key.age) and a recovery code (vault.recovery.age). After the first unlock, the operating system
-# stores the identity (Keychain / secret-service), so the master password is needed only once per machine.
+# stores the identity (Keychain / secret-service); Windows keeps only a per-invocation DPAPI-encrypted cache.
 SEC=$DIR/secrets
 KEY_TTL=${HOSTBOOK_KEY_TTL:-$(duration "$(cfg key_ttl 8h)")}
 vault_exists(){ [ -f "$SEC/vault.pub" ]; }
@@ -1067,7 +1067,7 @@ secret_manager(){
       file) n=$(pick_key_file) && secret_add_key "$n" >/dev/null; pause;;
       gen) vault_init && n=$(ask_secret_name "") && secret_add_key gen "$n" >/dev/null && { ok "Public key của $n:"; cat "$SEC/$n.pub"; pause; };;
       pass) secret_add_password >/dev/null;;
-      vault) case $(pick "Kho secret" "Đổi mật khẩu chính" "Tạo mã khôi phục mới|mã cũ hết hiệu lực" "Khoá trên máy này|gỡ key khỏi ssh-agent và quên danh tính; lần sau hỏi mật khẩu chính" "Nạp mọi key vào ssh-agent|để ssh, scp, VS Code dùng được") in
+      vault) case $(pick "Kho secret" "Đổi mật khẩu chính" "Tạo mã khôi phục mới|mã cũ hết hiệu lực" "Khoá trên máy này|gỡ key khỏi ssh-agent và quên danh tính; lần sau hỏi mật khẩu chính" "Nạp mọi key vào ssh-agent|cho client dùng chung agent") in
                0) vault_passwd; pause;; 1) vault_recovery_code;; 2) cmd_lock --forget; pause;; 3) cmd_unlock; pause;; esac;;
     esac
   done
@@ -2332,7 +2332,7 @@ show_help(){
     r '^t / ctrl-/' 'đổi thẻ ↔ gọn / ẩn hiện ô chi tiết'; r 'hb settings' 'giao diện, theme, xem trước trước khi lưu'
     h 'Secret (key và mật khẩu đăng nhập)'
     r '^o → Secret' 'thêm, thay, sửa, đổi tên, xoá; xem server nào đang dùng'
-    r 'hostbook unlock' "nạp mọi key vào ssh-agent ($((KEY_TTL/3600)) giờ) để ssh, scp, VS Code dùng được"
+    r 'hostbook unlock' "nạp mọi key vào ssh-agent ($((KEY_TTL/3600)) giờ) cho client dùng chung agent"
     r 'hostbook lock' 'gỡ key khỏi ssh-agent (thêm --forget để hỏi lại mật khẩu chính)'
     r esc 'xoá ô tìm, nhấn lần nữa để bỏ chọn, lần nữa để thoát'
     h 'Khi kết nối'
@@ -2578,6 +2578,7 @@ setup(){
 }
 update(){
   if is_windows; then
+    git -C "$(dirname "$SELF")" pull -q --ff-only || { err "Không tải được bản cập nhật hostbook"; return 1; }
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$(dirname "$SELF")/install.ps1")"
     return $?
   fi

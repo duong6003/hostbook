@@ -45,7 +45,9 @@ $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,
 if (Test-Path -LiteralPath $InstallRoot) { Set-Acl -LiteralPath $InstallRoot -AclObject $acl }
 else { [IO.Directory]::CreateDirectory($InstallRoot, $acl) | Out-Null }
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-@{ managedBy = 'hostbook'; runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+if (!(Test-Path -LiteralPath $configFile)) {
+    @{ managedBy = 'hostbook'; runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+}
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('hostbook-install-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 function Download([string]$Url, [string]$Hash) {
@@ -106,7 +108,11 @@ try {
         $compiled = Join-Path $temp 'hostbook.exe'
         Add-Type -TypeDefinition ([IO.File]::ReadAllText($launcherSource)) -OutputAssembly $compiled -OutputType ConsoleApplication
         if (Test-Path -LiteralPath $launcher) { Move-Item -LiteralPath $launcher -Destination "$launcher.old" -Force }
-        Copy-Item -LiteralPath $compiled -Destination $launcher
+        try { Copy-Item -LiteralPath $compiled -Destination $launcher }
+        catch {
+            if (Test-Path -LiteralPath "$launcher.old") { Move-Item -LiteralPath "$launcher.old" -Destination $launcher -Force }
+            throw
+        }
     }
     @{ managedBy = 'hostbook'; runtime = $runtime; launcherHash = $launcherHash } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
     [IO.File]::WriteAllText((Join-Path $InstallRoot 'runtime.path'), $runtime, (New-Object Text.UTF8Encoding($false)))

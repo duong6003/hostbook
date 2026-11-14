@@ -40,7 +40,8 @@ echo 'ok    native fzf CLI filter'
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   pick(){ echo 1; }; confirm(){ return 1; }; setting_pick(){ return 1; }
   clear(){ :; }; box(){ :; }; title(){ :; }; pause(){ :; }
-  first_run
+  # The app deliberately uses set -u without errexit; run this sourced flow with the same semantics.
+  first_run || { echo 'FAIL first-machine setup'; exit 1; }
   g log -1 --format=%s | grep -q .
 )
 echo 'ok    first-machine setup creates its first commit without a preconfigured Git identity'

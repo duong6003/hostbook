@@ -66,3 +66,15 @@ excluded from MSYS env conversion. Public launcher is now a tiny native .NET exe
 compiled with the built-in Windows C# compiler, because a CMD hop interprets fzf search
 operators such as `|`. Runtime remains internal Bash; no app rewrite or new framework.
 Versioned runtime directories allow runtime updates without replacing a running Bash.
+
+## Windows evidence and remaining probes
+
+Run 43602986617 (4d7ad55) proved managed extraction/install under a spaced Unicode/
+apostrophe path, native launcher lookup/argv (including literal `|`/`&`), UTF-8 clipboard,
+owner-only plaintext temp file ACL inheritance, DPAPI encryption/decryption, and native
+age interoperability for slash-leading passphrases. Windows fzf harness initially used
+HWND existence as readiness; headless consoles can be attached without a HWND.
+Run 43603552810 (5238024) additionally passed CRLF hosts/settings/groups. Its added
+first-machine sourced-function probe incorrectly imposed `set -e` on an app written
+without errexit; corrected the harness to match app semantics, retaining commit assertion.
+Real SSH, native interactive callbacks, update/uninstall still pending full runner pass.
