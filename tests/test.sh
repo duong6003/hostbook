@@ -454,4 +454,10 @@ PYEOF
 { echo "# hostbook-share v1 · 1 server · từ x"; AGE_PASSPHRASE=mat-khau-goi age -e -j batchpass -a < "$T/evil.tgz"; } > "$T/evil.hbshare"
 check "gói có đường dẫn ../ bị từ chối" '! B _import_classify "$T/evil.hbshare" >/dev/null 2>&1 && [ ! -f "$T/evil.conf" ] && [ ! -f "$T/../evil.conf" ]'
 
+# Stale temp dirs of dead pids are swept at startup; a live pid's entries stay
+sleep 300 & live=$!; mkdir -p "$T/state/tmp/999999.abc" "$T/state/tmp/$live.abc"
+"$S" help >/dev/null 2>&1
+check "khởi động dọn thư mục tạm của pid đã chết, giữ của pid đang chạy" '[ ! -e "$T/state/tmp/999999.abc" ] && [ -d "$T/state/tmp/$live.abc" ]'
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]

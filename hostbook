@@ -1234,20 +1234,25 @@ CTO=${HOSTBOOK_CONNECT_TIMEOUT:-}; [ -n "$CTO" ] || cfg connect_timeout 15 CTO  
 # so it cannot overwrite password or host-key prompts that SSH has already printed below.
 conn_line(){ printf '\0337\033[1A\r\033[K%s\0338' "$1" >/dev/tty; }
 conn_progress(){ # log ip port jump-host name
-  local log=$1 ip=$2 port=$3 jump=$4 n=$5 t0 el k=0 sp='⣾⣽⣻⢿⡿⣟⣯⣷' need=1 msg tail cols
+  local log=$1 ip=$2 port=$3 jump=$4 n=$5 t0 el k=0 sp='⣾⣽⣻⢿⡿⣟⣯⣷' need=1 msg tail cols rp au ce
   cols=$(term_cols)   # progress must fit on one line; wrapping would make "move up one line to update" print duplicates
+  trap 'cols=$(term_cols)' WINCH   # tmux resizes the pane: refresh the width on SIGWINCH instead of forking stty every tick
   [ -n "$jump" ] && need=2   # a jump host means two "server responded" events: the jump host, then the destination
-  t0=$(date +%s); sleep 0.3   # wait for tmux to finish arranging panes before drawing the first box
+  t0=$SECONDS; sleep 0.3   # wait for tmux to finish arranging panes before drawing the first box
   while :; do
-    el=$(( $(date +%s) - t0 )); cols=$(term_cols)   # measure each time: tmux may have just resized the pane
-    if [ "$(grep -c 'Remote protocol version' "$log" 2>/dev/null)" -ge $need ]; then
+    el=$(( SECONDS - t0 ))
+    # One awk pass per tick: counts of "Remote protocol version", "Authenticated to" and "Connection established"
+    read -r rp au ce <<EOF
+$(awk '/Remote protocol version/{r++} /Authenticated to/{a++} /Connection established/{c++} END{print r+0, a+0, c+0}' "$log" 2>/dev/null)
+EOF
+    if [ "${rp:-0}" -ge $need ]; then
       msg="$n trả lời sau ${el}s · đang đăng nhập"; [ $(( ${#msg} + 3 )) -gt "$cols" ] && msg="$n trả lời sau ${el}s"
       conn_line "$(printf "%s${ICON_OK}%s %s" "$CG" "$C0" "$msg")"; : > "$log.done"; return 0; fi
     if [ "$el" -ge $((CTO + 3)) ]; then   # fallback deadline: SSH does not apply its timeout while connecting through the jump host
       echo "hostbook: hết $CTO giây chờ" >> "$log"; pkill -TERM -P $$ -x ssh 2>/dev/null; return 0; fi
     if [ -n "$jump" ]; then
-      if grep -q 'Authenticated to' "$log" 2>/dev/null; then msg="Đã vào $jump, đang nối tới $ip:$port"; else msg="Đang vào máy trung gian $jump"; fi
-    elif grep -q 'Connection established' "$log" 2>/dev/null; then msg="Đã thông mạng tới $ip:$port, chờ SSH trả lời"
+      if [ "${au:-0}" -gt 0 ]; then msg="Đã vào $jump, đang nối tới $ip:$port"; else msg="Đang vào máy trung gian $jump"; fi
+    elif [ "${ce:-0}" -gt 0 ]; then msg="Đã thông mạng tới $ip:$port, chờ SSH trả lời"
     else msg="Đang mở kết nối tới $ip:$port"; fi
     tail=" · ${el}s / tối đa ${CTO}s · ctrl-c để huỷ"
     [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && tail=" · ${el}s/${CTO}s"
@@ -2840,7 +2845,19 @@ first_run(){ # ~/ssh-hosts does not exist yet
 cfg_init
 apply_theme
 
+# A killed run leaves $STATE/tmp/<pid>.* behind, and those can hold decrypted secrets: remove the ones whose pid is gone.
+sweep_tmp(){
+  local d p
+  for d in "$STATE/tmp"/*; do
+    [ -e "$d" ] || continue
+    p=${d##*/}; p=${p%%.*}
+    case $p in ''|*[!0-9]*) continue;; esac
+    kill -0 "$p" 2>/dev/null || rm -rf "$d"   # a live pid (including ours) keeps its entries
+  done
+}
+
 # ---------- entry point ----------
+case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
