@@ -198,7 +198,7 @@ Host *
     if ($checks -notmatch "(?m)^e-wrong`tfail`t") { throw "Connection check did not reject the wrong password: $checks" }
     Write-Host 'ok    parallel connection checks use key and password secrets'
     foreach ($path in @($hosts, (Join-Path $fixture 'state'))) {
-        $residuals = @(Get-ChildItem -LiteralPath $path -File -Recurse | Select-String -SimpleMatch 'BEGIN OPENSSH PRIVATE KEY')
+        $residuals = @(Get-ChildItem -LiteralPath $path -File -Recurse -Force | Select-String -SimpleMatch 'BEGIN OPENSSH PRIVATE KEY')
         if ($residuals.Count) { throw ('Plaintext private key found at: ' + (($residuals | Select-Object -ExpandProperty Path -Unique) -join ', ')) }
     }
     Write-Host 'ok    no plaintext private keys remain in hostbook data/state'

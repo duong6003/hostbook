@@ -556,8 +556,15 @@ merge_driver(){ # base ours theirs path
     }' "$1" "$2" "$3" > "$2.hbmerge"; rc=$?
   mv "$2.hbmerge" "$2"; return $rc
 }
+ensure_git_identity(){
+  if is_windows; then
+    g config user.name >/dev/null || g config user.name "$ME" || return 1
+    g config user.email >/dev/null || g config user.email "$ME@hostbook.local" || return 1
+  fi
+}
 ensure_merge_setup(){ # register the merger for the data repo (git config is machine-local; .gitattributes is synced)
   [ -d "$DIR/.git" ] || return 0
+  ensure_git_identity || return 1
   if is_windows; then g config core.autocrlf false; fi
   g config merge.hostbook.name "gộp theo từng server (hostbook)"
   g config merge.hostbook.driver "$(printf %q "$SELF") _merge %O %A %B %P"
@@ -585,6 +592,7 @@ unlock(){ rmdir "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
 # Commit all changes in ~/ssh-hosts if the config is valid.
 commit_all(){ local msg=$1 e
   [ -z "$(g status --porcelain)" ] && return 0
+  ensure_git_identity || return 1
   if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
   g add -A && g commit -qm "$msg" >/dev/null
 }
@@ -2490,7 +2498,7 @@ home(){
       --bind "resize:reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footer {1})" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
       --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
-      --bind "ctrl-y:execute-silent(touch '$STATE/share-request')+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
+      --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
       --bind "focus:transform-footer($(self_cmd) _footer {1})" --bind "multi:transform-footer($(self_cmd) _footer {1})" \
       --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
@@ -2605,10 +2613,8 @@ first_run(){ # ~/ssh-hosts does not exist yet
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
        GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ kho" -- git clone -q "$url" "$(native_path "$DIR")" || { err "Không lấy được kho từ $url"; return 1; };;
     *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
-       if is_windows; then
-         g config user.name >/dev/null || g config user.name "$ME"
-         g config user.email >/dev/null || g config user.email "$ME@hostbook.local"
-       fi; printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
+       ensure_git_identity || return 1
+       printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
        if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && confirm "Nhập các server đang có trong ~/.ssh/config?"; then
          cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
          n=$(split_config "$HOME/.ssh/config.bak" "$DIR" "$HOME/.ssh/config")

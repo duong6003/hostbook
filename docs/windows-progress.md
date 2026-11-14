@@ -122,3 +122,29 @@ A new active-agent uninstall probe caught the managed MSYS DLL being locked. Uni
 now stops only ssh-agent processes whose executable lies below this installation's
 `runtime\\` prefix (including old managed versions), waits for termination, and then
 removes owned files. System/native/global Git agents are outside that path scope.
+
+## Green matrix and final review
+
+All three jobs passed on production commit **6b04e61**:
+https://github.com/duong6003/hostbook/actions/runs/43609067062
+
+- Windows Server 2025 x64: fresh verified portable install; spaced/Unicode/apostrophe
+  paths; native launcher argv/query operators; NTFS/DPAPI/UTF-8 clipboard; age passwords;
+  new-machine Git identity; encrypted credential sharing; real key/password SSH,
+  askpass, bad-password rejection, persistent agent and lock, parallel checks;
+  no plaintext key residue; native interactive fzf callbacks; update/PATH; uninstall
+  with an active private agent, retaining user and unrelated files.
+- Ubuntu/macOS: 142 core + 109 UI + 15 real tmux TUI; Ubuntu also 15 Docker SSH tests.
+  Platform checks were 11 at that commit; final review adds two focused regressions.
+- No desktop hardware/manual terminal check, Windows ARM support, or Windows tmux
+  parity claimed. Native Windows OpenSSH/VS Code do not automatically share the bundled
+  Git agent; docs explain the boundary. Installer/app require no admin; the disposable
+  Windows SSH **test server** fixture uses runner admin privileges.
+
+Independent final review found two real gaps: fresh clones lacked a local fallback Git
+identity, and home Ctrl-Y quoted the share marker with raw apostrophes. Both were
+reproduced red and fixed: shared identity setup runs for repository setup/commits,
+while Ctrl-Y quotes its complete marker path. Platform checks are now **13/13** locally.
+The residual-key scan also includes hidden files. Final matrix rerun covers these
+review fixes. Worktree and branch remain for review; no merge, installed-app update,
+or wiki publication performed.
