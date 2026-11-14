@@ -21,3 +21,8 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           bash tests/test.sh
+      - name: Kiểm thử với server SSH thật (Docker, chỉ Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          bash tests/e2e.sh

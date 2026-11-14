@@ -47,7 +47,7 @@ Hai máy sửa cùng lúc được gộp theo từng server, không theo từng 
 | `tab` | chọn nhiều server, `enter` để mở cùng lúc: chia ô, chạy đồng loạt, hoặc mỗi server một tab (cần tmux) |
 | `^g` | lưu các server đã chọn thành nhóm |
 | `^a` / `^e` | thêm / sửa server |
-| `^o` | công cụ: nhập nhiều server, kho, sao chép key, hoàn tác, kiểm tra máy |
+| `^o` | công cụ: nhập nhiều server, secret, kho, hoàn tác, kiểm tra máy |
 | `?` | trợ giúp |
 
 Thêm server chỉ cần dán địa chỉ (`10.0.1.13`, `ubuntu@10.0.1.13` hay `10.0.1.13:2222`) và đặt tên. Dự án, user, tags, máy trung gian và key được đoán từ các server cùng dải IP, và mỗi giá trị đoán đều ghi rõ đoán từ đâu.
@@ -86,12 +86,23 @@ Từ dòng lệnh: `hb web1` (vào thẳng nếu đúng tên), `hostbook add ubu
 
 Giao diện co giãn theo kích thước terminal: màn hẹp chỉ hiện cột quan trọng (tên, tag, IP), các cột còn lại vẫn tìm được; ô xem trước tự ẩn khi không đủ chỗ.
 
+## Secret
+
+Key SSH và mật khẩu đăng nhập server được giữ trong **kho secret**: đã mã hoá (bằng [age](https://github.com/FiloSottile/age)), đồng bộ qua kho cùng danh sách server, nên máy mới không phải chép key tay.
+
+- Mỗi secret là một mục có tên (`key-booking`, `matkhau-deploy`) và dùng lại được cho nhiều server. Thay key một chỗ là mọi server dùng nó đều theo; app có thể đưa key mới lên các server giúp bạn.
+- Khi thêm server, mục "Đăng nhập bằng" liệt kê các secret đã có (kèm gợi ý), hoặc dán key mới, nhập key từ file, tạo key mới, lưu mật khẩu.
+- Kho secret mở bằng một **mật khẩu chính**. Mỗi máy chỉ nhập một lần, sau đó Keychain (macOS) hoặc secret-service (Linux) nhớ giúp. Lúc tạo kho, app hiện một **mã khôi phục** để dùng khi quên mật khẩu chính.
+- Kết nối qua hostbook thì key được nạp vào ssh-agent khi cần (8 giờ), không ghi ra file. Để `ssh`, `scp`, VS Code Remote-SSH dùng được ngoài app: `hostbook unlock`. Gỡ ra: `hostbook lock`.
+- Quản lý trong `^o` → Secret: thêm, thay, sửa, đổi tên, xoá, xem server nào đang dùng. Lệnh: `hostbook vault passwd`, `hostbook vault recover`.
+
 ## Dữ liệu
 
 ```
 ~/ssh-hosts/                 đồng bộ với kho
   project-a.conf             ssh config chuẩn, mỗi dự án một file
   groups.tsv                 các nhóm
+  secrets/                   kho secret (đã mã hoá): <tên>.age, .meta, .pub
   .gitattributes             bật bộ gộp theo từng server
 ~/.local/state/hostbook/     riêng từng máy: lịch sử dùng, chỉ mục
 ~/.ssh/config                có thêm dòng: Include ~/ssh-hosts/*.conf
@@ -111,7 +122,8 @@ Vì là ssh config chuẩn, `ssh a-web1`, VS Code Remote-SSH, scp… đều dùn
 
 ## Bảo mật
 
-- Private key không bao giờ được đồng bộ. Mỗi máy nên có key riêng; công cụ "Sao chép key" chỉ dùng khi chuyển máy.
+- Key và mật khẩu chỉ rời máy ở dạng đã mã hoá. Ai lấy được kho vẫn cần mật khẩu chính (hoặc mã khôi phục) mới đọc được secret, nên mật khẩu chính phải đủ mạnh (tối thiểu 10 ký tự).
+- Trên mỗi máy, danh tính của kho secret nằm trong Keychain của hệ điều hành: ai dùng được phiên đăng nhập của bạn trên máy đó thì dùng được secret. `hostbook lock --forget` để máy hỏi lại mật khẩu chính.
 - Danh sách server không đi qua dịch vụ bên ngoài nào, chỉ giữa các máy của bạn.
 - `~/ssh-hosts` và thư mục trạng thái chỉ chủ máy đọc được.
 - Tên server chứa ký tự lạ bị bỏ qua (`hostbook doctor` sẽ liệt kê), để dữ liệu từ kho không thể chạy lệnh trên máy bạn.
