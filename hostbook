@@ -21,7 +21,11 @@ is_windows(){ case $(uname -s) in MINGW*|MSYS*) return 0;; esac; return 1; }
 unix_path(){ if is_windows; then cygpath -u "$1"; else printf '%s\n' "$1"; fi; }
 windows_tool(){ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "${HOSTBOOK_PLATFORM_HELPER:-$(dirname "$SELF")/windows/platform.ps1}")" "$@"; }
 private_dir(){ if is_windows; then windows_tool private-dir "$(cygpath -w "$1")"; else mkdir -p "$1" && chmod 700 "$1"; fi; }
-if is_windows; then HOME=$(unix_path "$HOME"); export HOME; fi
+if is_windows; then
+  HOME=$(unix_path "$HOME"); export HOME
+  # fzf's native command arguments are protected from MSYS conversion; its Bash callbacks need normal conversion again.
+  unset MSYS2_ARG_CONV_EXCL MSYS_NO_PATHCONV
+fi
 DIR=$(unix_path "${HOSTBOOK_DIR:-$HOME/ssh-hosts}")
 STATE=$(unix_path "${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}")
 SSHCFG=${HOSTBOOK_SSH_CONFIG:-}; [ -z "$SSHCFG" ] || SSHCFG=$(unix_path "$SSHCFG")   # test override for ~/.ssh/config
@@ -32,7 +36,10 @@ TAB=$'\t'
 # ${#string} counts accented characters correctly only in a UTF-8 locale; minimal Ubuntu has C.UTF-8, macOS has en_US.UTF-8
 case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in *[Uu][Tt][Ff]*8*) ;; *)
   for l in C.UTF-8 en_US.UTF-8; do locale -a 2>/dev/null | grep -qix "$l\|${l%UTF-8}utf8" && { export LC_CTYPE=$l; break; }; done;; esac
-private_dir "$STATE" || { echo "Cannot protect hostbook state directory" >&2; exit 1; }
+if ! is_windows || [ "${HOSTBOOK_PRIVATE_STATE:-}" != "$STATE" ]; then
+  private_dir "$STATE" || { echo "Cannot protect hostbook state directory" >&2; exit 1; }
+  if is_windows; then export HOSTBOOK_PRIVATE_STATE=$STATE; fi
+fi
 [ -f "$HIST" ] || { cp "$HOME/.local/state/sshm/history" "$HIST" 2>/dev/null || : > "$HIST"; }   # preserve history from the sshm prototype
 
 E=$'\033'; C0="$E[0m"; CB="$E[1m"
@@ -659,8 +666,8 @@ kc_del(){ local b; b=$(kc_backend); case $b in
   st) secret-tool clear service hostbook account "vault:$(vault_id)" 2>/dev/null;;
   file:*) rm -f "${b#file:}-$(vault_id)";; esac; return 0; }
 id_ok(){ [ "$(age-keygen -y 2>/dev/null)" = "$(cat "$SEC/vault.pub")" ]; }   # identity via stdin
-age_pw_enc(){ AGE_PASSPHRASE=$1 age -e -j batchpass -a; }
-age_pw_dec(){ AGE_PASSPHRASE=$1 age -d -j batchpass "$2" 2>/dev/null; }
+age_pw_enc(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -e -j batchpass -a; }
+age_pw_dec(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -d -j batchpass "$2" 2>/dev/null; }
 # Print the identity to stdout. Use only through a pipe; never put it in environment variables or command arguments.
 vault_identity(){
   local id pw i
@@ -668,7 +675,7 @@ vault_identity(){
   id=$(kc_get) && [ -n "$id" ] && printf '%s\n' "$id" | id_ok && { printf '%s\n' "$id"; return 0; }
   for i in 1 2 3; do
     if [ -n "${HOSTBOOK_MASTER:-}" ]; then pw=$HOSTBOOK_MASTER; else pw=$(gum input --password --header "Mật khẩu chính của kho secret") || return 1; fi
-    if id=$(age_pw_dec "$pw" "$SEC/vault.key.age") && [ -n "$id" ]; then printf '%s\n' "$id" | kc_set; printf '%s\n' "$id"; return 0; fi
+    if id=$(age_pw_dec "$pw" "$SEC/vault.key.age") && [ -n "$id" ]; then printf '%s\n' "$id" | kc_set || return 1; printf '%s\n' "$id"; return 0; fi
     err "Sai mật khẩu chính" >&2; [ -n "${HOSTBOOK_MASTER:-}" ] && return 1
   done
   confirm "Dùng mã khôi phục?" && vault_recover >&2 && vault_identity
@@ -684,7 +691,7 @@ vault_create(){ # master-password → create the vault and print the recovery co
   printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub"
   printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age"
   rc=$(recovery_new) || return 1; printf '%s\n' "$id" | age_pw_enc "$rc" > "$SEC/vault.recovery.age"
-  printf '%s\n' "$id" | kc_set
+  printf '%s\n' "$id" | kc_set || return 1
   ensure_merge_setup
   recovery_fmt "$rc"
 }
@@ -726,7 +733,7 @@ vault_recover(){ # [code] [new password] (both arguments are for tests only)
   id=$(age_pw_dec "$(recovery_norm "$code")" "$SEC/vault.recovery.age") && [ -n "$id" ] || { err "Mã khôi phục không đúng"; return 1; }
   [ -n "$pw" ] || pw=$(ask_new_pw "Mật khẩu chính mới" 10) || return 1
   printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age"
-  new=$(printf '%s\n' "$id" | vault_new_recovery); printf '%s\n' "$id" | kc_set
+  new=$(printf '%s\n' "$id" | vault_new_recovery); printf '%s\n' "$id" | kc_set || return 1
   save_and_sync "Khôi phục kho secret"
   if [ -n "${1:-}" ]; then echo "$new"; else ok "Đã đặt mật khẩu chính mới. Mã khôi phục cũ hết hiệu lực."; show_recovery "$new"; fi
 }
@@ -909,9 +916,10 @@ prepare_login(){ # server… → load keys and enable askpass for password secre
   return 0
 }
 ssh_login(){ # run sshx with askpass when needed. $1 = server name (for its default secret); remaining arguments go to SSH
-  local h=$1; shift
+  local h=$1 d count=${HB_ASKPASS_COUNT:-}; shift
   if [ -n "$ASKPASS_ON" ]; then
-    SSH_ASKPASS="$STATE/askpass" SSH_ASKPASS_REQUIRE=force HB_ASKPASS_HOST="$h" HB_ASKPASS_COUNT="${HB_ASKPASS_COUNT:-$(tmpd)/count}" sshx "$@"
+    if [ -z "$count" ]; then d=$(tmpd) || return 1; count=$d/count; fi
+    SSH_ASKPASS="$STATE/askpass" SSH_ASKPASS_REQUIRE=force HB_ASKPASS_HOST="$h" HB_ASKPASS_COUNT="$count" sshx "$@"
   else sshx "$@"; fi
 }
 tty_ask(){ # prompt [hidden] → prompt on the terminal and print the answer
@@ -947,7 +955,7 @@ cmd_unlock(){
   agent_ready || { err "Không dựng được ssh-agent"; return 1; }
   for n in $(secret_names); do [ "$(secret_meta "$n" type)" = key ] || continue; load_secret "$n" && c=$((c+1)) || { err "Không nạp được $n"; return 1; }; done
   ok "Đã nạp $c key vào ssh-agent, dùng được trong $((KEY_TTL/3600)) giờ"
-  is_windows && dim "Agent của Git Bash; Windows OpenSSH/VS Code không tự dùng chung agent này."
+  if is_windows; then dim "Agent của Git Bash; Windows OpenSSH/VS Code không tự dùng chung agent này."; fi
 }
 cmd_lock(){
   local n; for n in $(secret_names); do [ -f "$SEC/$n.pub" ] && ssh-add -q -d "$SEC/$n.pub" 2>/dev/null; done
@@ -2579,7 +2587,11 @@ first_run(){ # ~/ssh-hosts does not exist yet
     0) m=$(pick_machine "Kho ở máy nào?" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
        GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ kho" -- git clone -q "$url" "$DIR" || { err "Không lấy được kho từ $url"; return 1; };;
-    *) private_dir "$DIR" || return 1; git -C "$DIR" init -q; printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
+    *) private_dir "$DIR" || return 1; git -C "$DIR" init -q
+       if is_windows; then
+         g config user.name >/dev/null || g config user.name "$ME"
+         g config user.email >/dev/null || g config user.email "$ME@hostbook.local"
+       fi; printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
        if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && confirm "Nhập các server đang có trong ~/.ssh/config?"; then
          cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
          n=$(split_config "$HOME/.ssh/config.bak" "$DIR" "$HOME/.ssh/config")

@@ -3,8 +3,7 @@
 param(
     [string]$InstallRoot = $(if ($env:HOSTBOOK_WINDOWS_ROOT) { $env:HOSTBOOK_WINDOWS_ROOT } else { Join-Path $env:LOCALAPPDATA 'hostbook' }),
     [string]$Repository = $(if ($env:HOSTBOOK_REPO) { $env:HOSTBOOK_REPO } else { 'https://github.com/duong6003/hostbook.git' }),
-    [switch]$Uninstall,
-    [switch]$NoPath
+    [switch]$Uninstall
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -19,14 +18,25 @@ function Set-UserPath([bool]$Add) {
     if ($Add) { $parts += $bin }
     [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
 }
+if (Test-Path -LiteralPath $configFile) {
+    $existing = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
+    if ($existing.managedBy -ne 'hostbook') { throw "Unrecognized installation marker: $configFile" }
+} elseif (Test-Path -LiteralPath $InstallRoot) {
+    if (@(Get-ChildItem -LiteralPath $InstallRoot -Force).Count -ne 0) { throw "Choose an empty installation directory: $InstallRoot" }
+}
 if ($Uninstall) {
     if (!(Test-Path -LiteralPath $configFile)) { throw "No hostbook installation at $InstallRoot" }
-    if (!$NoPath) { Set-UserPath $false }
-    Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+    Set-UserPath $false
+    foreach ($owned in @('app', 'bin', 'runtime', 'install.json')) {
+        $path = Join-Path $InstallRoot $owned
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+    if (@(Get-ChildItem -LiteralPath $InstallRoot -Force).Count -eq 0) { Remove-Item -LiteralPath $InstallRoot }
     Write-Host 'Removed hostbook and its managed runtime/dependencies. Your SSH hosts, vault and settings remain.'
     return
 }
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
+@{ managedBy = 'hostbook'; runtime = (Join-Path $InstallRoot 'runtime') } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('hostbook-install-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 function Download([string]$Url, [string]$Hash) {
@@ -38,7 +48,9 @@ function Download([string]$Url, [string]$Hash) {
 function Release-Zip([string]$Repo, [string]$Version, [string]$Name, [string]$Sums, [string]$Hash = '') {
     $base = "https://github.com/$Repo/releases/download/v$Version"
     if (!$Hash) {
-        $content = (Invoke-WebRequest -UseBasicParsing -Uri "$base/$Sums").Content
+        $sumFile = Join-Path $temp ($Repo.Split('/')[-1] + '-checksums.txt')
+        Invoke-WebRequest -UseBasicParsing -Uri "$base/$Sums" -OutFile $sumFile
+        $content = [IO.File]::ReadAllText($sumFile)
         $line = @($content -split "`n" | Where-Object { $_ -match ('^[a-fA-F0-9]{64}\s+\*?' + [regex]::Escape($Name) + '\s*$') })
         if ($line.Count -ne 1) { throw "Missing or ambiguous checksum for $Name" }
         $Hash = ($line[0] -split '\s+')[0]
@@ -81,10 +93,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot download/update hostbook. Your existing host data has not been changed.' }
     Copy-Item -LiteralPath (Join-Path $app 'windows\launch.ps1') -Destination (Join-Path $bin 'hostbook-launch.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $app 'windows\hostbook.cmd') -Destination $bin -Force
-    @{ runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
+    @{ managedBy = 'hostbook'; runtime = $runtime } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding UTF8
     & (Join-Path $bin 'hostbook-launch.ps1') setup
     if ($LASTEXITCODE -ne 0) { throw 'hostbook setup failed.' }
-    if (!$NoPath) { Set-UserPath $true }
+    Set-UserPath $true
     Write-Host "Installed hostbook at $InstallRoot"
     Write-Host 'Close and reopen Windows Terminal (all windows), then type hostbook in PowerShell.'
     Write-Host ('Use now: & "' + (Join-Path $bin 'hostbook.cmd') + '"')

@@ -16,11 +16,12 @@ SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"
 check 'callback command safely quotes spaces and apostrophes' '[ "$(bash -c "$(self_cmd) _header")" = callback-ok ]'
 check 'all emitted fzf callbacks use the quoted command' 'fzf_opts | grep -F "$(self_cmd) _header" >/dev/null'
-mkdir -p "$SEC"
-printf 'type=key\n' > "$SEC/fixture.meta"
-login_lines fixture > "$T/login"
-printf 'Host example\n%s\n' "$(cat "$T/login")" > "$T/ssh"
-check 'SSH key path remains valid with spaces in the home directory' 'ssh -F "$T/ssh" -G example >/dev/null 2>&1'
+printf 'Host example\n%s\n' "$(login_lines "$T/a space.pub")" > "$T/ssh"
+check 'SSH key path preserves spaces through OpenSSH config parsing' 'ssh -F "$T/ssh" -G example 2>/dev/null | grep -F "identityfile $T/a space.pub" >/dev/null'
+mkdir -p "$DIR"
+printf 'Host example\n%s\n' "$(login_lines "$T/a space.pub")" > "$DIR/fixture.conf"
+: > "$T/a space.pub"
+check 'legacy key discovery keeps the entire quoted path' '[ "$(legacy_keys | cut -f1)" = "$T/a space.pub" ]'
 is_windows(){ return 0; }
 export HOSTBOOK_KEYCHAIN="file:$T/cache/identity"
 check 'Windows refuses plaintext file identity cache overrides' '[ "$(kc_backend)" = windows ]'

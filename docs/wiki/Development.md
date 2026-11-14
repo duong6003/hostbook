@@ -2,7 +2,7 @@
 
 ## Codebase
 
-`hostbook` is a Bash 3.2-compatible executable for macOS and Linux. The UI uses fzf
+`hostbook` is a Bash 3.2-compatible executable shared by macOS, Linux, and Windows (Git for Windows runtime). The UI uses fzf
 and gum; tmux handles multi-host sessions, Git synchronizes host files, and age
 protects vault credentials. The app interface is currently Vietnamese; documentation
 and code comments are English.

@@ -65,10 +65,10 @@ $userCreated = $false
 $serviceCreated = $false
 try {
     New-Item -ItemType Directory -Path $fixture | Out-Null
-    $home = Join-Path $fixture 'home'
-    $hosts = Join-Path $home 'ssh-hosts'
+    $fixtureHome = Join-Path $fixture 'home'
+    $hosts = Join-Path $fixtureHome 'ssh-hosts'
     New-Item -ItemType Directory -Path $hosts -Force | Out-Null
-    $env:HOME = Posix-Path $home
+    $env:HOME = Posix-Path $fixtureHome
     $env:HOSTBOOK_DIR = Posix-Path $hosts
     $env:HOSTBOOK_STATE = Posix-Path (Join-Path $fixture 'state')
     $env:HOSTBOOK_SSH_CONFIG = Posix-Path (Join-Path $fixture 'ssh_config')

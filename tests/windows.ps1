@@ -12,8 +12,15 @@ $env:GIT_AUTHOR_NAME = $env:GIT_COMMITTER_NAME = 'ci'
 $env:GIT_AUTHOR_EMAIL = $env:GIT_COMMITTER_EMAIL = 'ci@example.com'
 $env:HOSTBOOK_REPO = $source
 New-Item -ItemType Directory -Force -Path $env:HOME | Out-Null
+$unrelated = Join-Path $testRoot 'existing directory'
+New-Item -ItemType Directory -Force -Path $unrelated | Out-Null
+Set-Content -LiteralPath (Join-Path $unrelated 'sentinel') -Value 'unrelated data'
+$rejected = $false
+try { & (Join-Path $source 'install.ps1') -InstallRoot $unrelated } catch { $rejected = $true }
+if (!$rejected -or !(Test-Path -LiteralPath (Join-Path $unrelated 'sentinel'))) { throw 'Installer must refuse a nonempty unrelated directory.' }
+Write-Host 'ok    installer refuses an unrelated nonempty directory'
 function Assert([bool]$Ok, [string]$Message) { if (!$Ok) { throw $Message }; Write-Host "ok    $Message" }
-& (Join-Path $source 'install.ps1') -InstallRoot $root -NoPath
+& (Join-Path $source 'install.ps1') -InstallRoot $root
 Assert ($LASTEXITCODE -eq 0) 'portable runtime installation completes'
 $launcher = Join-Path $root 'bin\hostbook.cmd'
 $env:HOSTBOOK_WINDOWS_ROOT = $root
@@ -30,7 +37,7 @@ $entry = Join-Path $root 'app\hostbook'
 $saved = [IO.File]::ReadAllBytes($entry)
 $env:HB_ARG_FILE = Join-Path $testRoot 'arguments'
 try {
-    [IO.File]::WriteAllText($entry, '#!/usr/bin/env bash' + "`n" + 'printf "%s\0" "$@" > "$HB_ARG_FILE"' + "`n", (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($entry, '#!/usr/bin/env bash' + "`n" + 'printf "%s\0" "$@" > "$(cygpath -u "$HB_ARG_FILE")"' + "`n", (New-Object Text.UTF8Encoding($false)))
     $values = @('a space', "apostrophe's", 'unicode-' + [char]0x1ec7, '', 'quote"inside', 'trailing\')
     & (Join-Path $root 'bin\hostbook-launch.ps1') @values
     $actual = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($env:HB_ARG_FILE)).Split([char]0)
@@ -43,9 +50,14 @@ Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, callbacks, private temps
 Assert ($LASTEXITCODE -eq 0) 'real native fzf preview and action callbacks'
 & $launcher update
 Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+Assert (@($userPath | Where-Object { $_ -eq (Join-Path $root 'bin') }).Count -eq 1) 'update keeps one user PATH entry'
 & (Join-Path $source 'tests\windows-ssh.ps1')
 Assert ($LASTEXITCODE -eq 0) 'real Windows SSH key and password login'
-& (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall -NoPath
-Assert (!(Test-Path -LiteralPath $root)) 'uninstall removes installation'
+Set-Content -LiteralPath (Join-Path $root 'sentinel') -Value 'unrelated data'
+& (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall
+Assert (!(Test-Path -LiteralPath (Join-Path $root 'app')) -and !(Test-Path -LiteralPath (Join-Path $root 'runtime'))) 'uninstall removes application and runtime'
+Assert (Test-Path -LiteralPath (Join-Path $root 'sentinel')) 'uninstall preserves unrelated files in installation root'
+Assert (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains (Join-Path $root 'bin')) 'uninstall removes user PATH entry'
 Assert (Test-Path -LiteralPath $env:HOME) 'uninstall preserves user data'
 Write-Host 'Windows checks passed; interactive screen/physical terminal and tmux tests are not covered here.'

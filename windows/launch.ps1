@@ -1,5 +1,8 @@
 # Installed as bin/hostbook.ps1, invoked by hostbook.cmd from any Windows shell.
 $ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
 $config = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\install.json') -Raw | ConvertFrom-Json
 $root = Split-Path $PSScriptRoot -Parent
 # ProcessStartInfo preserves empty arguments and embedded quotes on Windows PowerShell 5.1 too.

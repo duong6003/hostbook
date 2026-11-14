@@ -27,6 +27,10 @@ check test "$(windows_tool cache-get "$(cygpath -w "$HOSTBOOK_SESSION_CACHE")" |
 check test "$(grep -a -c 'AGE-SECRET-KEY' "$HOSTBOOK_SESSION_CACHE" || :)" = 0
 check test "$(kc_backend)" = windows
 echo 'ok    DPAPI cache decrypts for this user without plaintext identity persistence'
+printf fixture | age_pw_enc '/slash-leading-master-password' > "$T/slash.age"
+MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE='/slash-leading-master-password' HB_AGE_FILE=$(cygpath -w "$T/slash.age") powershell.exe -NoProfile -NonInteractive -Command '
+if ((& age -d -j batchpass $env:HB_AGE_FILE) -ne "fixture") { throw "passphrase was changed by MSYS conversion" }'
+echo 'ok    native age can decrypt a slash-leading passphrase unchanged across platforms'
 # Filtering is a CLI-only probe; windows-fzf.ps1 tests real interactive callbacks.
 printf 'host\n' | fzf --filter host >/dev/null
 echo 'ok    native fzf CLI filter'
