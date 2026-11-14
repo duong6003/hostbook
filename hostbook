@@ -45,7 +45,12 @@ ok(){ printf '%s✓%s %s\n' "$CG" "$C0" "$*"; }
 warn(){ printf '%s!%s %s\n' "$CY" "$C0" "$*"; }
 err(){ printf '%s✗%s %s\n' "$CR" "$C0" "$*"; }
 dim(){ printf '%s%s%s\n' "$CD" "$*" "$C0"; }
-box(){ local c=$1; shift; gum style --border rounded --padding "0 1" --border-foreground "$c" "$@"; }
+term_cols(){ local c; c=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2); echo "${c:-${COLUMNS:-80}}"; }
+box(){ # màu dòng... · dòng dài hơn màn hình thì gói lại trong khung thay vì làm vỡ khung
+  local c=$1 l v max=0 cols; shift; cols=$(term_cols)
+  for l in "$@"; do v=$(printf '%s' "$l" | sed $'s/\033\\[[0-9;]*m//g'); [ ${#v} -gt $max ] && max=${#v}; done
+  if [ $((max + 4)) -gt "$cols" ]; then gum style --border rounded --padding "0 1" --border-foreground "$c" --width $((cols - 2)) "$@"
+  else gum style --border rounded --padding "0 1" --border-foreground "$c" "$@"; fi; }
 title(){ printf '\n%s‹%s %s%s%s\n\n' "$CD" "$C0" "$CU$CB" "$*" "$C0"; }
 flash(){ printf '%s\t%s\n' "$(date +%s)" "$*" > "$FLASH"; }
 pause(){ printf '\n%s%s%s' "$CD" "${1:-enter để quay lại}" "$C0" >&2; read -r _ </dev/tty; }
@@ -360,44 +365,123 @@ save_and_sync(){ # $1 = mô tả thay đổi
 }
 
 # ---------- kết nối & báo lỗi ----------
-connect(){
-  local n=$1 e rc jump; e=$(mktemp); jump=$(host_field "$n" 6)
-  record "$n"
-  printf '%s→ ssh %s%s%s%s\n' "$CD" "$n" "${jump:+ qua $jump}" "$C0" "$(is_prod "$n" && printf '   %s● PROD%s' "$CR$CB" "$C0")"
-  sshx "$n" 2> >(tee "$e" >&2); rc=$?
-  sleep 0.1
-  if [ $rc -eq 255 ]; then explain "$n" "$e"; fi
-  rm -f "$e"
+CTO=${HOSTBOOK_CONNECT_TIMEOUT:-15}   # giây chờ tối đa trước khi coi là không kết nối được (mặc định của hệ thống có thể tới 75 giây)
+# Theo dõi nhật ký "ssh -v" và hiện một dòng tiến trình: đang ở bước nào, đã chờ bao lâu.
+# Dòng tiến trình nằm ở dòng phía trên con trỏ và được sửa bằng lưu/khôi phục vị trí con trỏ (ESC 7 / ESC 8),
+# nên dù ssh đã kịp in câu hỏi mật khẩu hay host key ở dòng dưới thì câu hỏi đó cũng không bị viết đè.
+conn_line(){ printf '\0337\033[1A\r\033[K%s\0338' "$1" >/dev/tty; }
+conn_progress(){ # log ip cổng máy_trung_gian tên
+  local log=$1 ip=$2 port=$3 jump=$4 n=$5 t0 el k=0 sp='⣾⣽⣻⢿⡿⣟⣯⣷' need=1 msg tail cols
+  cols=$(term_cols)   # dòng tiến trình phải nằm gọn một dòng: xuống hàng thì "lên một dòng để sửa" sẽ in lặp
+  [ -n "$jump" ] && need=2   # đi qua máy trung gian thì có hai lần "server trả lời": máy trung gian, rồi server đích
+  t0=$(date +%s); sleep 0.3   # đợi tmux chia xong bố cục trước khi vẽ khung đầu
+  while :; do
+    el=$(( $(date +%s) - t0 )); cols=$(term_cols)   # đo lại mỗi lần: ô tmux có thể vừa được chia lại
+    if [ "$(grep -c 'Remote protocol version' "$log" 2>/dev/null)" -ge $need ]; then
+      msg="$n trả lời sau ${el}s · đang đăng nhập"; [ $(( ${#msg} + 3 )) -gt "$cols" ] && msg="$n trả lời sau ${el}s"
+      conn_line "$(printf '%s✓%s %s' "$CG" "$C0" "$msg")"; : > "$log.done"; return 0; fi
+    if [ "$el" -ge $((CTO + 3)) ]; then   # chốt chặn: ssh không áp thời hạn cho bước vào máy trung gian
+      echo "hostbook: hết $CTO giây chờ" >> "$log"; pkill -TERM -P $$ -x ssh 2>/dev/null; return 0; fi
+    if [ -n "$jump" ]; then
+      if grep -q 'Authenticated to' "$log" 2>/dev/null; then msg="Đã vào $jump, đang nối tới $ip:$port"; else msg="Đang vào máy trung gian $jump"; fi
+    elif grep -q 'Connection established' "$log" 2>/dev/null; then msg="Đã thông mạng tới $ip:$port, chờ SSH trả lời"
+    else msg="Đang mở kết nối tới $ip:$port"; fi
+    tail=" · ${el}s / tối đa ${CTO}s · ctrl-c để huỷ"
+    [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && tail=" · ${el}s/${CTO}s"
+    [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && msg=${msg:0:$(( cols - ${#tail} - 4 ))}…
+    conn_line "$(printf '%s%s%s %s%s%s%s' "$CP" "${sp:k%8:1}" "$C0" "$msg" "$CD" "$tail" "$C0")"
+    k=$((k+1)); sleep 0.15
+  done
 }
-explain(){
-  local n=$1 f=$2 ip user key kind j acts=()
-  ip=$(host_field "$n" 3); user=$(host_field "$n" 4); key=$(host_field "$n" 7); j=$(host_field "$n" 6)
+# Kết nối và cho thấy từng bước. Trả về mã của ssh. $2=pane: đang chạy trong một ô tmux, không mở menu.
+connect(){
+  local n=$1 pane=${2:-} log rc jump ip port t0 wp
+  log=$(mktemp); jump=$(host_field "$n" 6); ip=$(host_field "$n" 3); port=$(host_field "$n" 5); port=${port:-22}
+  record "$n"
+  printf '%s→ ssh %s%s%s%s\n' "$CB" "$n" "$C0" "$CD${jump:+ qua $jump}$C0" "$(is_prod "$n" && printf '   %s● PROD%s' "$CR$CB" "$C0")"
+  t0=$(date +%s); printf '\n' >/dev/tty   # dòng trống: chỗ cho dòng tiến trình
+  ( conn_progress "$log" "$ip" "$port" "$jump" "$n" ) & wp=$!
+  trap 'true' INT   # ctrl-c chỉ huỷ ssh, không thoát hostbook
+  sshx -v -E "$log" -o ConnectTimeout="$CTO" "$n" 2>>"$log"; rc=$?   # stderr vào nhật ký; câu hỏi mật khẩu/host key đi qua /dev/tty nên vẫn hiện
+  trap - INT
+  kill $wp 2>/dev/null; wait $wp 2>/dev/null
+  [ -f "$log.done" ] || printf '\033[1A\r\033[K' >/dev/tty   # chưa tới được server: bỏ dòng tiến trình, khung lỗi sẽ thay chỗ
+  local need=1 entered=0; [ -n "$jump" ] && need=2   # ssh con đi qua máy trung gian cũng ghi các dấu mốc này một lần
+  [ "$(grep -c 'Entering interactive session' "$log")" -ge $need ] && entered=1
+  if { [ $rc -eq 255 ] || grep -q 'hostbook: hết' "$log"; } && [ $entered = 0 ]; then explain "$n" "$log" "$pane"; rc=255
+  elif [ $entered = 1 ]; then
+    local m=$(( ($(date +%s) - t0) / 60 )) msg
+    msg="Đã ngắt kết nối $n sau $( [ $m -gt 0 ] && echo "$m phút" || echo "chưa tới 1 phút")$( [ $rc -ne 0 ] && [ $rc -ne 255 ] && echo " · lệnh cuối trả về mã $rc")"
+    printf '%s← %s%s\n' "$CD" "$msg" "$C0"; flash "${CD}$msg${C0}"
+  fi
+  rm -f "$log" "$log.done"; return $rc
+}
+# Đọc nhật ký kết nối: đi tới bước nào, hỏng ở đâu, vì sao.
+explain(){ # tên log [pane]
+  local n=$1 f=$2 pane=${3:-} ip user key port j kind="" net=0 banner=0 auth=0 jump_ok=0 need=1 raw lines=() acts=()
+  ip=$(host_field "$n" 3); user=$(host_field "$n" 4); key=$(host_field "$n" 7); port=$(host_field "$n" 5); port=${port:-22}; j=$(host_field "$n" 6)
+  [ -n "$j" ] && need=2
+  grep -q 'Connection established' "$f" && net=1
+  [ "$(grep -c 'Remote protocol version' "$f")" -ge $need ] && banner=1
+  [ -n "$j" ] && grep -q 'Authenticated to' "$f" && jump_ok=1   # lần "Authenticated to" đầu tiên là của máy trung gian
   if grep -qiE 'IDENTIFICATION HAS CHANGED|Host key verification failed' "$f"; then kind=hostkey
   elif grep -qi 'Permission denied' "$f"; then kind=denied
   elif grep -qi 'Could not resolve hostname' "$f"; then kind=dns
   elif grep -qi 'Connection refused' "$f"; then kind=refused
-  elif grep -qiE 'timed out|No route to host|Network is unreachable|Host is down' "$f"; then kind=network
-  else return 0; fi
+  elif grep -qiE 'No route to host|Network is unreachable|Host is down' "$f"; then kind=unreachable
+  elif grep -qiE 'timed out|hostbook: hết' "$f"; then kind=timeout
+  elif grep -qiE 'Connection closed|Connection reset|kex_exchange_identification|Broken pipe' "$f"; then kind=closed
+  else kind=cancel; fi
+  raw=$(tr -d '\r' < "$f" | grep -vE '^(debug[0-9]|OpenSSH_|Warning: Permanently added|Killed by signal)' | grep . | tail -2 | tr '\n' ' ' | sed 's/ $//')   # ssh ghi "\r\n": bỏ \r kẻo con trỏ quay về đầu dòng làm vỡ khung
+  [ $kind = cancel ] && [ -z "$raw" ] && { flash "${CD}Đã huỷ kết nối tới $n${C0}"; return 0; }
+  # các bước đã đi qua: ✓ xong, ✗ hỏng ở đây, · chưa tới
+  st(){ if [ "$1" = 1 ]; then printf '%s✓%s %s' "$CG" "$C0" "$2"; elif [ "$1" = x ]; then printf '%s✗ %s%s' "$CR" "$2" "$C0"; else printf '%s· %s%s' "$CD" "$2" "$C0"; fi; }
+  local s1 s2 s3 s0=""
+  if [ -n "$j" ]; then
+    s0=$(st $([ $jump_ok = 1 ] && echo 1 || echo x) "Vào máy trung gian $j")
+    s1=$(st $([ $banner = 1 ] && echo 1 || { [ $jump_ok = 1 ] && echo x || echo -; }) "Từ $j tới $ip:$port")
+  else
+    s1=$(st $([ $net = 1 ] && echo 1 || echo x) "Mạng tới $ip:$port")
+  fi
+  s2=$(st $([ $banner = 1 ] && echo 1 || { { [ $net = 1 ] || [ $jump_ok = 1 ]; } && [ -z "$j" ] && echo x || echo -; }) "Server SSH trả lời")
+  s3=$(st $([ $banner = 1 ] && echo x || echo -) "Đăng nhập (user $user)")
+  [ $kind = hostkey ] && s3=$(st x "Xác minh host key")
   echo
   case $kind in
-    hostkey) box 204 "${CR}⚠ Host key của $n đã thay đổi${C0}" "Có thể server vừa được cài lại." "Cũng có thể có người đang chặn giữa đường." "${CR}Chỉ cập nhật khi bạn chắc chắn server vừa được cài lại.${C0}"
-             case $(pick "Làm gì tiếp?" "Quay lại ô tìm|an toàn" "Tôi đã kiểm tra, cập nhật host key") in
-               1) ssh-keygen -R "$ip" >/dev/null 2>&1; ssh-keygen -R "$n" >/dev/null 2>&1; connect "$n";; esac; return;;
-    denied)  box 221 "${CY}$n từ chối đăng nhập (Permission denied)${C0}" "Đang thử: user $user, key ${key/#$HOME/~}" "• Key của máy này có thể chưa được thêm lên server" "• Hoặc sai user";;
-    dns)     box 221 "${CY}Không tìm thấy địa chỉ $ip${C0}" "• Sai tên máy, hoặc tên này chỉ dùng được trong mạng nội bộ/VPN";;
-    refused) box 221 "${CY}$n ($ip) từ chối kết nối ở cổng $(host_field "$n" 5)${C0}" "• Server đang chạy nhưng không mở SSH ở cổng này" "• Hoặc sai cổng";;
-    network) box 221 "${CY}Không kết nối được $n ($ip)${C0}" "• Máy này chưa vào được mạng của server (VPN, mạng nội bộ…)" "• Server đang tắt, hoặc sai IP" ${j:+"• Không vào được máy trung gian $j"};;
+    hostkey) lines=("${CR}⚠ Host key của $n đã thay đổi${C0}" "Có thể server vừa được cài lại." "Cũng có thể có người đang chặn giữa đường." "${CR}Chỉ cập nhật khi bạn chắc chắn server vừa được cài lại.${C0}");;
+    denied)  if grep -q 'Next authentication method: password\|Next authentication method: keyboard' "$f"; then
+               lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, key ${key/#$HOME/~}, rồi mật khẩu" "• Sai mật khẩu, hoặc sai user" "• Key của máy này chưa được thêm lên server nên phải dùng mật khẩu")
+             else lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, key ${key/#$HOME/~}" "• Key của máy này có thể chưa được thêm lên server" "• Hoặc sai user"); fi;;
+    dns)     lines=("${CY}Không tìm thấy địa chỉ $ip${C0}" "• Sai tên máy, hoặc tên này chỉ dùng được trong mạng nội bộ/VPN");;
+    refused) lines=("${CY}$ip từ chối kết nối ở cổng $port${C0}" "• Máy có chạy nhưng SSH không mở ở cổng này" "• Hoặc sai cổng");;
+    unreachable) lines=("${CY}Không có đường mạng tới $ip${C0}" "• Máy này chưa vào được mạng của server (VPN, mạng nội bộ…)");;
+    timeout) if [ -n "$j" ] && [ $jump_ok = 1 ]; then lines=("${CY}$j không nối tới được $ip:$port sau $CTO giây${C0}" "• Server đích đang tắt, hoặc sai IP" "• Hoặc tường lửa chặn từ $j tới server")
+             elif [ -n "$j" ]; then lines=("${CY}Không vào được máy trung gian $j sau $CTO giây${C0}" "• Máy này chưa vào được mạng của $j (VPN…)" "• Hoặc $j đang tắt")
+             elif [ $net = 1 ]; then lines=("${CY}$ip:$port nhận kết nối nhưng SSH không trả lời sau $CTO giây${C0}" "• Server đang quá tải, hoặc cổng này không phải SSH")
+             else lines=("${CY}Không có phản hồi từ $ip:$port sau $CTO giây${C0}" "• Máy này chưa vào được mạng của server (VPN, mạng nội bộ…)" "• Server đang tắt, sai IP, hoặc tường lửa chặn"); fi;;
+    closed)  lines=("${CY}$n đóng kết nối giữa chừng${C0}" "• Server có thể đang chặn IP của máy này (fail2ban…) hoặc giới hạn số kết nối" "• Hoặc cổng này không phải SSH");;
+    *)       lines=("${CY}Không kết nối được $n${C0}");;
   esac
+  box 221 "${lines[@]}" "" ${s0:+"$s0"} "$s1" "$s2" "$s3" ${raw:+"${CD}ssh báo: $raw${C0}"}
+  if [ -n "$pane" ]; then return 0; fi
+  if [ $kind = hostkey ]; then
+    case $(pick "Làm gì tiếp?" "Quay lại ô tìm|an toàn" "Tôi đã kiểm tra, cập nhật host key") in
+      1) ssh-keygen -R "$ip" >/dev/null 2>&1; ssh-keygen -R "[$ip]:$port" >/dev/null 2>&1; ssh-keygen -R "$n" >/dev/null 2>&1; connect "$n";; esac; return 0
+  fi
   acts=("Thử lại" "Sửa server này")
   [ $kind = denied ] && acts+=("Sao chép key từ máy khác")
-  acts+=("Quay lại ô tìm")
-  case $(pick "Làm gì tiếp?" "${acts[@]}") in
-    0) connect "$n";;
-    1) edit_host "$n";;
-    2) [ $kind = denied ] && copy_keys;;
-  esac
+  acts+=("Xem nhật ký kết nối" "Quay lại ô tìm")
+  local logcopy; logcopy=$(mktemp); cp "$f" "$logcopy"
+  while :; do
+    case ${acts[$(pick "Làm gì tiếp?" "${acts[@]}" || echo 99)]:-} in
+      "Thử lại") rm -f "$logcopy"; connect "$n"; return 0;;
+      "Sửa server này") rm -f "$logcopy"; edit_host "$n"; return 0;;
+      "Sao chép key từ máy khác") rm -f "$logcopy"; copy_keys; return 0;;
+      "Xem nhật ký kết nối") grep -vE '^debug[0-9]: (Reading|/|channel|client_input|pledge|kex|SSH2_MSG|expecting|rekey|setting up|identity file|Local version|compat|Skipping|load_hostkeys|checking match|hostkeys_find|get_agent|fd [0-9])' "$logcopy" | sed "s|$HOME|~|g" | gum pager --soft-wrap;;
+      *) rm -f "$logcopy"; return 0;;
+    esac
+  done
 }
-
 # ---------- thêm & sửa ----------
 # Đoán các giá trị còn thiếu từ những server cùng dải IP. In ra các dòng key=value (src_* là nguồn đoán).
 infer(){ # host name user port [dự-án-bắt-buộc]
@@ -781,7 +865,7 @@ open_many(){ # group-name-or-empty host...
   set -- $ok_hosts; [ $# -gt 0 ] || { err "Không còn server nào để mở"; pause; return 1; }
   [ -n "$grp" ] && mode=$(group_field "$grp" 2)
   if [ -z "$grp" ] && [ $# -eq 1 ]; then   # một server: không hỏi kiểu mở; đang ở trong tmux thì mở thành tab của phiên hiện tại
-    record "$1"; [ -n "$SSHCFG" ] && sshcmd="ssh -F $(printf %q "$SSHCFG")"
+    record "$1"; sshcmd=$(pane_cmd)
     if [ -n "${TMUX:-}" ]; then tmux new-window -n "$1" "$sshcmd $(printf %q "$1")"; return; fi
     mode=tabs
   fi
@@ -804,7 +888,7 @@ open_many(){ # group-name-or-empty host...
   s=$(printf '%s' "$s" | tr -c 'a-zA-Z0-9_+-' '-')
   if tmux has-session -t "=$s" 2>/dev/null; then attach "$s"; return; fi
   record "$@"
-  [ -n "$SSHCFG" ] && sshcmd="ssh -F $(printf %q "$SSHCFG")"
+  sshcmd=$(pane_cmd)
   for h in "$@"; do
     if [ $first = 1 ]; then tmux new-session -d -s "$s" -n "${grp:-$h}" "$sshcmd $(printf %q "$h")"; first=0
     elif [ "$mode" = tabs ]; then tmux new-window -t "$s" -n "$h" "$sshcmd $(printf %q "$h")"
@@ -820,6 +904,11 @@ open_many(){ # group-name-or-empty host...
   [ "$mode" = tabs ] && tmux select-window -t "$s:^" 2>/dev/null
   attach "$s"
 }
+# Lệnh chạy trong mỗi ô tmux: chính hostbook, để ô nào cũng có dòng tiến trình và lời giải thích khi lỗi.
+# tmux server có thể đã chạy từ trước nên không mang theo biến môi trường của lần chạy này: truyền rõ ra.
+pane_cmd(){ local v e=""
+  for v in HOSTBOOK_DIR HOSTBOOK_STATE HOSTBOOK_SSH_CONFIG HOSTBOOK_CONNECT_TIMEOUT LC_CTYPE; do eval "[ -n \"\${$v:-}\" ] && e=\"\$e $v=\$(printf %q \"\${$v}\")\""; done
+  printf 'env%s %q _connect' "$e" "$SELF"; }
 attach(){ if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$1"; else tmux attach -t "$1"; fi; }
 
 # ---------- thao tác trên một server ----------
@@ -1170,6 +1259,8 @@ first_run(){ # chưa có ~/ssh-hosts
 # ---------- điểm vào ----------
 case ${1:-} in
   _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";;
+  _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
+             printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
   _infer) infer "$2" "$3" "${4:-}" "${5:-}";; _prefix) name_prefix "$2";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;
