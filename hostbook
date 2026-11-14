@@ -19,6 +19,7 @@ resolve_self(){ local p=$1 l; while [ -L "$p" ]; do l=$(readlink "$p"); case $l 
 SELF=$(resolve_self "$0")
 is_windows(){ case $(uname -s) in MINGW*|MSYS*) return 0;; esac; return 1; }
 unix_path(){ if is_windows; then cygpath -u "$1"; else printf '%s\n' "$1"; fi; }
+native_path(){ if is_windows; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
 windows_tool(){ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "${HOSTBOOK_PLATFORM_HELPER:-$(dirname "$SELF")/windows/platform.ps1}")" "$@"; }
 private_dir(){ if is_windows; then windows_tool private-dir "$(cygpath -w "$1")"; else mkdir -p "$1" && chmod 700 "$1"; fi; }
 if is_windows; then
@@ -61,7 +62,7 @@ fzf(){ if is_windows; then MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 command fz
 clip_get(){ if is_windows; then windows_tool clipboard-get; elif have pbpaste; then pbpaste; elif have wl-paste; then wl-paste; elif have xclip; then xclip -o -selection clipboard; elif have xsel; then xsel -ob; else return 1; fi; }
 sha256(){ if have sha256sum; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 export GIT_OPTIONAL_LOCKS=0   # background git status must not contend for the index lock with another sync
-g(){ git -C "$DIR" "$@"; }
+g(){ git -C "$(native_path "$DIR")" "$@"; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
 scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
 git_ssh(){ printf 'ssh%s -o BatchMode=yes -o ConnectTimeout=%s' "${SSHCFG:+ -F $(printf %q "$SSHCFG")}" "${1:-4}"; }
@@ -670,7 +671,7 @@ kc_del(){ local b; b=$(kc_backend); case $b in
   file:*) rm -f "${b#file:}-$(vault_id)";; esac; return 0; }
 id_ok(){ [ "$(age-keygen -y 2>/dev/null)" = "$(cat "$SEC/vault.pub")" ]; }   # identity via stdin
 age_pw_enc(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -e -j batchpass -a; }
-age_pw_dec(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -d -j batchpass "$2" 2>/dev/null; }
+age_pw_dec(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -d -j batchpass "$(native_path "$2")" 2>/dev/null; }
 # Print the identity to stdout. Use only through a pipe; never put it in environment variables or command arguments.
 vault_identity(){
   local id pw i
@@ -750,7 +751,7 @@ secret_names(){ local f; for f in "$SEC"/*.meta; do [ -f "$f" ] && basename "$f"
 secret_users(){ awk -F'\t' -v s="$1" '$12==s{print $1}' "$IDX"; }
 secret_label(){ if [ "$(secret_meta "$1" type)" = password ]; then echo "mật khẩu"; else echo "key $(secret_meta "$1" keytype)"; fi; }
 secret_enc(){ age -e -a -r "$(cat "$SEC/vault.pub")"; }
-secret_get(){ vault_identity | age -d -i - "$SEC/$1.age" 2>/dev/null; }
+secret_get(){ vault_identity | age -d -i - "$(native_path "$SEC/$1.age")" 2>/dev/null; }
 secret_slug(){ printf '%s' "$1" | tr 'A-Z_ ' 'a-z--' | tr -cd 'a-z0-9.-' | sed 's/^[.-]*//' | cut -c1-40; }
 # Normalize and validate a key file; remove its passphrase if present (the vault provides encryption). Print "fingerprint<TAB>type".
 key_prepare(){
@@ -817,7 +818,7 @@ pick_key_file(){ # → print a private-key path
   for f in "$HOME"/.ssh/*; do [ -f "$f" ] && head -1 "$f" 2>/dev/null | grep -q 'PRIVATE KEY' && list+=("${f/#$HOME/~}"); done
   list+=("Đường dẫn khác…")
   i=$(pick "Key nào?" "${list[@]}") || return 1
-  if [ "$i" -eq $(( ${#list[@]} - 1 )) ]; then f=$(gum file --all "$HOME") || return 1; unix_path "$f"; else echo "${list[$i]}"; fi
+  if [ "$i" -eq $(( ${#list[@]} - 1 )) ]; then f=$(gum file --all "$(native_path "$HOME")") || return 1; unix_path "$f"; else echo "${list[$i]}"; fi
 }
 # Choose a login method for a server. Print the secret name (empty = SSH handles it). Return 1 on cancellation.
 pick_login(){ # [suggested secret] [reason]
@@ -2118,7 +2119,7 @@ port_forward(){ # name [port]
 }
 send_file(){
   local n=$1 src dst
-  src=$(gum file --header "Chọn file hoặc thư mục để gửi lên $n" --all "$PWD") || return 1
+  src=$(gum file --header "Chọn file hoặc thư mục để gửi lên $n" --all "$(native_path "$PWD")") || return 1
   dst=$(ask "Lưu vào thư mục nào trên $n" "~" "~") || return 1
   src=$(unix_path "$src"); record "$n"; scpx -r "$src" "$n:${dst:-~}/" && ok "Đã gửi $(basename "$src") lên $n:${dst:-~}/" || err "Không gửi được"; pause
 }
@@ -2579,7 +2580,7 @@ setup(){
 }
 update(){
   if is_windows; then
-    git -C "$(dirname "$SELF")" pull -q --ff-only || { err "Không tải được bản cập nhật hostbook"; return 1; }
+    git -C "$(native_path "$(dirname "$SELF")")" pull -q --ff-only || { err "Không tải được bản cập nhật hostbook"; return 1; }
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$(dirname "$SELF")/install.ps1")"
     return $?
   fi
@@ -2594,8 +2595,8 @@ first_run(){ # ~/ssh-hosts does not exist yet
   case $i in
     0) m=$(pick_machine "Kho ở máy nào?" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
-       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ kho" -- git clone -q "$url" "$DIR" || { err "Không lấy được kho từ $url"; return 1; };;
-    *) private_dir "$DIR" || return 1; git -C "$DIR" init -q
+       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ kho" -- git clone -q "$url" "$(native_path "$DIR")" || { err "Không lấy được kho từ $url"; return 1; };;
+    *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
        if is_windows; then
          g config user.name >/dev/null || g config user.name "$ME"
          g config user.email >/dev/null || g config user.email "$ME@hostbook.local"

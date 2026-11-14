@@ -3,14 +3,17 @@
 set -eu
 case $(uname -s) in MINGW*|MSYS*) ;; *) echo 'SKIP windows.sh: requires real Windows'; exit 0;; esac
 HERE=$(cd "$(dirname "$0")" && pwd)
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d)
+# Literal apostrophes can defeat MSYS's heuristic conversion; native tools must receive explicit native paths.
+T="$T/a space's"; mkdir -p "$T"
+trap 'rm -rf "$T"' EXIT
 export HOME=$T/home HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state XDG_CONFIG_HOME=$T/config HOSTBOOK_SSH_CONFIG=$T/ssh_config
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
 export HOSTBOOK_MASTER='windows-vault-fixture'
 S=$HERE/../hostbook
 sed '/^# ---------- entry point ----------/,$d' "$S" > "$T/lib"
 . "$T/lib"; SELF=$S
-trap 'cleanup; rm -rf "$T"' EXIT
+trap 'cleanup; rm -rf "$(dirname "$T")"' EXIT
 check(){ "$@" || { printf 'FAIL %s\n' "$*" >&2; exit 1; }; }
 text='Tiếng Việt · clipboard ✓'
 printf %s "$text" | copy
