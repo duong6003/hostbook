@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kiểm tra màn fzf thật bằng tmux riêng, chỉ dùng server mẫu và cấu hình tạm.
+# Test the real fzf screen in an isolated tmux server, using only sample hosts and temporary configuration.
 set -eu
 command -v tmux >/dev/null || { echo 'Bỏ qua TUI: chưa có tmux'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
@@ -7,7 +7,7 @@ T=$(mktemp -d); socket=hb-ui-$$
 cleanup(){
   tmux -L "$socket" kill-server 2>/dev/null || :
   local i=0
-  # Các preview/đồng bộ nền vừa nhận HUP có thể còn đang dọn file tạm.
+  # Background preview/sync processes may still be cleaning up temporary files after receiving HUP.
   while ! rm -rf "$T" 2>/dev/null; do i=$((i+1)); [ "$i" -lt 30 ] || return 1; sleep .1; done
 }
 trap cleanup EXIT
@@ -90,7 +90,7 @@ for width in 60 100 200; do
  printf 'ok    TUI settings ở %s cột: xem trước và esc không lưu\n' "$width"
 done
 
-# Cài mới: gợi ý theme Sáng chỉ được áp dụng sau khi danh sách fzf nạp xong.
+# Fresh install: apply the suggested light theme only after the fzf list has loaded.
 for width in 60 100 200; do
  export HOME=$T/first-$width/home XDG_CONFIG_HOME=$T/first-$width/config HOSTBOOK_DIR=$T/first-$width/hosts HOSTBOOK_STATE=$T/first-$width/state HOSTBOOK_SSH_CONFIG=$T/first-$width/ssh_config
  export COLORFGBG='0;15'

@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Cài bằng chính install.sh (từ bản checkout này)
+      - name: Install using install.sh from this checkout
         env:
           HOSTBOOK_REPO: ${{ github.workspace }}
           SHELL: /bin/bash
@@ -18,13 +18,13 @@ jobs:
           git config --global user.email ci@example.com
           git config --global init.defaultBranch main
           bash install.sh
-      - name: Chạy kiểm thử
+      - name: Run tests
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           bash tests/test.sh
           bash tests/ui.sh
           bash tests/tui.sh
-      - name: Kiểm thử với server SSH thật (Docker, chỉ Ubuntu)
+      - name: Test against a real SSH server (Docker, Ubuntu only)
         if: runner.os == 'Linux'
         run: |
           export PATH="$HOME/.local/bin:$PATH"

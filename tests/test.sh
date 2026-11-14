@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Kiểm thử phần lõi của hostbook trên dữ liệu tạm (không đụng ~/ssh-hosts thật): bash tests/test.sh
+# Test hostbook core functionality with temporary data (leave the real ~/ssh-hosts untouched): bash tests/test.sh
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state HOSTBOOK_SSH_CONFIG=$T/ssh_config
 S="$HERE/../hostbook"; pass=0; fail=0
-# Cách ly hoàn toàn: không chạm Keychain, ssh-agent, ~/.config hay ~/.ssh thật (HOME giả)
+# Fully isolated: leave the real Keychain, ssh-agent, ~/.config and ~/.ssh untouched (temporary HOME)
 export HOME="$T/home"; mkdir -p "$HOME/.ssh"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 export HOSTBOOK_KEYCHAIN="file:$T/keychain/id" HOSTBOOK_MASTER="mat-khau-chinh-thu" XDG_CONFIG_HOME="$T/config"
@@ -119,7 +119,7 @@ check "tránh trùng tên nhóm" '[ "$("$S" _suggest a-web1 a-web2)" = prod-web-
 check "không có tag chung thì lấy tên" '[ "$("$S" _suggest b-api a-db)" = b-api ] || [ -n "$("$S" _suggest b-api a-db)" ]'
 check "nhóm hiện trong danh sách" '"$S" _list | strip | grep -q "^g:prod-web.*nhóm · 2 server · chạy đồng loạt"'
 
-# ---- đồng bộ với kho (kho giả lập là bare repo trong thư mục tạm) ----
+# ---- repository sync (use a bare repository in a temporary directory) ----
 git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm "a-web3"
 check "chưa có kho: header báo rõ" '"$S" _header | strip | grep -q "Chưa có kho"'
 git init -q --bare "$T/kho.git"; git -C "$HOSTBOOK_DIR" remote add origin "$T/kho.git"
@@ -148,7 +148,7 @@ check "có lại kết nối: đẩy phần đang chờ" '[ "$(sed -n 1p "$HOSTB
 check "chân màn hình đổi khi chọn nhiều" 'FZF_SELECT_COUNT=3 "$S" _footer h:a-web1 | strip | grep -q "mở 3 server"'
 check "chân màn hình cho nhóm" 'FZF_SELECT_COUNT=0 "$S" _footer g:prod-web | strip | grep -q "mở nhóm"'
 
-# ---- các lỗi đã sửa sau lần rà soát ----
+# ---- regression tests for bugs found during review ----
 printf 'webs\t\ta-web1 a-web2\n' >> "$HOSTBOOK_DIR/groups.tsv"
 check "nhóm chưa có kiểu mở vẫn đếm đúng số server" '"$S" _list | strip | grep -q "^g:webs.*nhóm · 2 server · hỏi khi mở"'
 
@@ -194,7 +194,7 @@ check "fzf quá cũ: báo rõ và chỉ cách cài lại" 'printf "%s" "$out" | 
 rm "$T/fakebin/fzf"
 check "--version" '"$S" --version | grep -q "^hostbook [0-9]"'
 
-# ---- xoá, đổi tên, chuyển dự án ----
+# ---- delete, rename and move between projects ----
 "$S" _index >/dev/null
 "$S" _rename a-web1 a-front1 >/dev/null
 idx=$("$S" _index)
@@ -211,7 +211,7 @@ check "xoá: mất khỏi danh sách, dòng tags không bị bỏ lại" '[ -z "
 check "xoá: bỏ khỏi nhóm, nhóm vẫn còn" '! grep -q "a-web2" "$HOSTBOOK_DIR/groups.tsv" && grep -q "^prod-web" "$HOSTBOOK_DIR/groups.tsv"'
 check "các thao tác trên đều được commit" '[ -z "$(git -C "$HOSTBOOK_DIR" status --porcelain)" ] && git -C "$HOSTBOOK_DIR" log --format=%s | grep -q "^xoá a-web2"'
 
-# ---- nhập nhiều server ----
+# ---- import multiple hosts ----
 parsed=$(printf 'n-web1 ubuntu@10.0.1.31 #prod #web\nn-api, deploy@10.2.0.33:2222\n10.0.1.40\ndb1.example.com\nbad;name 1.2.3.4\n# ghi chú\n' | "$S" _import_parse 2>"$T/imp.err")
 check "nhập: đọc tên, user, cổng, tags; dấu phẩy cũng được" 'printf "%s\n" "$parsed" | grep -q "^n-web1	ubuntu	10.0.1.31	-	prod web$" && printf "%s\n" "$parsed" | grep -q "^n-api	deploy	10.2.0.33	2222	-$"'
 check "nhập: tên lấy từ tên máy khi chỉ có địa chỉ" 'printf "%s\n" "$parsed" | grep -q "^db1	-	db1.example.com"'
@@ -238,7 +238,7 @@ mkdir -p "$T/split"; n=$("$S" _split "$T/old_config" "$T/split" "$T/split.global
 check "tách ssh config: nhóm theo phần đầu tên, lẻ vào imported" '[ "$n" = 4 ] && grep -q "Host x-web1" "$T/split/x.conf" && grep -q "Host x-\*" "$T/split/x.conf" && grep -q "Host lone" "$T/split/imported.conf"'
 check "tách ssh config: comment tags đi theo khối, Host * và Match ở lại" 'grep -B1 "Host x-web1" "$T/split/x.conf" | grep -q "# tags: prod" && grep -q "ServerAliveInterval" "$T/split.global" && grep -q "Match host foo" "$T/split.global"'
 
-# ---- đồng bộ hai máy: gộp theo từng server ----
+# ---- sync two machines: merge each host separately ----
 "$S" _sync_now; git -C "$T/other" pull -q
 printf '\n# tags: kho\nHost from-kho\n  HostName 10.6.0.1\n' >> "$T/other/project-b.conf"
 sed -i.b 's/HostName 10.0.1.12$/HostName 10.0.1.112/' "$T/other/project-a.conf"; rm -f "$T/other/project-a.conf.b"
@@ -262,7 +262,7 @@ check "sau khi gộp, kho có cả hai phía" 'git -C "$T/kho.git" show HEAD:pro
 check "tên kho hiển thị gọn" '[ "$(cd "$HOSTBOOK_DIR" && git remote set-url origin git@github.com:me/hosts.git && "$S" _kho_addr)" = "git@github.com" ] && [ "$(cd "$HOSTBOOK_DIR" && git remote set-url origin ssh://git@gitea.lan:2222/me/hosts.git && "$S" _kho_addr)" = "gitea.lan:2222" ]'
 git -C "$HOSTBOOK_DIR" remote set-url origin "$T/kho.git"
 
-# ---- layout co giãn theo màn hình ----
+# ---- layout adapts to terminal width ----
 "$S" _index >/dev/null
 narrow=$(COLUMNS=60 "$S" _list | strip | grep '^h:a-gate' | cut -f2)
 narrow_search=$(COLUMNS=60 "$S" _list | strip | grep '^h:a-gate' | cut -f3)
@@ -276,7 +276,7 @@ printf '#!/bin/sh\necho runner-very-long-hostname-from-a-ci-machine-1234567890\n
 check "phần đầu màn hẹp không tràn, kể cả khi tên máy rất dài" '[ -z "$(COLUMNS=50 PATH="$T/fakebin:$PATH" "$S" _header | strip | awk "length(\$0) > 48")" ] && COLUMNS=50 PATH="$T/fakebin:$PATH" "$S" _header | strip | grep -q "server"'
 rm -f "$T/fakebin/hostname"
 
-# ---- giải thích lỗi kết nối từ nhật ký ssh ----
+# ---- explain connection failures from SSH logs ----
 out=$(printf 'debug1: Connecting to 203.0.113.10 [203.0.113.10] port 22.\nssh: connect to host 203.0.113.10 port 22: Operation timed out\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
 check "hết thời gian: báo không có phản hồi, hỏng ở bước mạng" 'printf "%s" "$out" | grep -q "Không có phản hồi từ 203.0.113.10:22" && printf "%s" "$out" | grep -q "✗ Mạng tới"'
 out=$(printf 'debug1: Connecting to 203.0.113.10 [203.0.113.10] port 22.\ndebug1: Connection established.\ndebug1: Remote protocol version 2.0\ndebug1: Next authentication method: password\nPermission denied (publickey,password).\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
@@ -286,7 +286,7 @@ check "qua máy trung gian: vào được máy trung gian, hỏng ở chặng sa
 out=$(printf 'debug1: Remote protocol version 2.0\nHost key verification failed.\n' > "$T/c.log"; "$S" _explain a-gate "$T/c.log" | strip)
 check "host key đổi: cảnh báo, hỏng ở bước xác minh" 'printf "%s" "$out" | grep -q "Host key của a-gate đã thay đổi" && printf "%s" "$out" | grep -q "✗ Xác minh host key"'
 
-# ---- lối tắt khi cài ----
+# ---- shell shortcuts during setup ----
 H1=$(mktemp -d); printf 'hb(){ echo "lệnh hb riêng của người dùng"; }\n' > "$H1/.bashrc"
 HOME=$H1 SHELL=/bin/bash "$S" setup >/dev/null 2>&1
 check "hb đã có người dùng: không đè, dùng hop" 'grep -qx "alias hop=hostbook" "$H1/.bashrc" && ! grep -q "alias hb=hostbook" "$H1/.bashrc"'
@@ -295,7 +295,7 @@ HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1; HOME=$H2 SHELL=/bin/bash "$
 check "máy cũ có alias s: chuyển sang hb, chạy lại không thêm trùng" '[ "$(grep -c "alias hb=hostbook" "$H2/.bashrc")" = 1 ] && ! grep -q "alias s=" "$H2/.bashrc" && [ "$(grep -c "^# hostbook" "$H2/.bashrc")" = 1 ]'
 rm -rf "$H1" "$H2"
 
-# ---- M1: kho secret ----
+# ---- M1: secret vault ----
 SECD="$HOSTBOOK_DIR/secrets"
 check "mật khẩu chính sai khi chưa có kho: không tạo gì" '! "$S" _vault_id 2>/dev/null | grep -q ok'
 code=$("$S" _vault_init "$HOSTBOOK_MASTER")
@@ -348,7 +348,7 @@ check "đổi tên secret: file, dòng # secret và đường dẫn .pub đều 
 "$S" _secret_delete mk-deploy >/dev/null; idx=$("$S" _index)
 check "xoá secret: gỡ file và các dòng đăng nhập của nó" '[ ! -f "$SECD/mk-deploy.age" ] && [ -z "$(row s-api 12)" ] && ! grep -qE "mk-deploy|PubkeyAuthentication|PreferredAuth" "$HOSTBOOK_DIR/sec.conf" && [ "$(row s-web1 12)" = key-chinh ]'
 
-# chuyển key kiểu cũ: dùng key giả trong thư mục tạm, không bao giờ đọc ~/.ssh thật
+# Migrate legacy keys: use a test key in a temporary directory; never read the real ~/.ssh
 ssh-keygen -q -t ed25519 -N "" -f "$T/legacy_key"
 for f in "$HOSTBOOK_DIR"/*.conf; do sed -i.b "s|~/.ssh/id_rsa|$T/legacy_key|" "$f"; rm -f "$f.b"; done
 printf '\nHost old-1\n  HostName 10.60.0.1\n  User u\n  IdentityFile %s/legacy_key\n' "$T" >> "$HOSTBOOK_DIR/sec.conf"
@@ -374,7 +374,7 @@ check "askpass: server hỏi lại (mật khẩu sai) thì không gửi lại n�
 check "askpass: chọn secret theo user@máy trong câu hỏi" '[ "$(HB_ASKPASS_HOST=s-web1 HB_ASKPASS_COUNT="$T/cnt2" "$S" _askpass "tester@10.70.0.1'"'"'s password: ")" = mat-khau-1 ]'
 check "askpass: câu hỏi lạ khi không có terminal thì trả rỗng" '[ -z "$(HB_ASKPASS_NOTTY=1 "$S" _askpass "Verification code: ")" ]'
 
-# hai máy cùng sửa một secret
+# Two machines modify the same secret
 "$S" _sync_now; git -C "$T/other" pull -q
 printf 'ban-cua-kho\n' | age -e -a -r "$(cat "$SECD/vault.pub")" > "$T/other/secrets/mk-x.age"
 git -C "$T/other" commit -qam "đổi mật khẩu ở máy khác"; git -C "$T/other" push -q
@@ -390,7 +390,7 @@ rm -rf "$T/keychain"
 check "sau khi khôi phục: mật khẩu cũ và mã cũ hết hiệu lực" '! "$S" _vault_id 2>/dev/null | grep -q ok && ! "$S" _vault_recover "$code" "mat-khau-khac-12345" >/dev/null 2>&1'
 export HOSTBOOK_MASTER=mat-khau-moi-12345
 
-# ---- M3: chia sẻ và nhập gói ----
+# ---- M3: share and import packages ----
 check "bảng từ đủ 128, không trùng" '[ "$("$S" _share_words | wc -l | tr -d " ")" = 128 ] && [ -z "$("$S" _share_words | sort | uniq -d)" ]'
 check "mật khẩu gói: 4 từ và 2 chữ số" '"$S" _share_pw | grep -qE "^([a-z]+-){4}[0-9]{2}$"'
 "$S" _sync_now 2>/dev/null; "$S" _index >/dev/null
@@ -408,7 +408,7 @@ check "sai mật khẩu gói: không mở được" '! HB_PACK_PW=sai "$S" _impo
 cls=$(HB_PACK_PW=mat-khau-goi "$S" _import_classify "$T/a.hbshare" 2>/dev/null)
 check "nhập lại vào chính máy gửi: mọi server giống hệt" '[ "$(printf "%s\n" "$cls" | grep -c .)" = 4 ] && [ "$(printf "%s\n" "$cls" | awk -F"\t" "\$2==\"same\"" | grep -c .)" = 4 ]'
 
-# máy B: đã có s-web1 (khác địa chỉ) và một server trùng địa chỉ với pw-1
+# Machine B: already has s-web1 (at a different address) and a host with the same address as pw-1
 mkdir -p "$T/b"; printf 'Include %s/b/*.conf\n' "$T" > "$T/bcfg"
 printf 'Host s-web1\n  HostName 10.99.0.1\n  User ops\n\nHost trung-ip\n  HostName 10.70.0.1\n  User x\n' > "$T/b/sec.conf"
 git -C "$T/b" init -q; git -C "$T/b" add -A; git -C "$T/b" commit -qm init

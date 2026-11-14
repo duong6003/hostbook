@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Cài hostbook (macOS / Linux). Chạy lại bất cứ lúc nào để cập nhật.
+# Install hostbook (macOS / Linux). Run again at any time to update.
 #   curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
-# Không cần sudo: mọi thứ vào ~/.local. fzf và gum lấy bản phát hành chính thức (có kiểm tra checksum)
-# khi máy chưa có hoặc bản có sẵn quá cũ (apt của Ubuntu chỉ có fzf 0.44 và không có gum).
+# No sudo required: everything goes into ~/.local. Download official fzf and gum releases (with checksum verification)
+# when missing or too old (Ubuntu apt only provides fzf 0.44 and has no gum package).
 set -eu
 umask 022
 
@@ -11,7 +11,7 @@ APP=${HOSTBOOK_HOME:-$HOME/.local/share/hostbook}
 BIN=$HOME/.local/bin
 FZF_VER=0.75.0; FZF_MIN=0.63
 GUM_VER=2.0.2;  GUM_MIN=0.14
-AGE_VER=1.3.2;  AGE_MIN=1.3.0   # cần plugin batchpass (có từ 1.3) cho kho secret và gói chia sẻ
+AGE_VER=1.3.2;  AGE_MIN=1.3.0   # requires the batchpass plugin (available since 1.3) for the secret vault and sharing packages
 
 say(){ printf '\033[38;5;114m✓\033[0m %s\n' "$*"; }
 die(){ printf '\033[38;5;204m✗\033[0m %s\n' "$*" >&2; exit 1; }
@@ -26,7 +26,7 @@ os=$(uname -s); arch=$(uname -m)
 case $arch in x86_64|amd64) a_fzf=amd64; a_gum=x86_64;; arm64|aarch64) a_fzf=arm64; a_gum=arm64;; *) die "Chưa hỗ trợ kiến trúc $arch";; esac
 case $os in Darwin) o_fzf=darwin; o_gum=Darwin;; Linux) o_fzf=linux; o_gum=Linux;; *) die "Chưa hỗ trợ $os";; esac
 
-# tải TÊN URL_TARBALL URL_CHECKSUMS ĐƯỜNG_DẪN_TRONG_TARBALL
+# Download NAME TARBALL_URL CHECKSUMS_URL PATH_IN_TARBALL
 fetch_bin(){
   local name=$1 url=$2 sums=$3 inner=$4 tmp file want got
   tmp=$(mktemp -d); file=$tmp/$(basename "$url")
@@ -37,7 +37,7 @@ fetch_bin(){
   tar -xzf "$file" -C "$tmp" && install -m 755 "$tmp/$inner" "$BIN/$name"
   rm -rf "$tmp"; say "$name $("$BIN/$name" --version 2>/dev/null | head -1)"
 }
-need(){ # TÊN BẢN_TỐI_THIỂU → 0 nếu đã đủ mới
+need(){ # NAME MIN_VERSION → 0 if the installed version is new enough
   have "$1" || return 1
   local v; case $1 in fzf) v=$(fzf --version | awk '{print $1}');; gum) v=$(gum --version | awk '{print $3}' | sed 's/^v//');;
     age) have age-plugin-batchpass && have age-keygen || return 1; v=$(age --version | sed 's/^v//');; esac
@@ -55,7 +55,7 @@ if ! need gum "$GUM_MIN"; then
     "https://github.com/charmbracelet/gum/releases/download/v$GUM_VER/checksums.txt" "gum_${GUM_VER}_${o_gum}_$a_gum/gum"; fi
 else say "gum $(gum --version | awk '{print $3}') đã có"; fi
 
-# age không phát hành file checksum, nên sha256 của bản ghim được ghi sẵn ở đây
+# age does not publish checksum files, so the pinned release SHA-256 values are recorded here
 age_sha(){ case $1 in
   linux-amd64) echo cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10;;
   linux-arm64) echo 6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4;;

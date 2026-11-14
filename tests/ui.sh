@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cấu hình/UI dùng HOME và dữ liệu mẫu riêng; không chạm kho, keychain hay agent thật.
+# Configuration/UI tests use an isolated HOME and sample data; leave the real repository, keychain and agent untouched.
 set -eu
 unset NO_COLOR
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -7,13 +7,13 @@ S=$HERE/../hostbook
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HOME=$T/home XDG_CONFIG_HOME=$T/config HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
-sed '/^# ---------- điểm vào ----------/,$d' "$S" > "$T/lib"
+sed '/^# ---------- entry point ----------/,$d' "$S" > "$T/lib"
 . "$T/lib"
 SELF=$S
 trap 'rm -rf "$T"' EXIT
 pass=0
 check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else printf 'FAIL  %s\n' "$1"; exit 1; fi; }
-# macOS tr có thể tiếp tục đọc vô hạn nếu tiến trình cha bỏ qua SIGPIPE (CI).
+# macOS tr may keep reading indefinitely if the parent process ignores SIGPIPE (CI).
 python3 - "$T/lib" <<'PYTEST'
 import os,signal,subprocess,sys
 p=subprocess.Popen(['/bin/bash','-c','trap "" PIPE; . "$1"; recovery_new','test',sys.argv[1]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Kiểm thử với một server SSH thật chạy trong Docker: bash tests/e2e.sh
-# Tự bỏ qua khi không có Docker. Không chạm ~/.ssh, ssh-agent hay Keychain thật.
+# Test against a real SSH server running in Docker: bash tests/e2e.sh
+# Skip automatically when Docker is unavailable. Leave the real ~/.ssh, ssh-agent and Keychain untouched.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || { echo "Bỏ qua e2e: không có Docker"; exit 0; }

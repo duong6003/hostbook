@@ -1,0 +1,54 @@
+# Development
+
+## Codebase
+
+`hostbook` is a Bash 3.2-compatible executable for macOS and Linux. The UI uses fzf
+and gum; tmux handles multi-host sessions, Git synchronizes host files, and age
+protects vault credentials. The app interface is currently Vietnamese; documentation
+and code comments are English.
+
+Core files:
+
+| Path | Purpose |
+| --- | --- |
+| `hostbook` | Application, configuration, index, SSH flows, vault, sync, and UI. |
+| `install.sh` | User-local installation and dependency checks/downloads. |
+| `tests/test.sh` | Core regression tests with isolated data. |
+| `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
+| `tests/tui.sh` | Real fzf interaction in isolated tmux sessions. |
+| `tests/e2e.sh` | Real SSH tests using a Docker fixture. |
+| `docs/wiki/` | Versioned source for this wiki. |
+| `docs/archive/` | Historical design and implementation notes; not current user instructions. |
+
+## Run checks
+
+```bash
+bash -n hostbook
+bash -n install.sh
+bash tests/test.sh
+bash tests/ui.sh
+bash tests/tui.sh
+bash tests/e2e.sh
+```
+
+TUI tests skip if tmux is missing; E2E tests skip if Docker is unavailable. A skipped
+check is not evidence of a pass. CI runs on macOS and Ubuntu, with Docker SSH tests
+on Ubuntu. Tests use temporary host lists, state, credentials, and SSH configuration.
+
+## Test data and overrides
+
+`HOSTBOOK_DIR`, `HOSTBOOK_STATE`, `HOSTBOOK_SSH_CONFIG`, and `XDG_CONFIG_HOME` can
+isolate development data from your real SSH setup. Follow the test scripts for a
+complete fixture; do not point experiments at a production vault. Internal commands
+prefixed with `_` are implementation/testing helpers, not a stable public API.
+
+## Update documentation
+
+Edit the pages under `docs/wiki/` in the app repository. After review, publish the
+same Markdown files to the separate `hostbook.wiki.git` repository. GitHub requires
+an initial wiki page before that Git repository can be cloned.
+
+Keep README focused on the product, installation, and links. Detailed usage belongs
+here. Screenshots in `docs/assets/` should come from the real app with synthetic
+hosts and no private data. Preserve exact command names and explain any remaining
+Vietnamese menu labels rather than inventing an English UI.
