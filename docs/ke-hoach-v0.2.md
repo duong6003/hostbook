@@ -65,3 +65,5 @@ Tài liệu này chỉ ghi lại các ý đã bàn và đã chốt về hướng
 ## Phiên sau
 
 Phân tích và chốt kế hoạch chi tiết cho từng phần ở trên: thứ tự làm, cách làm, giao diện cụ thể, và tiêu chí hoàn thành.
+
+Kế hoạch chi tiết để thực thi: [implement-v0.2.md](implement-v0.2.md).
