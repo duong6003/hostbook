@@ -8,7 +8,12 @@ hostbook doctor
 
 Doctor checks dependencies, host names, configuration, permissions, and sync status.
 If a dependency is missing or too old, rerun the installer. If the command is not
-found, reopen the shell and check that `~/.local/bin` is in PATH.
+found, reopen the shell and check that `~/.local/bin` is in PATH. On Windows,
+close all Windows Terminal windows before reopening; check
+`$env:LOCALAPPDATA\hostbook\bin` in your user PATH or use the full-path command
+printed by the installer. Rerun `install.ps1` if a managed runtime/dependency is missing.
+Corporate execution/download restrictions may require your organization's approved
+installation process; the installer never changes machine execution policies.
 
 ## A connection fails
 

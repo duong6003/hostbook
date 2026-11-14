@@ -1,0 +1,6 @@
+# Bash and PowerShell sources must survive Windows Git autocrlf settings.
+* text=auto
+hostbook text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.cmd text eol=crlf

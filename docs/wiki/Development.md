@@ -25,6 +25,7 @@ Core files:
 ```bash
 bash -n hostbook
 bash -n install.sh
+bash tests/platform.sh
 bash tests/test.sh
 bash tests/ui.sh
 bash tests/tui.sh
@@ -32,8 +33,12 @@ bash tests/e2e.sh
 ```
 
 TUI tests skip if tmux is missing; E2E tests skip if Docker is unavailable. A skipped
-check is not evidence of a pass. CI runs on macOS and Ubuntu, with Docker SSH tests
-on Ubuntu. Tests use temporary host lists, state, credentials, and SSH configuration.
+check is not evidence of a pass. CI runs on macOS, Ubuntu, and Windows. Ubuntu runs Docker SSH tests;
+Windows installs its managed portable runtime, verifies launcher/native tool boundaries,
+checks NTFS/DPAPI/clipboard behavior, and provisions an isolated native SSH server for
+key/password tests. Only the disposable CI server fixture needs administrator access.
+Windows deliberately does not run the tmux TUI suite; this is a capability limit,
+not a passing test. Physical Windows Terminal rendering still needs a human check. Tests use temporary host lists, state, credentials, and SSH configuration.
 
 ## Test data and overrides
 

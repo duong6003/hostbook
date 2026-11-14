@@ -4,6 +4,7 @@
 # No sudo required: everything goes into ~/.local. Download official fzf and gum releases (with checksum verification)
 # when missing or too old (Ubuntu apt only provides fzf 0.44 and has no gum package).
 set -eu
+case $(uname -s) in MINGW*|MSYS*) echo 'Windows: run install.ps1 from PowerShell; it sets up the runtime and dependencies.' >&2; exit 1;; esac
 umask 022
 
 REPO=${HOSTBOOK_REPO:-https://github.com/duong6003/hostbook.git}

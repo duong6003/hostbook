@@ -22,6 +22,7 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           bash tests/test.sh
+          bash tests/platform.sh
           bash tests/ui.sh
           bash tests/tui.sh
       - name: Test against a real SSH server (Docker, Ubuntu only)
@@ -29,3 +30,12 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           bash tests/e2e.sh
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install managed runtime, test launcher and native boundaries, real SSH, update and uninstall
+        shell: powershell
+        run: .\tests\windows.ps1

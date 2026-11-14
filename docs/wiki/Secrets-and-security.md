@@ -39,6 +39,20 @@ The default key lifetime is eight hours. `lock` unloads managed keys from the ag
 available to that invocation; `lock --forget` also clears the remembered vault
 identity for this machine.
 
+On Windows the master password is requested for each new hostbook invocation that
+needs the vault. Askpass children share only a path to a temporary **DPAPI-encrypted**
+identity cache; the vault identity is never stored as plaintext or in environment
+variables. Normal exit removes that invocation's cache. Crash remnants remain
+DPAPI-encrypted and can be removed from `~/.local/state/hostbook/tmp` when the app
+is closed. State and temporary directories use owner-only NTFS ACLs, checked through
+Windows APIs; Unix `chmod` emulation is not treated as protection. Decrypted keys
+used during import/edit/sharing still briefly exist in protected temporary files.
+
+Windows uses the bundled Git OpenSSH agent, including its private fallback when
+necessary. Native Windows OpenSSH and VS Code do not automatically share its Unix
+socket. Use your normal external agent/key setup for those clients; `hostbook unlock`
+does not configure the Windows ssh-agent service.
+
 macOS uses Keychain. Linux prefers secret-service; if unavailable, the implementation
 can use a permission-restricted runtime file. An unlocked session can therefore use
 the credentials: treat access to your OS login and ssh-agent as access to your vault.
