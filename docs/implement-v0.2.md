@@ -7,8 +7,9 @@ Làm theo bốn mốc, mỗi mốc phát hành được riêng: **M1** kho secre
 ## Trạng thái thực thi (14/11/2026)
 
 - **M1–M3:** đã có trong nhánh chính, đến commit `f8fe0fd` (v0.3.0).
-- **M4:** đã triển khai v0.4.0 trên nhánh `feat/m4-interface`: cấu hình riêng từng máy, theme, ba kiểu danh sách, màn Giao diện có xem trước, chọn giao diện lần đầu và giữ kiểu gọn khi nâng cấp. Đang xác nhận CI trước khi đưa vào nhánh chính.
-- Review độc lập đã phát hiện và xử lý các ca: đóng/mở preview phải tính lại bề rộng danh sách; Nerd Font trên Bash 3.2; màu scalar có tab phải bị từ chối; nhãn prod phải luôn thấy dù tên/tag dài; demo phải phản ánh đường kẻ và cùng ngưỡng hiện ô chi tiết.
+- **M4:** đã hoàn tất v0.4.0: cấu hình riêng từng máy, theme, ba kiểu danh sách, màn Giao diện có xem trước, chọn giao diện lần đầu và giữ kiểu gọn khi nâng cấp.
+- Kiểm thử: **142 ca lõi, 108 ca UI, 15 tình huống tmux, 15 ca SSH/Docker**. CI Ubuntu và macOS đều xanh ([run 43586621828](https://github.com/duong6003/hostbook/actions/runs/43586621828)). Đã thử luồng cài mới/nền sáng ở 60/100/200 cột và tạo theme bằng editor trên dữ liệu tạm.
+- Review độc lập đã phát hiện và xử lý các ca: đóng/mở preview phải tính lại bề rộng danh sách; Nerd Font trên Bash 3.2; màu scalar có tab phải bị từ chối; nhãn prod phải luôn thấy dù tên/tag dài; demo phải phản ánh đường kẻ và cùng ngưỡng hiện ô chi tiết. Bộ chọn dùng sự kiện `load` để chọn đúng giá trị ban đầu sau khi fzf nạp danh sách.
 - CI macOS của M2/M3 bị treo ở tạo mã khôi phục do `tr | head` đọc vô hạn khi SIGPIPE bị bỏ qua. Đã thay bằng đọc hữu hạn từ `/dev/urandom`; kiểm thử mô phỏng điều kiện này, không thay đổi định dạng mã khôi phục hay secret hiện có.
 
 ## 1. Các quyết định đã chốt
