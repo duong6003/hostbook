@@ -31,9 +31,11 @@ Mở terminal mới rồi gõ `hostbook` (hoặc `s`). Lần đầu, app hỏi m
 
 ## Kho
 
-Kho là nơi giữ bản gốc danh sách server: một git repo trên một máy luôn bật của bạn (máy ở nhà, NAS, VPS…). Các máy chỉ cần thấy máy chứa kho qua mạng: cùng Wi-Fi/LAN, VPN hay Tailscale đều được. App tự tìm các máy trong mạng LAN và Tailscale để bạn chọn.
+Kho là nơi giữ bản gốc danh sách server: một git repo trên một máy luôn bật của bạn (máy ở nhà, NAS, VPS…), hoặc một repo git private bất kỳ (GitHub, Gitea…). Các máy chỉ cần thấy kho qua mạng: cùng Wi-Fi/LAN, VPN hay Tailscale đều được. App tự tìm các máy trong mạng LAN và Tailscale để bạn chọn.
 
 Đồng bộ chạy nền mỗi lần mở app. Mỗi thay đổi được kiểm tra cú pháp (`ssh -G`) trước khi đẩy lên kho, nên file lỗi không bao giờ lan sang máy khác. Khi không kết nối được kho, thay đổi được giữ lại và tự đẩy khi kết nối lại.
+
+Hai máy sửa cùng lúc được gộp theo từng server, không theo từng dòng: mỗi máy thêm một server, hay sửa hai server khác nhau, đều tự gộp. Chỉ khi cùng một server bị sửa khác nhau ở hai nơi, app mới mở màn **Gộp xung đột** để bạn chọn bản nào, hoặc sửa tay.
 
 ## Dùng hằng ngày
 
@@ -41,18 +43,48 @@ Kho là nơi giữ bản gốc danh sách server: một git repo trên một má
 |---|---|
 | gõ | tìm theo tên, `#tag`, `@user`, IP, mô tả. Hỗ trợ cú pháp fzf: `web prod` (VÀ), `db \| cache` (HOẶC), `!staging` (trừ), `^b-` (bắt đầu bằng) |
 | `enter` | ssh vào server, mở nhóm, hoặc vào lại phiên tmux đang chạy |
-| `→` | thao tác: chuyển tiếp cổng (gợi ý cổng theo tag, ví dụ `#postgres` → 5432), copy IP, mở tab mới, sửa |
+| `→` | thao tác: chuyển tiếp cổng (gợi ý cổng theo tag, ví dụ `#postgres` → 5432), gửi/tải file, copy IP, mở trong tmux, đổi tên, chuyển dự án, xoá |
 | `tab` | chọn nhiều server, `enter` để mở cùng lúc: chia ô, chạy đồng loạt, hoặc mỗi server một tab (cần tmux) |
 | `^g` | lưu các server đã chọn thành nhóm |
 | `^a` / `^e` | thêm / sửa server |
-| `^o` | công cụ: kho, sao chép key, hoàn tác, kiểm tra máy |
+| `^o` | công cụ: nhập nhiều server, kho, sao chép key, hoàn tác, kiểm tra máy |
 | `?` | trợ giúp |
 
 Thêm server chỉ cần dán địa chỉ (`10.0.1.13`, `ubuntu@10.0.1.13` hay `10.0.1.13:2222`) và đặt tên. Dự án, user, tags, máy trung gian và key được đoán từ các server cùng dải IP, và mỗi giá trị đoán đều ghi rõ đoán từ đâu.
 
+Nhập nhiều server một lần (ví dụ khi chuyển từ Termius): `^o` → Nhập nhiều server, hoặc `hostbook import danh-sach.txt`. Mỗi dòng `tên user@ip[:cổng] #tag …`, hoặc dán nguyên một ssh config.
+
+### Khi kết nối
+
+Trong lúc kết nối, một dòng tiến trình cho biết đang ở bước nào và đã chờ bao lâu:
+
+```
+→ ssh a-web1 qua a-bastion
+⣾ Đã vào a-bastion, đang nối tới 10.0.1.11:22 · 4s / tối đa 15s · ctrl-c để huỷ
+```
+
+Quá 15 giây (đổi bằng biến `HOSTBOOK_CONNECT_TIMEOUT`) thì dừng. Khi lỗi, app nói rõ hỏng ở bước nào, vì sao, và gợi ý việc nên làm:
+
+```
+╭──────────────────────────────────────────────────────────────╮
+│ a-bastion không nối tới được 10.0.1.11:22 sau 15 giây         │
+│ • Server đích đang tắt, hoặc sai IP                           │
+│ • Hoặc tường lửa chặn từ a-bastion tới server                 │
+│                                                               │
+│ ✓ Vào máy trung gian a-bastion                                │
+│ ✗ Từ a-bastion tới 10.0.1.11:22                               │
+│ · Server SSH trả lời                                          │
+│ · Đăng nhập (user ubuntu)                                     │
+╰──────────────────────────────────────────────────────────────╯
+```
+
+Các trường hợp được nhận ra: không có phản hồi, từ chối cổng, sai tên máy, không có đường mạng, máy trung gian không vào được hoặc không đi tiếp được, server đóng kết nối, sai key hay sai mật khẩu, host key bị đổi. Có thể mở "Xem nhật ký kết nối" để xem chi tiết từ ssh. Mỗi ô tmux khi mở nhiều server cũng có dòng tiến trình và lời giải thích riêng.
+
 Server có tag `prod` luôn hiện màu đỏ. Khi mở chế độ chạy đồng loạt trên server prod, app hỏi lại và mặc định là **Không**.
 
-Từ dòng lệnh: `hostbook web1` (vào thẳng nếu đúng tên), `hostbook add ubuntu@10.0.1.13`, `hostbook sync`, `hostbook doctor`.
+Từ dòng lệnh: `hostbook web1` (vào thẳng nếu đúng tên), `hostbook add ubuntu@10.0.1.13`, `hostbook import [file]`, `hostbook sync`, `hostbook doctor`, `hostbook update`.
+
+Giao diện co giãn theo kích thước terminal: màn hẹp chỉ hiện cột quan trọng (tên, tag, IP), các cột còn lại vẫn tìm được; ô xem trước tự ẩn khi không đủ chỗ.
 
 ## Dữ liệu
 
@@ -60,6 +92,7 @@ Từ dòng lệnh: `hostbook web1` (vào thẳng nếu đúng tên), `hostbook a
 ~/ssh-hosts/                 đồng bộ với kho
   project-a.conf             ssh config chuẩn, mỗi dự án một file
   groups.tsv                 các nhóm
+  .gitattributes             bật bộ gộp theo từng server
 ~/.local/state/hostbook/     riêng từng máy: lịch sử dùng, chỉ mục
 ~/.ssh/config                có thêm dòng: Include ~/ssh-hosts/*.conf
 ```
