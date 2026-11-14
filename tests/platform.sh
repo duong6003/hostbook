@@ -33,6 +33,13 @@ mkdir -p "$CONF"; printf 'list = compact\r\n' > "$CFG"
 check 'CRLF settings preserve values' '[ "$(cfg list cards)" = compact ]'
 printf 'fixture\ttabs\tcrlf example\r\n' > "$GRP"
 check 'CRLF groups preserve host names' '[ "$(group_field fixture 3)" = "crlf example" ]'
+check 'index notices edits when the host directory contains spaces' '(
+  DIR="$T/hosts space"; mkdir -p "$DIR"
+  SSHCFG=$T/space-ssh; printf "Include \"%s/*.conf\"\n" "$DIR" > "$SSHCFG"
+  printf "Host edited\n  HostName 127.0.0.1\n" > "$DIR/hosts.conf"; build_index full
+  printf "Host edited\n  HostName 127.0.0.2\n" > "$DIR/hosts.conf"; build_index
+  [ "$(host_field edited 3)" = 127.0.0.2 ]
+)'
 is_windows(){ return 0; }
 export HOSTBOOK_KEYCHAIN="file:$T/cache/identity"
 check 'Windows refuses plaintext file identity cache overrides' '[ "$(kc_backend)" = windows ]'
