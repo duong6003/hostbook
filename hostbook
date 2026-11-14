@@ -461,13 +461,20 @@ list_rows_minimal(){ list_rows minimal "$1"; }
 cmd_list(){ ensure_index; local style=${1:-$(cfg list cards)}; list_data | "list_rows_$style" "$(list_width)"; }
 # The CLI always uses single-line rows, regardless of the selected display style.
 search_hosts(){ cmd_list compact | grep '^h:' | fzf --filter "$*" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 | sed 's/^h://'; }
+# After a width change: only the list reload is needed at once; header and footer are recomputed in the background (#6).
+# fzf applies the bg-transform result later, so it emits an inline action that reads the *current* row (a result built for
+# the row at resize time would overwrite a newer focus footer). bg-transform needs fzf 0.63 (FZF_MIN).
+relayout_actions(){ # footer-dir
+  local d; d=$(printf %q "$1")
+  printf '%s' "reload($(self_cmd) _list)+bg-transform-header($(self_cmd) _header)+bg-transform($(self_cmd) _footers $d >/dev/null; echo 'transform-footer:. $d/foot')"
+}
 fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eval
   local border preview
   border=$(cfg border rounded); preview=$(cfg preview right)
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
   else printf '%s\n' "--style=full:$border" '--input-label= Tìm ' "--list-label= $(wc -l < "$IDX" | tr -d ' ') server " '--preview-label= Chi tiết '; fi
   case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
-  printf '%s\n' "--bind=ctrl-/:toggle-preview+reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footers $(printf %q "$1") {1})" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
+  printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
     echo --read0
     if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=╌'; fi
@@ -670,7 +677,10 @@ ensure_merge_setup(){ # register the merger for the data repo (git config is mac
 
 # ---------- shared repository sync ----------
 set_status(){ printf '%s\n%s\n%s\n' "$1" "${2:-}" "$(date +%s)" > "$ST"; }
-notify_fzf(){ [ -n "${FZF_PORT:-}" ] && have curl && curl -s -m 2 -XPOST -H "x-api-key: ${FZF_API_KEY:-}" "localhost:$FZF_PORT" -d "reload($(self_cmd) _list)+transform-header($(self_cmd) _header)" >/dev/null 2>&1; return 0; }
+notify_fzf(){ # [reload]: refresh the header (and the list when asked) without blocking input
+  [ -n "${FZF_PORT:-}" ] && have curl && curl -s -m 2 -XPOST -H "x-api-key: ${FZF_API_KEY:-}" "localhost:$FZF_PORT" -d "${1:+reload($(self_cmd) _list)+}bg-transform-header($(self_cmd) _header)" >/dev/null 2>&1; return 0; }
+# What the header and list show: status state+text (not its timestamp), flash, index. Notify fzf only when this changes (#6).
+visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; cksum < "$IDX"; } 2>/dev/null; }
 # Allow only one sync at a time (mkdir is atomic). Treat locks older than two minutes as abandoned.
 lock(){ local w=${1:-0} i=0
   while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
@@ -688,7 +698,10 @@ commit_all(){ local msg=$1 e
 # Pull, push, and record status. Never prompt, so this can run in the background.
 sync_quiet(){
   lock "${1:-0}" || return 0
-  sync_locked; local rc=$?; unlock; notify_fzf; return $rc
+  local sig idx rc; sig=$(visible_sig); idx=$(cksum < "$IDX" 2>/dev/null)
+  sync_locked; rc=$?; unlock
+  [ "$(visible_sig)" = "$sig" ] || { [ "$(cksum < "$IDX" 2>/dev/null)" = "$idx" ] && notify_fzf || notify_fzf reload; }
+  return $rc
 }
 sync_locked(){
   local before after behind ahead new
@@ -2615,25 +2628,26 @@ home(){
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err 'Không tạo được khoá cho ô tìm'; return 1; }; export FZF_API_KEY
   clip_offer
   fd=$(tmpd) || return 1
-  # Runs in $SHELL on every focus/multi event: POSIX only, builtins only (no hostbook boot; #1).
-  foot="t={1}; [ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$STATE/current"); c=\${FZF_SELECT_COUNT:-0}
+  # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
+  foot="[ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$STATE/current"); c=\${FZF_SELECT_COUNT:-0}
     if [ \"\$c\" -gt 0 ]; then n=\${#c}; [ \$n -lt 4 ] || n=4; IFS= read -r f < $(printf %q "$fd")/f-m\$n; printf \"\$f\\n\" \"\$c\"
     else case \$t in [hgs]:*) n=\${t%%:*};; *) n=x;; esac; IFS= read -r f < $(printf %q "$fd")/f-\$n; printf '%s\n' \"\$f\"; fi"
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }
     ADDED=""; rm -f "$STATE/current" "$STATE/share-request"
     cmd_footers "$fd"; IFS= read -r ft < "$fd/f-x"
+    printf 'IFS= read -r t < %q 2>/dev/null || t=\n%s\n' "$STATE/current" "$foot" > "$fd/foot"   # same footer for the current row, run after a resize (relayout_actions)
     opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts "$fd")
     out=$(cmd_list | fzf "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost='Tìm theo tên, #tag, @user, IP, mô tả…' --marker='+' \
       --header "$(cmd_header)" --footer "$ft" \
       --preview "$(self_cmd) _preview {1}" --gutter=' ' --ellipsis='' --no-hscroll \
-      --bind "resize:reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footers $(printf %q "$fd") {1})" \
+      --bind "resize:$(relayout_actions "$fd")" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
       --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
-      --bind "focus:transform-footer:$foot" --bind "multi:transform-footer:$foot" \
+      --bind "focus:transform-footer:t={1}; $foot" --bind "multi:transform-footer:t={1}; $foot" \
       --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list

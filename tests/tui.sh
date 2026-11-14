@@ -180,6 +180,31 @@ grep -q many12 "$T/screen" || { cat "$T/screen"; echo 'FAIL TUI: → không mở
 end_ui
 printf 'ok    TUI 10 × ↓ trong %s ms, → mở server đang trỏ khi có chọn bằng tab\n' "$ms"
 
+# Opening the home screen with no remote and no change must not reload the list (#6): count _list callbacks.
+# The initial list is piped in by the process itself, so any _list call here comes from a sync notification or a resize.
+sed 's|^  _list) cmd_list;;|  _list) echo x >> "$HB_LIST_LOG"; cmd_list;;|' "$S" > "$T/hostbook-count"
+grep -q HB_LIST_LOG "$T/hostbook-count" || { echo 'FAIL TUI: không gắn được bộ đếm _list'; exit 1; }
+export HB_LIST_LOG=$T/list.log; : > "$HB_LIST_LOG"
+S_REAL=$S; S=$T/hostbook-count
+start 100
+wait_for many01
+sleep 2   # the background sync starts after the first frame and ends well within this time
+[ ! -s "$HB_LIST_LOG" ] || { echo "FAIL TUI: mở màn hình không thay đổi gì nhưng _list chạy $(wc -l < "$HB_LIST_LOG") lần"; exit 1; }
+# A resize reloads the list once, and the footer must match the new width, also after the preview auto-hides (<36 cols) and a cursor move.
+tmux -L "$socket" resize-window -t ui -x 30
+tmux -L "$socket" send-keys -t ui Down
+sleep 1.5
+tmux -L "$socket" capture-pane -p -t ui > "$T/screen"
+tmux -L "$socket" new-session -d -x 30 -y 36 -s ref "env HOME=$HOME XDG_CONFIG_HOME=$XDG_CONFIG_HOME HOSTBOOK_DIR=$HOSTBOOK_DIR HOSTBOOK_STATE=$HOSTBOOK_STATE HOSTBOOK_SSH_CONFIG=$HOSTBOOK_SSH_CONFIG /bin/bash $S_REAL _footer h:many02; sleep 30"
+want=''; i=0; while [ -z "$want" ] && [ "$i" -lt 50 ]; do want=$(tmux -L "$socket" capture-pane -p -t ref | sed -n 1p | sed 's/ *$//'); i=$((i+1)); sleep .1; done
+[ -n "$want" ] || { echo 'FAIL TUI: không lấy được footer mẫu'; exit 1; }
+grep -qF "$want" "$T/screen" || { cat "$T/screen"; echo "FAIL TUI: footer sau resize khác _footer: '$want'"; exit 1; }
+if grep -q 'chọn nhiều' "$T/screen"; then cat "$T/screen"; echo 'FAIL TUI: footer còn theo bề rộng cũ sau resize'; exit 1; fi
+[ "$(wc -l < "$HB_LIST_LOG" | tr -d ' ')" -le 1 ] || { echo 'FAIL TUI: resize reload _list nhiều hơn một lần'; exit 1; }
+S=$S_REAL
+end_ui
+printf 'ok    TUI mở màn hình không reload; resize reload một lần và footer đúng bề rộng mới\n'
+
 # Fresh install: apply the suggested light theme only after the fzf list has loaded.
 for width in 60 100 200; do
  export HOME=$T/first-$width/home XDG_CONFIG_HOME=$T/first-$width/config HOSTBOOK_DIR=$T/first-$width/hosts HOSTBOOK_STATE=$T/first-$width/state HOSTBOOK_SSH_CONFIG=$T/first-$width/ssh_config
