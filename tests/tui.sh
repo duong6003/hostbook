@@ -4,8 +4,28 @@ set -eu
 command -v tmux >/dev/null || { echo 'Bỏ qua TUI: chưa có tmux'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
 T=$(mktemp -d); socket=hb-ui-$$
-cleanup(){
+# kill-session only HUPs the pane leader; hostbook defers it while gum/fzf runs and gum never exits.
+# So kill each pane's whole process group first (pane pid is its session and group leader).
+end_ui(){
+  local p
+  for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do
+    echo "$p" >> "$T/pgids"; kill -TERM -- "-$p" 2>/dev/null || :
+  done
+  sleep .2
+  for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -KILL -- "-$p" 2>/dev/null || :; done
   tmux -L "$socket" kill-server 2>/dev/null || :
+}
+leak_check(){
+  local i=0 left
+  while :; do
+    left=$(ps -axo pgid=,ppid=,command= | awk -v f="$T/pgids" 'BEGIN{while((getline l<f)>0)g[l]=1} ($1 in g)')
+    [ -z "$left" ] && return 0
+    i=$((i+1)); [ "$i" -lt 30 ] || { printf '%s\n' "$left"; echo 'FAIL TUI: process còn sót sau khi đóng session'; return 1; }
+    sleep .1
+  done
+}
+cleanup(){
+  end_ui
   local i=0
   # Background preview/sync processes may still be cleaning up temporary files after receiving HUP.
   while ! rm -rf "$T" 2>/dev/null; do i=$((i+1)); [ "$i" -lt 30 ] || return 1; sleep .1; done
@@ -73,7 +93,7 @@ for width in 60 100 200; do
   tmux -L "$socket" send-keys -t ui C-t
   if [ "$style" = cards ]; then want=compact; else want=cards; fi
   i=0; until grep -q "list = $want" "$XDG_CONFIG_HOME/hostbook/config"; do sleep .1; i=$((i+1)); [ "$i" -lt 60 ] || exit 1; done
-  tmux -L "$socket" kill-session -t ui
+  end_ui
   printf 'ok    TUI %s ở %s cột: tìm #prod, ^t lưu kiểu\n' "$style" "$width"
  done
  start "$width" settings
@@ -86,7 +106,7 @@ for width in 60 100 200; do
  tmux -L "$socket" send-keys -t ui Escape
  wait_for 'Kiểu danh sách'
  cmp "$T/before" "$XDG_CONFIG_HOME/hostbook/config"
- tmux -L "$socket" kill-session -t ui
+ end_ui
  printf 'ok    TUI settings ở %s cột: xem trước và esc không lưu\n' "$width"
 done
 
@@ -114,7 +134,7 @@ if grep -q booking-api "$T/screen"; then cat "$T/screen"; exit 1; fi
 cp "$T/screen" "$ARTIFACTS/import-filtered.txt"
 tmux -L "$socket" send-keys -t ui Escape
 wait_for booking-api
-tmux -L "$socket" kill-session -t ui
+end_ui
 printf 'ok    TUI import CLI: kết quả, xem riêng server vừa nhập, esc về tất cả\n'
 
 # Fresh install: apply the suggested light theme only after the fzf list has loaded.
@@ -134,6 +154,8 @@ for width in 60 100 200; do
  grep -qx 'list = cards' "$XDG_CONFIG_HOME/hostbook/config"
  tmux -L "$socket" send-keys -t ui Enter
  wait_for 'Chưa có server nào'
- tmux -L "$socket" kill-session -t ui
+ end_ui
  printf 'ok    TUI cài mới ở %s cột: nền sáng chọn light, lưu và mở app\n' "$width"
 done
+end_ui
+leak_check
