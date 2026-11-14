@@ -48,3 +48,15 @@ echo 'ok    native fzf CLI filter'
   g log -1 --format=%s | grep -q .
 )
 echo 'ok    first-machine setup creates its first commit without a preconfigured Git identity'
+# Exercise sharing through native age plus MSYS tar/SSH config in the same protected, spaced path.
+printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+check secret_add_password shared-password 'synthetic-shared-secret' >/dev/null
+host_block win-shared 127.0.0.1 fixture 22 '' shared-password '' '' > "$DIR/share.conf"
+build_index full
+bundle=$(tmpd); bundle=$bundle/package
+check share_build "$bundle" 1 win-shared
+share_pack "$bundle" '/shared-package-password' > "$T/share.hbshare"
+opened=$(HB_PACK_PW='/shared-package-password' pack_open "$T/share.hbshare") || exit 1
+check test "$(cat "$opened/secrets/shared-password.pass")" = synthetic-shared-secret
+check test "$(pack_index "$opened" | cut -f1)" = win-shared
+echo 'ok    encrypted share bundle round trip preserves credentials and parses SSH config on Windows'
