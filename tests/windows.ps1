@@ -53,21 +53,41 @@ try {
     $query = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($env:HB_ARG_FILE)).TrimEnd([char]0)
     Assert ($query -eq 'db|cache&literal') 'PowerShell search operators are passed literally without a CMD hop'
 } finally { [IO.File]::WriteAllBytes($entry, $saved) }
-# Real native clipboard read/write, DPAPI encryption and NTFS permissions.
-& $bash --noprofile --norc (Join-Path $source 'tests\windows.sh')
-Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, callbacks, private temps and vault checks'
-& $launcher update
-Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
-Assert (@($userPath | Where-Object { $_ -eq (Join-Path $root 'bin') }).Count -eq 1) 'update keeps one user PATH entry'
-& (Join-Path $source 'tests\windows-ssh.ps1')
-Assert ($LASTEXITCODE -eq 0) 'real Windows SSH key and password login'
-& (Join-Path $source 'tests\windows-fzf.ps1')
-Assert ($LASTEXITCODE -eq 0) 'real native fzf preview and action callbacks'
-Set-Content -LiteralPath (Join-Path $root 'sentinel') -Value 'unrelated data'
-& (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall
-Assert (!(Test-Path -LiteralPath (Join-Path $root 'app')) -and !(Test-Path -LiteralPath (Join-Path $root 'runtime'))) 'uninstall removes application and runtime'
-Assert (Test-Path -LiteralPath (Join-Path $root 'sentinel')) 'uninstall preserves unrelated files in installation root'
-Assert (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains (Join-Path $root 'bin')) 'uninstall removes user PATH entry'
-Assert (Test-Path -LiteralPath $env:HOME) 'uninstall preserves user data'
-Write-Host 'Windows checks passed; interactive screen/physical terminal and tmux tests are not covered here.'
+# These probes are independent once installation/launcher work. Preserve every failure and still clean up.
+$script:windowsFailures = @()
+function Run-Check([string]$Name, [scriptblock]$Check) {
+    Write-Host "::group::$Name"
+    try { & $Check }
+    catch {
+        $script:windowsFailures += "${Name}: $($_.Exception.Message)"
+        Write-Host ($_ | Out-String)
+    } finally { Write-Host '::endgroup::' }
+}
+Run-Check 'Native clipboard, vault and first-machine setup' {
+    & $bash --noprofile --norc (Join-Path $source 'tests\windows.sh')
+    Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, private temps and vault checks'
+}
+Run-Check 'Update' {
+    & $launcher update
+    Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
+    Assert (@($userPath | Where-Object { $_ -eq (Join-Path $root 'bin') }).Count -eq 1) 'update keeps one user PATH entry'
+}
+Run-Check 'Real SSH key and password login' {
+    & (Join-Path $source 'tests\windows-ssh.ps1')
+    Assert ($LASTEXITCODE -eq 0) 'real Windows SSH key and password login'
+}
+Run-Check 'Native interactive fzf callbacks' {
+    & (Join-Path $source 'tests\windows-fzf.ps1')
+    Assert ($LASTEXITCODE -eq 0) 'real native fzf preview and action callbacks'
+}
+Run-Check 'Uninstall' {
+    Set-Content -LiteralPath (Join-Path $root 'sentinel') -Value 'unrelated data'
+    & (Join-Path $source 'install.ps1') -InstallRoot $root -Uninstall
+    Assert (!(Test-Path -LiteralPath (Join-Path $root 'app')) -and !(Test-Path -LiteralPath (Join-Path $root 'runtime'))) 'uninstall removes application and runtime'
+    Assert (Test-Path -LiteralPath (Join-Path $root 'sentinel')) 'uninstall preserves unrelated files in installation root'
+    Assert (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') -notcontains (Join-Path $root 'bin')) 'uninstall removes user PATH entry'
+    Assert (Test-Path -LiteralPath $env:HOME) 'uninstall preserves user data'
+}
+if ($script:windowsFailures.Count) { throw ($script:windowsFailures -join "`n") }
+Write-Host 'Windows checks passed; physical terminal rendering and tmux tests are not covered here.'
