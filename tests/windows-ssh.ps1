@@ -174,6 +174,10 @@ Host *
         if ($result.Out -ne 'HOSTBOOK_WINDOWS_SSH_OK') { throw "Unexpected SSH result for $hostName`: $($result.Out) $($result.Error)" }
         Write-Host "ok    real SSH login using $hostName via the native launcher from PowerShell"
     }
+    $agentProbe = Join-Path $fixture 'agent-probe.sh'
+    Write-Utf8 $agentProbe '. "$HOSTBOOK_STATE/agent.env"; ssh-add -l >/dev/null 2>&1'
+    & $bash --noprofile --norc $agentProbe.Replace('\', '/')
+    if ($LASTEXITCODE -ne 0) { throw 'The managed SSH agent did not retain its key across invocations.' }
     Invoke-Hostbook @('lock') | Out-Null
     $agentProbe = Join-Path $fixture 'agent-probe.sh'
     Write-Utf8 $agentProbe '. "$HOSTBOOK_STATE/agent.env"; ssh-add -l >/dev/null 2>&1; [ $? -eq 1 ]'
@@ -198,9 +202,12 @@ Host *
     }
     Write-Host 'ok    no plaintext private keys remain in hostbook data/state'
 } catch {
+    $failure = $_
+    Write-Host ("SSH probe failure: " + $failure.Exception.Message)
+    if ($serviceCreated) { Stop-Service -Name $service -ErrorAction SilentlyContinue }
     $log = Join-Path $fixture 'sshd.log'
-    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 | Write-Host }
-    throw
+    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 -ErrorAction SilentlyContinue | Write-Host }
+    throw $failure
 } finally {
     if ($serviceCreated) {
         Stop-Service -Name $service -ErrorAction SilentlyContinue

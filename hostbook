@@ -888,6 +888,20 @@ agent_ready(){ # reuse the existing agent (also visible to manual SSH and VS Cod
   if [ -f "$STATE/agent.env" ]; then . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID; agent_ok && return 0; fi
   local d; d=$(mktemp -d /tmp/hb-XXXXXX) || return 1   # keep the socket path short
   if is_windows; then private_dir "$d" || { rm -rf "$d"; return 1; }; fi
+  if is_windows; then
+    # A forked MSYS agent can retain captured Windows pipe handles after the CLI exits.
+    ssh-agent -D -a "$d/a.sock" </dev/null >/dev/null 2>&1 &
+    SSH_AGENT_PID=$!; SSH_AUTH_SOCK=$d/a.sock; export SSH_AUTH_SOCK SSH_AGENT_PID
+    local i=0
+    while kill -0 "$SSH_AGENT_PID" 2>/dev/null && [ "$i" -lt 30 ]; do
+      if agent_ok; then
+        printf 'SSH_AUTH_SOCK=%q; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=%q; export SSH_AGENT_PID;\n' "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" > "$STATE/agent.env"
+        return 0
+      fi
+      sleep .1; i=$((i+1))
+    done
+    kill "$SSH_AGENT_PID" 2>/dev/null || :; rm -f "$STATE/agent.env"; rm -rf "$d"; return 1
+  fi
   ssh-agent -a "$d/a.sock" > "$STATE/agent.env" 2>/dev/null; . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID
   [ "${SSH_AUTH_SOCK:-}" = "$d/a.sock" ] && agent_ok
 }
