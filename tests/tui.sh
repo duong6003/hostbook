@@ -53,10 +53,21 @@ for width in 60 100 200; do
  for style in compact cards minimal; do
   printf 'list = %s\n' "$style" > "$XDG_CONFIG_HOME/hostbook/config"
   start "$width"
-  wait_for booking-api
+  wait_for booking-
   if [ "$width" -ge 100 ]; then wait_for "Nhóm · mở bằng"; fi
   cp "$T/screen" "$ARTIFACTS/$style-$width.txt"
   if grep -q 'secret:\|key-prod\|unknown option\|error:' "$T/screen"; then cat "$T/screen"; exit 1; fi
+  if [ "$width" -ge 100 ]; then
+    tmux -L "$socket" send-keys -t ui C-_
+    i=0
+    while :; do
+      tmux -L "$socket" capture-pane -p -t ui > "$T/expanded"
+      if ! grep -q 'secret:' "$T/expanded"; then break; fi
+      i=$((i+1)); if [ "$i" -ge 60 ]; then cat "$T/expanded"; echo 'FAIL TUI: đóng preview lộ dữ liệu ẩn'; exit 1; fi
+      sleep .1
+    done
+    tmux -L "$socket" send-keys -t ui C-_
+  fi
   tmux -L "$socket" send-keys -t ui '#prod'
   wait_for '1/3'
   tmux -L "$socket" send-keys -t ui C-t

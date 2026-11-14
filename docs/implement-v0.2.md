@@ -4,6 +4,13 @@ Tài liệu này đủ chi tiết để phiên sau chỉ việc làm theo. Phầ
 
 Làm theo bốn mốc, mỗi mốc phát hành được riêng: **M1** kho secret và đăng nhập → **M2** gợi ý thông minh → **M3** chia sẻ, nhập, kiểm tra kết nối → **M4** giao diện và theme. Mỗi mốc kết thúc khi bộ kiểm thử đạt trên macOS và Ubuntu (CI), README đã cập nhật, và đã thử tay các màn mới trong terminal thật (qua tmux, như các lần trước).
 
+## Trạng thái thực thi (14/11/2026)
+
+- **M1–M3:** đã có trong nhánh chính, đến commit `f8fe0fd` (v0.3.0).
+- **M4:** đã triển khai v0.4.0 trên nhánh `feat/m4-interface`: cấu hình riêng từng máy, theme, ba kiểu danh sách, màn Giao diện có xem trước, chọn giao diện lần đầu và giữ kiểu gọn khi nâng cấp. Đang xác nhận CI trước khi đưa vào nhánh chính.
+- Review độc lập đã phát hiện và xử lý các ca: đóng/mở preview phải tính lại bề rộng danh sách; Nerd Font trên Bash 3.2; màu scalar có tab phải bị từ chối; nhãn prod phải luôn thấy dù tên/tag dài; demo phải phản ánh đường kẻ và cùng ngưỡng hiện ô chi tiết.
+- CI macOS của M2/M3 bị treo ở tạo mã khôi phục do `tr | head` đọc vô hạn khi SIGPIPE bị bỏ qua. Đã thay bằng đọc hữu hạn từ `/dev/urandom`; kiểm thử mô phỏng điều kiện này, không thay đổi định dạng mã khôi phục hay secret hiện có.
+
 ## 1. Các quyết định đã chốt
 
 | Việc | Chốt |

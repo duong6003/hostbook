@@ -160,8 +160,8 @@ theme_check(){ # không source/eval file do người dùng viết
     case $k in base) case $v in dark|light|16) ;; *) bad=1;; esac;;
       accent|title|dim|ok|warn|err|border|sel_bg|chip_fg|chips)
         [ -n "$v" ] || bad=1
-        if [ "$k" != chips ] && [ "${v#* }" != "$v" ]; then bad=1; fi
-        for c in $v; do valid_color "$c" || bad=1; done;;
+        if [ "$k" = chips ]; then for c in $v; do valid_color "$c" || bad=1; done
+        else valid_color "$v" || bad=1; fi;;
       *) bad=1;;
     esac
     if [ "$bad" = 1 ]; then printf '%s dòng %s: %s không hợp lệ\n' "$1" "$i" "$line" >&2; return 1; fi
@@ -201,7 +201,7 @@ apply_theme(){
   ICON_GROUP=▦; ICON_SESSION=↺; ICON_PROD=●; ICON_OK=✓; ICON_ERR=✗; ICON_WARN='!'; ICON_PTR=▌
   case $(cfg icons unicode) in
     ascii) ICON_GROUP='[g]'; ICON_SESSION='[s]'; ICON_PROD='*'; ICON_OK=ok; ICON_ERR=x; ICON_WARN='!'; ICON_PTR='>';;
-    nerd) ICON_GROUP=$'\uf233'; ICON_SESSION=$'\uf021'; ICON_PROD=$'\uf111'; ICON_OK=$'\uf00c'; ICON_ERR=$'\uf00d'; ICON_WARN=$'\uf071'; ICON_PTR='▌';;
+    nerd) ICON_GROUP=$'\357\210\263'; ICON_SESSION=$'\357\200\241'; ICON_PROD=$'\357\204\221'; ICON_OK=$'\357\200\214'; ICON_ERR=$'\357\200\215'; ICON_WARN=$'\357\201\261'; ICON_PTR='▌';;
   esac
 }
 fzf_colors(){
@@ -293,8 +293,12 @@ set_group_mode(){ awk -F'\t' -v OFS='\t' -v n="$1" -v m="$2" '$1==n{$2=m} {print
 mode_label(){ case $1 in sync) echo 'chạy đồng loạt';; split) echo 'chia ô';; tabs) echo 'mỗi server một tab';; *) echo 'hỏi khi mở';; esac; }
 # Bề rộng dành cho nội dung danh sách, tính theo vị trí preview và khung.
 list_width(){
-  local c w; c=$(term_cols); w=$((c - 6))
-  if [ "$(cfg preview right)" = right ] && [ $((c * 38 / 100)) -ge 36 ]; then w=$((c - c * 38 / 100 - 8)); fi
+  local c w preview; c=$(term_cols); w=$((c - 6)); preview=$(cfg preview right)
+  # Callback của fzf có kích thước preview thực; khi bị ẩn các biến này không được xuất.
+  if [ -n "${FZF_COLUMNS:-}" ]; then
+    if [ "${FZF_PREVIEW_LEFT:-0}" -gt $((c / 2)) ]; then preview=right; else preview=hidden; fi
+  fi
+  if [ "$preview" = right ] && [ $((c * 38 / 100)) -ge 36 ]; then w=$((c - c * 38 / 100 - 8)); fi
   [ "$(cfg border rounded)" != none ] || w=$((w + 2))
   [ "$w" -ge 12 ] || w=12; echo "$w"
 }
@@ -346,19 +350,23 @@ list_rows(){ # kiểu, bề rộng; trường 2 chỉ chứa phần nhìn thấy
         vis=fit(cu cb name c0 "  " cd $7 c0,W)
         if(style=="cards")vis=vis "\n" fit(cd "  " $9 c0,W)
       }else if(style=="minimal"){
-        vis=fit($2 (" " $6 " " ~ / prod /?" " cr prod "prod" c0:"") "  " cd $4 c0,W)
+        mark=(" " $6 " " ~ / prod /?" " cr prod "prod" c0:"")
+        room=W-vlen(mark)-vlen($4)-2
+        if(room>=8)vis=fit($2,room) mark "  " cd $4 c0
+        else vis=fit($2,W-vlen(mark)) mark
       }else{
         tagtext=""; nt=split($6,tt," ")
-        for(i=1;i<=nt;i++)if(tt[i]!="" && !(style=="cards" && tt[i]=="prod"))tagtext=tagtext (i>1?" ":"") (tt[i]=="prod"?cr prod "prod":cu "#" tt[i]) c0
-        nw=(W<70?16:W<110?20:26); if(nw>W-4)nw=W-4
+        for(i=1;i<=nt;i++)if(tt[i]!="" && tt[i]!="prod")tagtext=tagtext (i>1?" ":"") (tt[i]=="prod"?cr prod "prod":cu "#" tt[i]) c0
+        nw=(W<70?16:W<110?20:26); if(style=="cards" && W>=45)nw=26; if(nw>W-4)nw=W-4
+        mark=(" " $6 " " ~ / prod /?" " cr prod "prod" c0:"")
+        name=fit($2,nw-vlen(mark)) mark
         if(style=="cards"){
           chip=(bg[1]==""?cu:bg[(color[$3]?color[$3]:1)] chipfg)
-          vis=fit(cb pad($2,nw) c0 (" " $6 " " ~ / prod /?" " cr prod "prod" c0:"") "  " chip " " $3 " " c0 "  " tagtext,W)
+          vis=fit(cb pad(name,nw) c0 "  " chip " " $3 " " c0 "  " tagtext,W)
           detail="  " $4 " · @" $5 ($7!=""?" · " $7:""); age=$9
           room=W-vlen(age)-2; vis=vis "\n" cd pad(detail,room) "  " age c0
         }else{
-          vis=pad($2,nw) "  "; used=nw+2
-          if(used+19>W && " " $6 " " ~ / prod /){vis=vis cr prod "prod" c0 " ";used+=vlen(prod)+5}
+          vis=pad(name,nw) "  "; used=nw+2
           if(used+19<=W){vis=vis pad(tagtext,18) " ";used+=19}
           if(used+16<=W){vis=vis cd pad($4,16) c0;used+=16}
           if(used+11<=W){vis=vis cd pad("@" $5,11) c0;used+=11}
@@ -383,8 +391,8 @@ fzf_opts(){ # mỗi dòng một tham số để đưa vào mảng bash, không e
   border=$(cfg border rounded); preview=$(cfg preview right)
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
   else printf '%s\n' "--style=full:$border" '--input-label= Tìm ' "--list-label= $(wc -l < "$IDX" | tr -d ' ') server " '--preview-label= Chi tiết '; fi
-  case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=hidden';; esac
-  printf '%s\n' '--bind=ctrl-/:toggle-preview' "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
+  case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
+  printf '%s\n' "--bind=ctrl-/:toggle-preview+reload('$SELF' _list)+transform-header('$SELF' _header)+transform-footer('$SELF' _footer {1})" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
     echo --read0
     if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=╌'; fi
@@ -647,7 +655,9 @@ vault_identity(){
   done
   confirm "Dùng mã khôi phục?" && vault_recover >&2 && vault_identity
 }
-recovery_new(){ LC_ALL=C tr -dc '0-9A-HJKMNP-TV-Z' < /dev/urandom 2>/dev/null | head -c 20; }
+# Đọc hữu hạn: tr | head trên /dev/urandom bị treo trên macOS khi SIGPIPE bị bỏ qua.
+recovery_new(){ od -An -N20 -tu1 /dev/urandom | awk 'BEGIN{s="0123456789ABCDEFGHJKMNPQRSTVWXYZ"}
+  {for(i=1;i<=NF;i++){printf "%s",substr(s,$i%32+1,1);n++}} END{if(n!=20)exit 1}'; }
 recovery_fmt(){ echo "HB-$(printf '%s' "$1" | sed 's/..../&-/g; s/-$//')"; }
 recovery_norm(){ printf '%s' "$1" | tr 'a-z' 'A-Z' | sed 's/^HB-//' | tr -d ' -'; }
 vault_create(){ # mật-khẩu-chính → tạo kho, in mã khôi phục
@@ -655,7 +665,7 @@ vault_create(){ # mật-khẩu-chính → tạo kho, in mã khôi phục
   id=$(age-keygen 2>/dev/null) || return 1
   printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub"
   printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age"
-  rc=$(recovery_new); printf '%s\n' "$id" | age_pw_enc "$rc" > "$SEC/vault.recovery.age"
+  rc=$(recovery_new) || return 1; printf '%s\n' "$id" | age_pw_enc "$rc" > "$SEC/vault.recovery.age"
   printf '%s\n' "$id" | kc_set
   ensure_merge_setup
   recovery_fmt "$rc"
@@ -690,7 +700,7 @@ vault_passwd(){
   printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age" && save_and_sync "Đổi mật khẩu chính của kho secret" && ok "Đã đổi mật khẩu chính"
 }
 vault_new_recovery(){ # danh tính qua stdin → ghi mã mới, in mã
-  local rc; rc=$(recovery_new); age_pw_enc "$rc" > "$SEC/vault.recovery.age" && recovery_fmt "$rc"
+  local rc; rc=$(recovery_new) || return 1; age_pw_enc "$rc" > "$SEC/vault.recovery.age" && recovery_fmt "$rc"
 }
 vault_recover(){ # [mã] [mật khẩu mới] (hai tham số chỉ dùng khi kiểm thử)
   local code=${1:-} pw=${2:-} id new
@@ -2390,7 +2400,7 @@ demo_rows(){
     'g:booking-prod|booking-prod|||||nhóm · 3 server · chia ô||booking-api booking-web booking-db' | tr '|' '\t'
 }
 cmd_demo(){ # dữ liệu mẫu cố định, không kiểm tra mạng hay sửa cấu hình thật
-  local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record IDX CFG
+  local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record rule IDX CFG
   d=$(tmpd); CFG=$d/config; IDX=$d/index
   [ ! -f "$CONF/config" ] || cp "$CONF/config" "$CFG"
   key=${arg%%=*}; value=${arg#*=}
@@ -2399,14 +2409,18 @@ cmd_demo(){ # dữ liệu mẫu cố định, không kiểm tra mạng hay sửa
   demo_rows | awk -F'\t' '$1~/^h:/ {print $2 "\t" $3}' > "$IDX"
   cols=${FZF_PREVIEW_COLUMNS:-80}; [[ $cols =~ ^[0-9]+$ ]] || cols=80; [ "$cols" -ge 20 ] || cols=20
   border=$(cfg border rounded); preview=$(cfg preview right); width=$((cols - 6))
-  if [ "$preview" = right ] && [ "$cols" -ge 64 ]; then width=$((cols * 60 / 100 - 6)); fi
+  if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then width=$((cols * 60 / 100 - 6)); fi
   demo_rows | list_rows "$(cfg list cards)" "$width" > "$d/rows"
   if [ "$(cfg list cards)" = cards ]; then
-    rendered=$(while IFS= read -r -d '' record; do record=${record#*"$TAB"}; printf '%s\n' "${record%"$TAB"*}"; done < "$d/rows")
+    rule=$(printf '%*s' "$width" '' | tr ' ' '-')
+    rendered=$(while IFS= read -r -d '' record; do
+      record=${record#*"$TAB"}; printf '%s\n' "${record%"$TAB"*}"
+      [ "$(cfg separator on)" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
+    done < "$d/rows")
   else rendered=$(cut -f2 "$d/rows"); fi
   left=$(printf '%sTìm > booking%s\n\n%s\n\n%senter ssh · tab chọn · ^t đổi kiểu%s' "$CP" "$C0" "$rendered" "$CD" "$C0")
   right=$(printf '%sbooking-api  %sprod%s\n10.0.1.11 · @ubuntu\nĐăng nhập: key-prod\nLần dùng: 2 giờ trước' "$CU$CB" "$CR" "$C0")
-  if [ "$preview" = right ] && [ "$cols" -ge 64 ]; then
+  if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then
     body=$(gum join --horizontal --align top "$(gum style --width "$((width + 2))" "$left")" "$(gum style --width "$((cols - width - 8))" "$right")")
   elif [ "$preview" = bottom ]; then body=$(printf '%s\n\n%sChi tiết%s\n%s' "$left" "$CU" "$C0" "$right")
   else body=$left; fi
@@ -2419,7 +2433,7 @@ cmd_demo(){ # dữ liệu mẫu cố định, không kiểm tra mạng hay sửa
 home(){
   local q=${1:-} out rc key sel first t n hosts opt opts=()
   # khoá cho cổng điều khiển của fzf: chỉ tiến trình con của lần chạy này gửi lệnh được
-  FZF_API_KEY=$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 32); export FZF_API_KEY
+  FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err 'Không tạo được khoá cho ô tìm'; return 1; }; export FZF_API_KEY
   clip_offer
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }

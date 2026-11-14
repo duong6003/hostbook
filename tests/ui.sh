@@ -13,6 +13,18 @@ SELF=$S
 trap 'rm -rf "$T"' EXIT
 pass=0
 check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else printf 'FAIL  %s\n' "$1"; exit 1; fi; }
+# macOS tr có thể tiếp tục đọc vô hạn nếu tiến trình cha bỏ qua SIGPIPE (CI).
+python3 - "$T/lib" <<'PYTEST'
+import os,signal,subprocess,sys
+p=subprocess.Popen(['/bin/bash','-c','trap "" PIPE; . "$1"; recovery_new','test',sys.argv[1]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
+try:
+ out,_=p.communicate(timeout=3)
+except subprocess.TimeoutExpired:
+ os.killpg(p.pid,signal.SIGKILL); p.communicate()
+ raise AssertionError('tạo mã khôi phục bị treo khi SIGPIPE bị bỏ qua')
+assert p.returncode==0 and len(out)==20 and all(chr(c) in '0123456789ABCDEFGHJKMNPQRSTVWXYZ' for c in out),out
+PYTEST
+check 'mã khôi phục kết thúc cả khi SIGPIPE bị bỏ qua' 'true'
 # Missing config, unsafe values and updates must not break defaults or execute content.
 check 'cấu hình mới mặc định là thẻ' '[ "$(cfg list cards)" = cards ]'
 cfg_set list minimal
@@ -24,6 +36,14 @@ check 'giá trị sai dùng mặc định và báo số dòng' '[ "$(cfg list ca
 check 'thời gian TTL đổi phút sang giây' '[ "$(duration "$(cfg key_ttl 8h)")" = 1800 ]'
 check 'không nhận tên theme vượt thư mục' '! cfg_valid theme ../outside'
 check 'không ghi giá trị sai' '! cfg_set list broken && [ "$(cfg list cards)" = cards ]'
+theme_builtin hostbook > "$T/tab-colors.theme"
+printf 'accent = 212\t141\n' >> "$T/tab-colors.theme"
+check 'theme không nhận nhiều màu cho một thuộc tính' '! theme_check "$T/tab-colors.theme" 2>/dev/null'
+cfg_set icons nerd
+apply_theme
+check 'Nerd Font là ký tự UTF-8 trên bash 3.2' '[ "$(printf %s "$ICON_GROUP" | od -An -tx1 | tr -d " \n")" = ef88b3 ]'
+cfg_set icons unicode
+apply_theme
 for theme in hostbook dracula nord gruvbox solarized-dark solarized-light light high-contrast terminal; do
  theme_builtin "$theme" > "$T/theme"
  check "theme $theme hợp lệ" 'theme_check "$T/theme"'
@@ -53,7 +73,7 @@ rm -f "$CFG"
 mkdir -p "$DIR/.git"
 cfg_init
 check 'nâng cấp giữ kiểu compact' '[ "$(cfg list cards)" = compact ]'
-printf 'h:booking-api\tbooking-api\tbooking\t10.0.1.11\tubuntu\tprod web\tMô tả dài cho máy chủ chính\tkey-prod\t2h\n' > "$T/rows"
+printf 'h:booking-api\tbooking-api\tbooking\t10.0.1.11\tubuntu\tbackend cache worker prod\tMô tả dài cho máy chủ chính\tkey-prod\t2h\n' > "$T/rows"
 printf 'g:booking\tbooking\t\t\t\t\tnhóm · 2 server · chia ô\t\tbooking-api booking-db\n' >> "$T/rows"
 for style in compact minimal cards; do
  for width in 30 60 100 200; do
@@ -78,6 +98,11 @@ PY
 done
 footer=$(COLUMNS=100 cmd_footer h:booking-api | sed $'s/\033\\[[0-9;]*m//g')
 check 'chân màn hình nằm trong cột danh sách' '[ ${#footer} -le 54 ]'
+printf 'h:long\tserver-with-an-extremely-long-name-that-fills-the-entire-row\tp\t10.0.0.1\tu\tbackend cache worker prod\tdesc\ts\t1h\n' > "$T/long"
+for style in cards compact minimal; do
+ list_rows "$style" 30 < "$T/long" | tr '\0' '\n' | cut -f2 > "$T/long-view"
+ check "$style: tên dài vẫn thấy prod" 'grep -q prod "$T/long-view"'
+done
 for preset in cards compact minimal dracula nord light high-contrast; do
  for width in 40 80; do
   check "demo $preset ở $width cột" 'FZF_PREVIEW_COLUMNS=$width "$S" _demo "preset=$preset" > "$T/demo" && grep -q booking "$T/demo"'
@@ -85,4 +110,8 @@ for preset in cards compact minimal dracula nord light high-contrast; do
 
  done
 done
-printf '\n%s kiểm tra UI đạt\n' "$pass"
+cfg_set list cards
+FZF_PREVIEW_COLUMNS=80 "$S" _demo separator=on > "$T/with-gap"
+FZF_PREVIEW_COLUMNS=80 "$S" _demo separator=off > "$T/without-gap"
+check 'xem trước thể hiện lựa chọn đường kẻ' '! cmp -s "$T/with-gap" "$T/without-gap"'
+printf '\n%s kiểm tra UI đạt\n'  "$pass"
