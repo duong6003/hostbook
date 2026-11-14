@@ -2632,9 +2632,9 @@ cmd_demo(){ # fixed sample data; no network checks or changes to real configurat
     right=
   fi
   printf '%s%s · %s · %s%s\n' "$CU" "$style" "$theme" "$preview" "$C0"
-  # Piped output (fzf preview) makes gum drop all colour, so a single awk draws the same plain box instead of three gum
-  # processes. A tty or any line wider than its column (gum would wrap it) falls back to gum.
-  if [ ! -t 1 ] && demo_box "$left" "$right" "$((width + 2))" "$((cols - width - 8))" "$((cols - 2))" "$border"; then return 0; fi
+  # Piped output (fzf preview) makes gum drop all colour unless CLICOLOR_FORCE is set, so a single awk draws the same
+  # plain box instead of three gum processes. A tty, forced colour, or any line wider than its column falls back to gum.
+  if [ ! -t 1 ] && { [ -z "${CLICOLOR_FORCE:-}" ] || [ "$CLICOLOR_FORCE" = 0 ]; } && demo_box "$left" "$right" "$((width + 2))" "$((cols - width - 8))" "$((cols - 2))" "$border"; then return 0; fi
   if [ $split = 1 ]; then
     body=$(gum join --horizontal --align top "$(gum style --width "$((width + 2))" "$left")" "$(gum style --width "$((cols - width - 8))" "$right")")
   else body=$left; fi
