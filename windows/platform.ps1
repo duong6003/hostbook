@@ -1,5 +1,5 @@
 # Native Windows boundaries. No secret is passed on the command line.
-param([Parameter(Mandatory=$true)][string]$Action, [string]$Path)
+param([Parameter(Mandatory=$true)][string]$Action, [string]$Path, [string]$Executable)
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::InputEncoding = $utf8
@@ -26,7 +26,9 @@ switch ($Action) {
     }
     'agent-start' {
         $start = New-Object Diagnostics.ProcessStartInfo
-        $start.FileName = (Get-Command bash.exe -CommandType Application).Source
+        if (!(Test-Path -LiteralPath $Executable)) { throw "Bash runtime not found: $Executable" }
+        $start.FileName = $Executable
+        $start.WorkingDirectory = Split-Path $Executable -Parent
         $start.Arguments = '--noprofile --norc "' + $Path.Replace('\', '/') + '"'
         $start.UseShellExecute = $true
         $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
