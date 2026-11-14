@@ -20,9 +20,11 @@ check 'all emitted fzf callbacks use the quoted command' 'fzf_opts | grep -F "$(
 printf 'Host example\n%s\n' "$(login_lines "$T/a space.pub")" > "$T/ssh"
 check 'SSH key path preserves spaces through OpenSSH config parsing' 'ssh -F "$T/ssh" -G example 2>/dev/null | grep -F "identityfile $T/a space.pub" >/dev/null'
 mkdir -p "$DIR"
-printf 'Host example\n%s\n' "$(login_lines "$T/a space.pub")" > "$DIR/fixture.conf"
+printf 'Host example\r\n%s\r\n' "$(login_lines "$T/a space.pub")" > "$DIR/fixture.conf"
 : > "$T/a space.pub"
 check 'legacy key discovery keeps the entire quoted path' '[ "$(legacy_keys | cut -f1)" = "$T/a space.pub" ]'
+# Crypto is outside this boundary: keep its result fixed while exercising the real config migration.
+check 'migration rewrites a quoted legacy path containing spaces' '(ensure_index(){ :; }; secret_add_key(){ echo fixture; }; migrate_keys_raw >/dev/null; grep -q "secrets/fixture.pub" "$DIR/fixture.conf")'
 printf 'Host crlf\r\n  HostName 127.0.0.1\r\n  User fixture\r\n' > "$DIR/crlf.conf"
 printf 'Include "%s/*.conf"\n' "$DIR" > "$T/crlf-ssh"
 SSHCFG=$T/crlf-ssh

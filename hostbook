@@ -844,7 +844,7 @@ pick_login(){ # [suggested secret] [reason]
 # Only include explicit IdentityFile entries in .conf files, not defaults from "ssh -G"; the key file must exist.
 legacy_keys(){ # print "path<TAB>server count"
   local k
-  cat "$DIR"/*.conf 2>/dev/null | awk 'tolower($1)=="identityfile" {p=$0; sub(/^[ \t]*[^ \t]+[ \t]+/,"",p); gsub(/^"|"$/,"",p); if(p !~ /secrets\/[^\/]+\.pub$/) print p}' | sort -u | while read -r k; do
+  cat "$DIR"/*.conf 2>/dev/null | awk '{sub(/\r$/,"")} tolower($1)=="identityfile" {p=$0; sub(/^[ \t]*[^ \t]+[ \t]+/,"",p); gsub(/^"|"$/,"",p); if(p !~ /secrets\/[^\/]+\.pub$/) print p}' | sort -u | while read -r k; do
     [ -f "${k/#\~/$HOME}" ] && printf '%s\t%s\n' "$k" "$(awk -F'\t' -v k="$k" '$12=="" && $7==k' "$IDX" | grep -c .)"; done
 }
 migrate_keys_raw(){ # no prompts; print the number of migrated keys
@@ -855,12 +855,13 @@ migrate_keys_raw(){ # no prompts; print the number of migrated keys
     nm=$(secret_add_key "$k" "$( secret_exists "$nm" || echo "$nm")" 2>/dev/null) || { warn "Bỏ qua $k (không đọc được hoặc không phải key hợp lệ)" >&2; continue; }
     full=${k/#\~/$HOME}
     for f in "$DIR"/*.conf; do [ -f "$f" ] || continue
-      awk -v a="$k" -v b="$full" -v nm="$nm" -v pub="$(printf '%s' "$SEC/$nm.pub" | sed "s|^$HOME|~|")" '
+      awk -v a="$k" -v b="$full" -v nm="$nm" -v pub="$(ssh_path "${SEC/#$HOME/\~}/$nm.pub")" '
         function flush(  i){ for (i=1;i<=nb;i++) print buf[i]; nb=0 }
         # collect Host blocks; replace references to this IdentityFile with the secret public-key path
         tolower($1)=="host" || tolower($1)=="match" { flush(); hostline=NR; wild=($0 ~ /[*?]/); hit=0; hasio=0 }
         { buf[++nb]=$0 }
-        tolower($1)=="identityfile" && ($2==a || $2==b) { match($0,/^[ \t]*/); ind=substr($0,1,RLENGTH); buf[nb]=ind "IdentityFile " pub "\n" ind "IdentitiesOnly yes"; hit=1
+        tolower($1)=="identityfile" { path=$0; sub(/\r$/,"",path); sub(/^[ \t]*[^ \t]+[ \t]+/,"",path); gsub(/^"|"$/,"",path) }
+        tolower($1)=="identityfile" && (path==a || path==b) { match($0,/^[ \t]*/); ind=substr($0,1,RLENGTH); buf[nb]=ind "IdentityFile " pub "\n" ind "IdentitiesOnly yes"; hit=1
             if (!wild) { for (i=nb;i>=1;i--) if (tolower(buf[i]) ~ /^[ \t]*host[ \t]/) { if (i==1 || buf[i-1] !~ /#[ \t]*secret:/) buf[i]="# secret: " nm "\n" buf[i]; break } } }
         END { flush() }' "$f" > "$f.tmp"
       cmp -s "$f" "$f.tmp" && rm -f "$f.tmp" || mv "$f.tmp" "$f"
@@ -2637,7 +2638,7 @@ case ${1:-} in
   _load) agent_ready && load_secret "$2";; _secrets_for) ensure_index; secrets_for "$2";;
   unlock) cmd_unlock;; lock) cmd_lock "${2:-}";; secret|secrets) check_deps || exit 1; ensure_index; secret_manager;;
   vault) case ${2:-} in init) vault_init;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) echo "hostbook vault init | passwd | recover | recovery-code";; esac;;
-  _share_build) ensure_index; d=$2; ws=$3; shift 3; share_build "$d" "$ws" $(share_closure "$@");; _share_pack) ensure_index; pw=$2; shift 2; d=$(tmpd) || return 1; d=$d/p; share_build "$d" 1 $(share_closure "$@") && share_pack "$d" "$pw";;
+  _share_build) ensure_index; d=$2; ws=$3; shift 3; share_build "$d" "$ws" $(share_closure "$@");; _share_pack) ensure_index; pw=$2; shift 2; d=$(tmpd) || exit 1; d=$d/p; share_build "$d" 1 $(share_closure "$@") && share_pack "$d" "$pw";;
   _share_pw) share_password;; _share_words) printf '%s\n' $SHARE_WORDS;;
   _import_classify) x=$(pack_open "$2") && pack_classify "$x";;
   _import_apply) ensure_index; x=$(pack_open "$2") || exit 1; { ls "$x"/secrets/*.meta >/dev/null 2>&1 && ! vault_exists; } && { vault_create "$HOSTBOOK_MASTER" >/dev/null; }
