@@ -6,6 +6,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Cài bằng chính install.sh (từ bản checkout này)
@@ -21,6 +22,8 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           bash tests/test.sh
+          bash tests/ui.sh
+          bash tests/tui.sh
       - name: Kiểm thử với server SSH thật (Docker, chỉ Ubuntu)
         if: runner.os == 'Linux'
         run: |

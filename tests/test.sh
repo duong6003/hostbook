@@ -69,9 +69,9 @@ printf '%s\tb-api\n%s\tb-api\n' "$(date +%s)" "$(date +%s)" >> "$HOSTBOOK_STATE/
 list=$("$S" _list | strip)
 check "server dùng gần đây đứng đầu" '[ "$(printf "%s\n" "$list" | grep "^h:" | head -1 | cut -f1)" = h:b-api ]'
 check "dòng có tag và user để tìm theo #tag, @user" 'printf "%s\n" "$list" | grep "^h:a-db" | grep -q "#postgres" && printf "%s\n" "$list" | grep "^h:b-api" | grep -q "@deploy"'
-check "fzf: #prod web !b- ra đúng a-web1, a-web2" '[ "$(printf "%s\n" "$list" | fzf --filter "#prod web !b-" --delimiter="	" --with-nth=2 --accept-nth=1 | sort | tr "\n" " ")" = "h:a-web1 h:a-web2 " ]'
-check "fzf: @deploy ra b-api, b-staging" '[ "$(printf "%s\n" "$list" | fzf --filter "@deploy" --delimiter="	" --with-nth=2 --accept-nth=1 | sort | tr "\n" " ")" = "h:b-api h:b-staging " ]'
-check "fzf: ^b- neo đầu tên" '[ "$(printf "%s\n" "$list" | fzf --filter "^b-" --delimiter="	" --with-nth=2 --accept-nth=1 | wc -l | tr -d " ")" = 2 ]'
+check "fzf: #prod web !b- ra đúng a-web1, a-web2" '[ "$(printf "%s\n" "$list" | fzf --filter "#prod web !b-" --delimiter="	" --with-nth=2.. --accept-nth=1 | sort | tr "\n" " ")" = "h:a-web1 h:a-web2 " ]'
+check "fzf: @deploy ra b-api, b-staging" '[ "$(printf "%s\n" "$list" | fzf --filter "@deploy" --delimiter="	" --with-nth=2.. --accept-nth=1 | sort | tr "\n" " ")" = "h:b-api h:b-staging " ]'
+check "fzf: ^b- neo đầu tên" '[ "$(printf "%s\n" "$list" | fzf --filter "^b-" --delimiter="	" --with-nth=2.. --accept-nth=1 | wc -l | tr -d " ")" = 2 ]'
 
 prev=$("$S" _preview h:a-web1 | strip)
 check "xem trước có PROD, ProxyJump, mô tả" 'printf "%s" "$prev" | grep -q "● PROD" && printf "%s" "$prev" | grep -q "ProxyJump a-bastion" && printf "%s" "$prev" | grep -q "Nginx chính"'
@@ -265,10 +265,11 @@ git -C "$HOSTBOOK_DIR" remote set-url origin "$T/kho.git"
 # ---- layout co giãn theo màn hình ----
 "$S" _index >/dev/null
 narrow=$(COLUMNS=60 "$S" _list | strip | grep '^h:a-gate' | cut -f2)
+narrow_search=$(COLUMNS=60 "$S" _list | strip | grep '^h:a-gate' | cut -f3)
 wide=$(COLUMNS=200 "$S" _list | strip | grep '^h:a-gate' | cut -f2)
 vis(){ printf '%s' "$1" | awk -v w="$2" '{ print substr($0,1,w) }'; }
-check "màn hẹp: phần nhìn thấy có tên, tag, IP" 'vis "$narrow" 56 | grep -q "a-gate.*#prod.*203.0.113.10"'
-check "màn hẹp: user và dự án bị đẩy ra sau nhưng vẫn tìm được" '! vis "$narrow" 56 | grep -q "@ubuntu" && printf "%s" "$narrow" | grep -q "@ubuntu" && printf "%s" "$narrow" | grep -q "project-a"'
+check "màn hẹp: phần nhìn thấy có tên, tag, IP" 'vis "$narrow" 56 | grep -q "a-gate.*prod.*203.0.113.10"'
+check "màn hẹp: user và dự án bị đẩy ra sau nhưng vẫn tìm được" '! vis "$narrow" 56 | grep -q "@ubuntu" && printf "%s" "$narrow_search" | grep -q "@ubuntu" && printf "%s" "$narrow_search" | grep -q "project-a"'
 check "màn rộng: thấy cả user, dự án, mô tả" 'vis "$wide" 120 | grep -q "@ubuntu.*project-a.*Cổng vào project A"'
 check "tag bị cắt vẫn tìm được" 'COLUMNS=60 "$S" _list | strip | grep "^h:a-db" | grep -q "#postgres"'
 printf '#!/bin/sh\necho runner-very-long-hostname-from-a-ci-machine-1234567890\n' > "$T/fakebin/hostname"; chmod +x "$T/fakebin/hostname"

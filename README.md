@@ -42,6 +42,8 @@ Hai máy sửa cùng lúc được gộp theo từng server, không theo từng 
 | Phím | Việc |
 |---|---|
 | gõ | tìm theo tên, `#tag`, `@user`, IP, mô tả. Hỗ trợ cú pháp fzf: `web prod` (VÀ), `db \| cache` (HOẶC), `!staging` (trừ), `^b-` (bắt đầu bằng) |
+| `ctrl-t` | đổi nhanh giữa thẻ hai dòng và danh sách gọn |
+| `ctrl-/` | ẩn/hiện ô chi tiết |
 | `enter` | ssh vào server, mở nhóm, hoặc vào lại phiên tmux đang chạy |
 | `→` | thao tác: chuyển tiếp cổng (gợi ý cổng theo tag, ví dụ `#postgres` → 5432), gửi/tải file, copy IP, mở trong tmux, đổi tên, chuyển dự án, xoá |
 | `tab` | chọn nhiều server, `enter` để mở cùng lúc: chia ô, chạy đồng loạt, hoặc mỗi server một tab (cần tmux) |
@@ -96,6 +98,27 @@ Key SSH và mật khẩu đăng nhập server được giữ trong **kho secret*
 - Kết nối qua hostbook thì key được nạp vào ssh-agent khi cần (8 giờ), không ghi ra file. Để `ssh`, `scp`, VS Code Remote-SSH dùng được ngoài app: `hostbook unlock`. Gỡ ra: `hostbook lock`.
 - Quản lý trong `^o` → Secret: thêm, thay, sửa, đổi tên, xoá, xem server nào đang dùng. Lệnh: `hostbook vault passwd`, `hostbook vault recover`.
 
+## Giao diện (v0.4)
+
+Chạy `hb settings`, hoặc `ctrl-o` → **Giao diện**. Mọi lựa chọn đều có xem trước; `enter` lưu, `esc` huỷ. Có ba kiểu danh sách (thẻ hai dòng, gọn một dòng, tối giản), năm kiểu khung, ô chi tiết bên phải/bên dưới/ẩn, đường kẻ và biểu tượng Unicode/ASCII/Nerd Font. Biểu tượng Nerd Font cần font hỗ trợ. Server production luôn có nhãn `prod`, kể cả khi tắt màu.
+
+Bảy bộ có sẵn: Thẻ, Gọn, Tối giản, Dracula, Nord gọn, Sáng, Tương phản cao. Có thêm các theme Gruvbox, Solarized tối/sáng và theme theo màu terminal. `NO_COLOR=1 hb` bỏ màu. Lần cài mới có bước chọn giao diện; khi nâng cấp, app giữ kiểu gọn để bạn tự chọn lúc thuận tiện.
+
+Cấu hình riêng từng máy, **không đồng bộ**, ở `${XDG_CONFIG_HOME:-~/.config}/hostbook/config`:
+
+```ini
+list = cards              # cards, compact, minimal
+border = rounded          # rounded, sharp, bold, double, none
+preview = right           # right, bottom, hidden
+separator = on            # on, off
+icons = unicode           # unicode, ascii, nerd
+theme = hostbook
+key_ttl = 8h               # thời gian giữ key trong agent; cũng nhận phút/giây
+connect_timeout = 15      # giây; HOSTBOOK_CONNECT_TIMEOUT được ưu tiên
+```
+
+**Tự tạo theme…** chép theme hiện tại vào `themes/<tên>.theme`, mở bằng `$EDITOR`, kiểm tra và cho xem trước trước khi dùng. Màu nhận số `0–255`, `#rrggbb`, hoặc tên ANSI (`red`, `bright-cyan`…). Giá trị cấu hình/theme sai sẽ dùng mặc định; `hb doctor` chỉ rõ dòng cần sửa. Nội dung file cấu hình được đọc như dữ liệu, không chạy như shell script.
+
 ## Dữ liệu
 
 ```
@@ -104,6 +127,7 @@ Key SSH và mật khẩu đăng nhập server được giữ trong **kho secret*
   groups.tsv                 các nhóm
   secrets/                   kho secret (đã mã hoá): <tên>.age, .meta, .pub
   .gitattributes             bật bộ gộp theo từng server
+~/.config/hostbook/          cấu hình giao diện và theme riêng từng máy
 ~/.local/state/hostbook/     riêng từng máy: lịch sử dùng, chỉ mục
 ~/.ssh/config                có thêm dòng: Include ~/ssh-hosts/*.conf
 ```
@@ -140,6 +164,9 @@ Rồi xoá dòng `alias hb=hostbook` trong `~/.zshrc` hoặc `~/.bashrc`. Danh s
 
 ```bash
 bash tests/test.sh
+bash tests/ui.sh
+bash tests/tui.sh  # cần tmux; tự bỏ qua nếu chưa có
+bash tests/e2e.sh  # cần Docker; tự bỏ qua nếu chưa có
 ```
 
 Bộ kiểm thử chạy trên dữ liệu tạm, không đụng `~/ssh-hosts`. CI chạy trên macOS và Ubuntu.
