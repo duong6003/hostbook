@@ -5,6 +5,13 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state HOSTBOOK_SSH_CONFIG=$T/ssh_config
 S="$HERE/../hostbook"; pass=0; fail=0
+# Cách ly hoàn toàn: không chạm Keychain, ssh-agent, ~/.config hay ~/.ssh thật (HOME giả)
+export HOME="$T/home"; mkdir -p "$HOME/.ssh"
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+export HOSTBOOK_KEYCHAIN="file:$T/keychain/id" HOSTBOOK_MASTER="mat-khau-chinh-thu" XDG_CONFIG_HOME="$T/config"
+AG=$(mktemp -d /tmp/hbt-XXXXXX); eval "$(ssh-agent -a "$AG/a.sock")" >/dev/null
+[ "${SSH_AUTH_SOCK:-}" = "$AG/a.sock" ] || { echo "Không dựng được ssh-agent riêng cho kiểm thử, dừng"; exit 1; }
+trap 'ssh-agent -k >/dev/null 2>&1; rm -rf "$T" "$AG"' EXIT
 check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
 strip(){ sed $'s/\033\\[[0-9;]*m//g'; }
 
@@ -77,7 +84,7 @@ check "gợi ý tiền tố tên theo dải IP" '[ "$("$S" _prefix 10.0.1.13)" =
 inf=$("$S" _infer 10.0.1.13 a-web3 "" "")
 iv(){ printf '%s\n' "$inf" | sed -n "s/^$1=//p"; }
 check "đoán dự án theo dải IP" '[ "$(iv group)" = project-a ] && [ "$(iv src_group)" = "cùng dải 10.0.1.x" ]'
-check "đoán user, máy trung gian, key" '[ "$(iv user)" = ubuntu ] && [ "$(iv jump)" = a-bastion ] && [ "$(iv key)" = "~/.ssh/id_rsa" ]'
+check "đoán user, máy trung gian; chưa có secret thì để trống" '[ "$(iv user)" = ubuntu ] && [ "$(iv jump)" = a-bastion ] && [ -z "$(iv secret)" ]'
 check "đoán tags: tag chung + tag từ tên" '[ "$(iv tags)" = "prod web" ]'
 inf=$("$S" _infer 10.2.0.77 b-worker "" 2201)
 check "giữ user/port đã dán, đoán dự án b" '[ "$(iv group)" = project-b ] && [ "$(iv port)" = 2201 ] && [ "$(iv user)" = deploy ]'
@@ -274,5 +281,100 @@ H2=$(mktemp -d); printf '# hostbook: tìm và kết nối server SSH\nalias s=ho
 HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1; HOME=$H2 SHELL=/bin/bash "$S" setup >/dev/null 2>&1
 check "máy cũ có alias s: chuyển sang hb, chạy lại không thêm trùng" '[ "$(grep -c "alias hb=hostbook" "$H2/.bashrc")" = 1 ] && ! grep -q "alias s=" "$H2/.bashrc" && [ "$(grep -c "^# hostbook" "$H2/.bashrc")" = 1 ]'
 rm -rf "$H1" "$H2"
+
+# ---- M1: kho secret ----
+SECD="$HOSTBOOK_DIR/secrets"
+check "mật khẩu chính sai khi chưa có kho: không tạo gì" '! "$S" _vault_id 2>/dev/null | grep -q ok'
+code=$("$S" _vault_init "$HOSTBOOK_MASTER")
+check "tạo kho secret: đủ 3 file, mã khôi phục đúng dạng" '[ -s "$SECD/vault.pub" ] && [ -s "$SECD/vault.key.age" ] && [ -s "$SECD/vault.recovery.age" ] && printf "%s" "$code" | grep -qE "^HB(-[0-9A-HJKMNP-TV-Z]{4}){5}$"'
+check "danh tính được nhớ, khớp vault.pub" '"$S" _vault_id | grep -q ok'
+rm -rf "$T/keychain"
+check "quên danh tính + sai mật khẩu chính: không mở được" '! HOSTBOOK_MASTER=sai-mat-khau "$S" _vault_id 2>/dev/null | grep -q ok'
+check "đúng mật khẩu chính: mở được và nhớ lại" '"$S" _vault_id | grep -q ok && ls "$T/keychain" | grep -q id'
+
+ssh-keygen -q -t ed25519 -N "" -f "$T/k1" -C k1
+nm=$("$S" _secret_add_key "$T/k1" key-a 2>/dev/null)
+check "thêm key: tạo .age .meta .pub, .pub quyền 600" '[ "$nm" = key-a ] && [ -s "$SECD/key-a.age" ] && grep -q "^type=key" "$SECD/key-a.meta" && [ "$(stat -c %a "$SECD/key-a.pub" 2>/dev/null || stat -f %Lp "$SECD/key-a.pub")" = 600 ]'
+check "giải mã ra đúng key" '"$S" _secret_get key-a | cmp -s - "$T/k1"'
+check "nội dung .age không chứa key dạng thường" '! grep -q "OPENSSH PRIVATE KEY" "$SECD/key-a.age"'
+nm=$("$S" _secret_add_key "$T/k1" key-khac 2>/dev/null)
+check "thêm lại cùng key: trả tên cũ, không tạo secret mới" '[ "$nm" = key-a ] && [ ! -f "$SECD/key-khac.meta" ]'
+ssh-keygen -q -t ed25519 -N "abc123" -f "$T/k2" -C k2
+HOSTBOOK_KEY_PASSPHRASE=abc123 "$S" _secret_add_key "$T/k2" key-pp >/dev/null 2>&1
+"$S" _secret_get key-pp > "$T/k2.dec"; chmod 600 "$T/k2.dec"
+check "key có passphrase: được gỡ trước khi vào kho" 'ssh-keygen -y -P "" -f "$T/k2.dec" >/dev/null 2>&1'
+echo "rác" > "$T/bad.key"
+check "nội dung không phải key: từ chối" '! "$S" _secret_add_key "$T/bad.key" key-bad >/dev/null 2>&1 && [ ! -f "$SECD/key-bad.meta" ]'
+ssh-keygen -q -t ed25519 -N "" -f "$T/k3"
+check "tên secret không hợp lệ: từ chối" '! "$S" _secret_add_key "$T/k3" "Ten Sai" >/dev/null 2>&1 && ! "$S" _secret_add_key "$T/k3" vault >/dev/null 2>&1'
+"$S" _secret_add_password mk-deploy "p@ss w0rd" >/dev/null 2>&1
+check "secret mật khẩu: lưu và giải mã đúng" '[ "$("$S" _secret_get mk-deploy)" = "p@ss w0rd" ] && grep -q "^type=password" "$SECD/mk-deploy.meta" && [ ! -f "$SECD/mk-deploy.pub" ]'
+
+b=$("$S" _block s-web1 10.50.0.1 ops 22 "" key-a "prod" "")
+check "khối Host với secret key: # secret, IdentityFile .pub, IdentitiesOnly" 'printf "%s" "$b" | grep -q "^# secret: key-a$" && printf "%s" "$b" | grep -q "IdentityFile .*secrets/key-a.pub$" && printf "%s" "$b" | grep -q "IdentitiesOnly yes"'
+b2=$("$S" _block s-api 10.50.0.2 ops 22 "" mk-deploy "" "")
+check "khối Host với secret mật khẩu: tắt key, ưu tiên mật khẩu" 'printf "%s" "$b2" | grep -q "PubkeyAuthentication no" && printf "%s" "$b2" | grep -q "PreferredAuthentications password" && ! printf "%s" "$b2" | grep -q IdentityFile'
+b3=$("$S" _block s-none 10.50.0.3 ops 22 "" "" "" "")
+check "khối Host không secret: không có dòng đăng nhập nào" '! printf "%s" "$b3" | grep -qE "secret|IdentityFile|PubkeyAuthentication"'
+{ printf '%s\n\n%s\n\n%s\n' "$b" "$b2" "$b3"; printf '\nHost sw-1\n  HostName 10.50.1.1\n\nHost sw-*\n  User ops\n  IdentityFile %s/key-a.pub\n  IdentitiesOnly yes\n' "$SECD"; } > "$HOSTBOOK_DIR/sec.conf"
+idx=$("$S" _index)
+check "chỉ mục có trường secret, kể cả suy ra từ khối wildcard" '[ "$(row s-web1 12)" = key-a ] && [ "$(row s-api 12)" = mk-deploy ] && [ -z "$(row s-none 12)" ] && [ "$(row sw-1 12)" = key-a ]'
+check "tìm server theo secret" '"$S" _list | strip | grep "^h:s-web1" | grep -q "secret:key-a"'
+check "secret của server gồm cả secret của máy trung gian" '[ "$("$S" _secrets_for s-web1)" = key-a ]'
+git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm "sec.conf"
+
+"$S" _set_host_secret s-web1 mk-deploy >/dev/null; idx=$("$S" _index)
+check "đổi đăng nhập key → mật khẩu: không sót dòng cũ" '[ "$(row s-web1 12)" = mk-deploy ] && ! sed -n "/^Host s-web1/,/^$/p" "$HOSTBOOK_DIR/sec.conf" | grep -qE "IdentityFile|IdentitiesOnly" && sed -n "/^Host s-web1/,/^$/p" "$HOSTBOOK_DIR/sec.conf" | grep -q "PubkeyAuthentication no"'
+"$S" _set_host_secret s-web1 "" >/dev/null; idx=$("$S" _index)
+check "đổi sang ssh tự lo: gỡ hết dòng đăng nhập" '[ -z "$(row s-web1 12)" ] && ! sed -n "/^# tags: prod/,/^$/p" "$HOSTBOOK_DIR/sec.conf" | grep -qE "secret|PubkeyAuthentication|PreferredAuth|IdentityFile"'
+"$S" _set_host_secret s-web1 key-a >/dev/null; idx=$("$S" _index)
+check "đổi lại sang key: đủ dòng, config hợp lệ" '[ "$(row s-web1 12)" = key-a ] && [ "$(grep -c "^# secret: key-a" "$HOSTBOOK_DIR/sec.conf")" = 1 ] && "$S" _validate'
+
+"$S" _secret_rename key-a key-chinh >/dev/null; idx=$("$S" _index)
+check "đổi tên secret: file, dòng # secret và đường dẫn .pub đều theo" '[ -f "$SECD/key-chinh.age" ] && [ ! -f "$SECD/key-a.age" ] && [ "$(row s-web1 12)" = key-chinh ] && [ "$(row sw-1 12)" = key-chinh ] && ! grep -q "key-a" "$HOSTBOOK_DIR/sec.conf"'
+"$S" _secret_delete mk-deploy >/dev/null; idx=$("$S" _index)
+check "xoá secret: gỡ file và các dòng đăng nhập của nó" '[ ! -f "$SECD/mk-deploy.age" ] && [ -z "$(row s-api 12)" ] && ! grep -qE "mk-deploy|PubkeyAuthentication|PreferredAuth" "$HOSTBOOK_DIR/sec.conf" && [ "$(row s-web1 12)" = key-chinh ]'
+
+# chuyển key kiểu cũ: dùng key giả trong thư mục tạm, không bao giờ đọc ~/.ssh thật
+ssh-keygen -q -t ed25519 -N "" -f "$T/legacy_key"
+for f in "$HOSTBOOK_DIR"/*.conf; do sed -i.b "s|~/.ssh/id_rsa|$T/legacy_key|" "$f"; rm -f "$f.b"; done
+printf '\nHost old-1\n  HostName 10.60.0.1\n  User u\n  IdentityFile %s/legacy_key\n' "$T" >> "$HOSTBOOK_DIR/sec.conf"
+git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm "legacy"; "$S" _index >/dev/null
+n=$("$S" _migrate 2>/dev/null | tail -1); idx=$("$S" _index)
+check "chuyển key cũ: vào kho secret, config viết lại, hợp lệ" '[ "$n" = 1 ] && [ -f "$SECD/legacy-key.age" ] && [ "$(row old-1 12)" = legacy-key ] && [ "$(row a-gate 12)" = legacy-key ] && ! grep -rq "$T/legacy_key" "$HOSTBOOK_DIR"/*.conf && "$S" _validate'
+check "chuyển key cũ: file gốc còn nguyên" '[ -s "$T/legacy_key" ]'
+git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm "migrated"
+
+"$S" _load key-chinh
+check "nạp key vào agent riêng (không ghi file)" 'ssh-add -l | grep -qF "$(sed -n "s/^fp=//p" "$SECD/key-chinh.meta")"'
+"$S" lock >/dev/null
+check "hb lock gỡ key khỏi agent" '! ssh-add -l 2>/dev/null | grep -qF "$(sed -n "s/^fp=//p" "$SECD/key-chinh.meta")"'
+
+touch "$SECD/leak.key" "$SECD/ghi-chu.txt"; "$S" _sync_now
+check "file lạ trong secrets/ không bị đưa vào kho" '! git -C "$HOSTBOOK_DIR" ls-files | grep -qE "leak.key|ghi-chu" && git -C "$HOSTBOOK_DIR" ls-files | grep -q "secrets/key-chinh.age"'
+rm -f "$SECD/leak.key" "$SECD/ghi-chu.txt"
+
+"$S" _secret_add_password mk-x "mat-khau-1" >/dev/null 2>&1; "$S" _index >/dev/null
+printf '\n# secret: mk-x\nHost pw-1\n  HostName 10.70.0.1\n  User tester\n  PubkeyAuthentication no\n' >> "$HOSTBOOK_DIR/sec.conf"; "$S" _index >/dev/null
+check "askpass: lần hỏi đầu trả mật khẩu đã lưu" '[ "$(HB_ASKPASS_HOST=pw-1 HB_ASKPASS_COUNT="$T/cnt1" "$S" _askpass "tester@10.70.0.1'"'"'s password: ")" = mat-khau-1 ]'
+check "askpass: server hỏi lại (mật khẩu sai) thì không gửi lại nữa" '[ -z "$(HB_ASKPASS_NOTTY=1 HB_ASKPASS_HOST=pw-1 HB_ASKPASS_COUNT="$T/cnt1" "$S" _askpass "tester@10.70.0.1'"'"'s password: ")" ]'
+check "askpass: chọn secret theo user@máy trong câu hỏi" '[ "$(HB_ASKPASS_HOST=s-web1 HB_ASKPASS_COUNT="$T/cnt2" "$S" _askpass "tester@10.70.0.1'"'"'s password: ")" = mat-khau-1 ]'
+check "askpass: câu hỏi lạ khi không có terminal thì trả rỗng" '[ -z "$(HB_ASKPASS_NOTTY=1 "$S" _askpass "Verification code: ")" ]'
+
+# hai máy cùng sửa một secret
+"$S" _sync_now; git -C "$T/other" pull -q
+printf 'ban-cua-kho\n' | age -e -a -r "$(cat "$SECD/vault.pub")" > "$T/other/secrets/mk-x.age"
+git -C "$T/other" commit -qam "đổi mật khẩu ở máy khác"; git -C "$T/other" push -q
+printf 'ban-cua-may-nay\n' | age -e -a -r "$(cat "$SECD/vault.pub")" > "$SECD/mk-x.age"
+"$S" _sync_now 2>/dev/null
+check "hai máy cùng sửa một secret: báo xung đột" '[ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = conflict ]'
+"$S" _resolve theirs >/dev/null 2>&1
+check "lấy bản kho cho secret" '[ "$("$S" _secret_get mk-x)" = ban-cua-kho ] && [ "$(sed -n 1p "$HOSTBOOK_STATE/status")" = ok ]'
+
+new=$("$S" _vault_recover "$code" "mat-khau-moi-12345" 2>/dev/null | tail -1)
+check "mã khôi phục: đặt được mật khẩu chính mới, secret cũ vẫn đọc được" 'printf "%s" "$new" | grep -q "^HB-" && [ "$new" != "$code" ] && rm -rf "$T/keychain" && [ "$(HOSTBOOK_MASTER=mat-khau-moi-12345 "$S" _secret_get mk-x)" = ban-cua-kho ]'
+rm -rf "$T/keychain"
+check "sau khi khôi phục: mật khẩu cũ và mã cũ hết hiệu lực" '! "$S" _vault_id 2>/dev/null | grep -q ok && ! "$S" _vault_recover "$code" "mat-khau-khac-12345" >/dev/null 2>&1'
+export HOSTBOOK_MASTER=mat-khau-moi-12345
 
 echo; echo "$pass ok, $fail lỗi"; [ $fail -eq 0 ]

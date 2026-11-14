@@ -10,8 +10,8 @@
 # Cần: git, fzf >= 0.63, gum >= 0.14. tmux khi mở nhiều server cùng lúc. Viết cho bash 3.2 để chạy trên macOS và Linux.
 set -u
 umask 077   # danh sách server và trạng thái chỉ chủ máy đọc được
-VERSION=0.1.0
-FZF_MIN=0.63; GUM_MIN=0.14
+VERSION=0.2.0
+FZF_MIN=0.63; GUM_MIN=0.14; AGE_MIN=1.3.0
 REPO_URL=https://github.com/duong6003/hostbook
 
 resolve_self(){ local p=$1 l; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l;; *) p=$(dirname "$p")/$l;; esac; done
@@ -36,6 +36,13 @@ export GUM_CHOOSE_CURSOR_FOREGROUND=212 GUM_CHOOSE_HEADER_FOREGROUND=141 GUM_CHO
   GUM_CONFIRM_SELECTED_BACKGROUND=212 GUM_SPIN_SPINNER_FOREGROUND=212
 
 # ---------- nhỏ ----------
+LOCK_HELD=""
+cleanup(){ rm -rf "$STATE/tmp/$$".* 2>/dev/null; [ -n "$LOCK_HELD" ] && rmdir "$STATE/sync.lock" 2>/dev/null; return 0; }
+trap cleanup EXIT
+# Thư mục tạm chỉ chủ máy đọc được; nội dung secret dạng thường chỉ được nằm ở đây. Tự xoá khi tiến trình thoát.
+tmpd(){ mkdir -p "$STATE/tmp"; mktemp -d "$STATE/tmp/$$.XXXXXX"; }
+clip_get(){ if have pbpaste; then pbpaste; elif have wl-paste; then wl-paste; elif have xclip; then xclip -o -selection clipboard; elif have xsel; then xsel -ob; else return 1; fi; }
+sha256(){ if have sha256sum; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 export GIT_OPTIONAL_LOCKS=0   # git status chạy nền không giành khoá index với lần đồng bộ khác
 g(){ git -C "$DIR" "$@"; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
@@ -48,6 +55,7 @@ dim(){ printf '%s%s%s\n' "$CD" "$*" "$C0"; }
 term_cols(){ local c; c=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2); echo "${c:-${COLUMNS:-80}}"; }
 box(){ # màu dòng... · dòng dài hơn màn hình thì gói lại trong khung thay vì làm vỡ khung
   local c=$1 l v max=0 cols; shift; cols=$(term_cols)
+  case $c in err) c=${TH_ERR:-204};; warn) c=${TH_WARN:-221};; ok) c=${TH_OK:-114};; title) c=${TH_TITLE:-141};; dim) c=${TH_DIM:-244};; esac
   for l in "$@"; do v=$(printf '%s' "$l" | sed $'s/\033\\[[0-9;]*m//g'); [ ${#v} -gt $max ] && max=${#v}; done
   if [ $((max + 4)) -gt "$cols" ]; then gum style --border rounded --padding "0 1" --border-foreground "$c" --width $((cols - 2)) "$@"
   else gum style --border rounded --padding "0 1" --border-foreground "$c" "$@"; fi; }
@@ -92,24 +100,27 @@ ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
 # index.tsv: tên dự_án hostname user port proxyjump key tags desc file dòng   (giá trị lấy từ "ssh -G", nên khớp đúng cách ssh hiểu)
 # Mỗi file .conf có chỉ mục riêng trong $STATE/idx; chỉ file nào đổi mới dựng lại. File có khối wildcard ảnh hưởng tới
 # server ở file khác, nên khi nó đổi thì dựng lại hết.
-IDXD=$STATE/idx
+IDXD=$STATE/idx2
 has_wild(){ grep -qE '^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]].*[*?]' "$1" 2>/dev/null; }
 index_file(){ # file → in các dòng chỉ mục; gọi "ssh -G" song song, 16 server một lượt
   local f=$1 tmp i=0; tmp=$(mktemp -d)
   awk -v proj="$(basename "$f" .conf)" -v file="$f" -v skip="$STATE/skipped" '
     /^[ \t]*#[ \t]*tags:/ { s=$0; sub(/^[ \t]*#[ \t]*tags:[ \t]*/,"",s); tags=s; next }
     /^[ \t]*#[ \t]*desc:/ { s=$0; sub(/^[ \t]*#[ \t]*desc:[ \t]*/,"",s); desc=s; next }
+    /^[ \t]*#[ \t]*secret:/ { s=$0; sub(/^[ \t]*#[ \t]*secret:[ \t]*/,"",s); sub(/[ \t]+$/,"",s); sec=s; next }
     tolower($1)=="host" { for (i=2;i<=NF;i++) if ($i !~ /[*?!]/) {
-                            if ($i ~ /^[A-Za-z0-9._-]+$/) printf "%s\t%s\t%s\t%s\t%s\t%d\n", $i, proj, (tags==""?"-":tags), (desc==""?"-":desc), file, NR
+                            if ($i ~ /^[A-Za-z0-9._-]+$/) printf "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", $i, proj, (tags==""?"-":tags), (desc==""?"-":desc), file, NR, (sec==""?"-":sec)
                             else print FILENAME ":" NR ": " $i >> skip }
-                          tags=""; desc=""; next }
+                          tags=""; desc=""; sec=""; next }
     /^[ \t]*(#|$)/ { next }
-    { tags=""; desc="" }' "$f" > "$tmp/list"
-  while IFS="$TAB" read -r n p t d ff l; do
-    ( sshx -G "$n" 2>/dev/null | awk -v n="$n" -v p="$p" -v t="$t" -v d="$d" -v f="$ff" -v l="$l" '
+    { tags=""; desc=""; sec="" }' "$f" > "$tmp/list"
+  while IFS="$TAB" read -r n p t d ff l sc; do
+    ( sshx -G "$n" 2>/dev/null | awk -v n="$n" -v p="$p" -v t="$t" -v d="$d" -v f="$ff" -v l="$l" -v sc="$sc" '
         $1=="hostname"{h=$2} $1=="user"{u=$2} $1=="port"{po=$2} $1=="proxyjump"{j=$2} $1=="identityfile"&&k==""{k=$2}
         END { if (j=="none") j=""; if (t=="-") t=""; if (d=="-") d=""
-              printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n,p,h,u,po,j,k,t,d,f,l }' > "$tmp/$l-$n.row" ) &
+              # secret: theo dòng "# secret:"; không có thì suy ra từ IdentityFile hiệu lực trỏ vào secrets/<tên>.pub (khối wildcard)
+              if (sc=="-") { sc=""; if (match(k, /secrets\/[^\/]+\.pub$/)) sc=substr(k, RSTART+8, RLENGTH-12) }
+              printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n,p,h,u,po,j,k,t,d,f,l,sc }' > "$tmp/$l-$n.row" ) &
     i=$((i+1)); [ $((i % 16)) -eq 0 ] && wait
   done < "$tmp/list"; wait
   ls "$tmp" | grep '\.row$' | sort -t- -k1,1n | while read -r r; do cat "$tmp/$r"; done
@@ -142,7 +153,7 @@ ensure_index(){
   [ -f "$IDX" ] && [ "$(conf_sums)" = "$(cat "$IDXD/sums" 2>/dev/null)" ] && return 0
   build_index
 }
-host_field(){ awk -F'\t' -v n="$1" -v c="$2" '$1==n{print $c; exit}' "$IDX"; }   # 2 dự án 3 ip 4 user 5 port 6 jump 7 key 8 tags 9 desc 10 file 11 dòng
+host_field(){ awk -F'\t' -v n="$1" -v c="$2" '$1==n{print $c; exit}' "$IDX"; }   # 2 dự án 3 ip 4 user 5 port 6 jump 7 key 8 tags 9 desc 10 file 11 dòng 12 secret
 host_exists(){ awk -F'\t' -v n="$1" '$1==n{f=1; exit} END{exit !f}' "$IDX"; }
 is_prod(){ case " $(host_field "$1" 8) " in *" prod "*) return 0;; esac; return 1; }
 record(){ local n; for n in "$@"; do printf '%s\t%s\n' "$(date +%s)" "$n" >> "$HIST"; done
@@ -205,6 +216,7 @@ cmd_list(){
       if (used+PW<=W)   { vis=vis cd pad($2,PW) c0; used+=PW } else hid=hid " " $2
       if (used+AW<=W)   { vis=vis cd sprintf("%4s ",ago(last[$1])) c0; used+=AW }
       if (used+12<=W && $9!="") { vis=vis cd pad($9,W-used) c0; used=W } else hid=hid " " $9
+      if ($12!="") hid=hid " secret:" $12
       if (used<W) vis=vis sprintf("%" (W-used) "s","")
       printf "%010.2f\th:%s\t%s%s%s\n", sc[$1], $1, vis, (hid!=""? "     " cd hid c0 : ""), "" }
   ' "$HIST" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
@@ -222,7 +234,11 @@ cmd_preview(){
          printf "%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, $1, cd, c0, $3, cd, c0, $4
          if ($5!="22") printf "  %sPort%s %s\n", cd, c0, $5
          if ($6!="") printf "  %sProxyJump%s %s\n", cd, c0, $6
-         printf "  %sIdentityFile%s %s\n\n%s%s:%s%s\n", cd, c0, $7, cd, $10, $11, c0 }' "$IDX" | sed "s|$HOME|~|g"
+         if ($12=="" && $7!="") printf "  %sIdentityFile%s %s\n", cd, c0, $7
+         printf "\n%s%s:%s%s\n", cd, $10, $11, c0 }' "$IDX" | sed "s|$HOME|~|g"
+       local psc; psc=$(host_field "$n" 12)
+       if [ -n "$psc" ]; then if secret_exists "$psc"; then printf '%sĐăng nhập:%s %s %s(%s)%s\n' "$CD" "$C0" "$psc" "$CD" "$(secret_label "$psc")" "$C0"; else printf '%sĐăng nhập: secret %s không còn trong kho secret%s\n' "$CR" "$psc" "$C0"; fi
+       elif [ -n "$(host_field "$n" 7)" ] && [ -f "$(host_field "$n" 7 | sed "s|^~|$HOME|")" ]; then printf '%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n' "$CY" "$C0"; fi
        awk -F'\t' -v n="$n" -v now="$(date +%s)" -v cd="$CD" -v c0="$C0" '$2==n{c++; if($1>l)l=$1} END{
          if (!c) { printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0; exit }
          d=now-l; a=(d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày")
@@ -345,7 +361,11 @@ ensure_merge_setup(){ # đăng ký bộ gộp cho repo dữ liệu (cấu hình 
   g config merge.hostbook.driver "$(printf %q "$SELF") _merge %O %A %B %P"
   local changed=""
   grep -qs 'merge=hostbook' "$DIR/.gitattributes" || { printf '*.conf merge=hostbook\ngroups.tsv merge=hostbook\n' >> "$DIR/.gitattributes"; changed=1; }
+  # .gitignore dạng whitelist: chỉ file hostbook quản lý mới vào kho (key hay file lạ lỡ chép vào thì bị bỏ qua)
+  grep -qsx '\*' "$DIR/.gitignore" || { { printf '*\n!*.conf\n!.gitignore\n!groups.tsv\n'; cat "$DIR/.gitignore" 2>/dev/null; } > "$DIR/.gitignore.new" && mv "$DIR/.gitignore.new" "$DIR/.gitignore"; changed=1; }
   grep -qsx '!.gitattributes' "$DIR/.gitignore" || { printf '!.gitattributes\n' >> "$DIR/.gitignore"; changed=1; }
+  grep -qsx '!secrets/' "$DIR/.gitignore" || { printf '!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' >> "$DIR/.gitignore"; changed=1; }
+  grep -qs '^secrets/\* -merge' "$DIR/.gitattributes" || { printf 'secrets/* -merge\n' >> "$DIR/.gitattributes"; changed=1; }   # git không tự trộn nội dung secret
   [ -n "$changed" ] && g add .gitattributes .gitignore && g commit -qm "Bật gộp theo từng server" -- .gitattributes .gitignore >/dev/null
   return 0
 }
@@ -358,8 +378,8 @@ lock(){ local w=${1:-0} i=0
   while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
     if [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$STATE/sync.lock" 2>/dev/null; continue; fi
     [ $i -ge "$w" ] && return 1; sleep 1; i=$((i+1)); done
-  trap 'rmdir "$STATE/sync.lock" 2>/dev/null' EXIT; }
-unlock(){ rmdir "$STATE/sync.lock" 2>/dev/null; trap - EXIT; }
+  LOCK_HELD=1; }
+unlock(){ rmdir "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
 # Commit mọi thay đổi trong ~/ssh-hosts nếu config còn hợp lệ.
 commit_all(){ local msg=$1 e
   [ -z "$(g status --porcelain)" ] && return 0
@@ -412,6 +432,456 @@ save_and_sync(){ # $1 = mô tả thay đổi
   else flash "${CR}✗ Chưa lưu: file lỗi${C0}"; fi
 }
 
+# ---------- kho secret ----------
+# Key và mật khẩu nằm trong ~/ssh-hosts/secrets, mã hoá bằng age tới một danh tính (vault.pub). Danh tính đó được khoá bằng
+# mật khẩu chính (vault.key.age) và bằng mã khôi phục (vault.recovery.age). Sau lần mở đầu tiên, danh tính được hệ điều hành
+# giữ giúp (Keychain / secret-service), nên mật khẩu chính chỉ phải nhập một lần trên mỗi máy.
+SEC=$DIR/secrets
+KEY_TTL=${HOSTBOOK_KEY_TTL:-28800}
+vault_exists(){ [ -f "$SEC/vault.pub" ]; }
+vault_id(){ sha256 < "$SEC/vault.pub" | cut -c1-8; }
+kc_backend(){
+  case ${HOSTBOOK_KEYCHAIN:-} in file:*) echo "$HOSTBOOK_KEYCHAIN"; return;; esac
+  if is_mac && have security; then echo mac; return; fi
+  if have secret-tool && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then echo st; return; fi
+  local d; for d in "${XDG_RUNTIME_DIR:-}" /dev/shm; do [ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ] && { echo "file:$d/hostbook-$(id -u)/identity"; return; }; done
+  echo none
+}
+kc_label(){ case $(kc_backend) in mac) echo Keychain;; st) echo secret-service;; file:*) echo "phiên tạm (mất khi tắt máy)";; *) echo "không nhớ (hỏi mỗi lần)";; esac; }
+kc_get(){ local b; b=$(kc_backend); case $b in
+  mac) security find-generic-password -s hostbook -a "vault:$(vault_id)" -w 2>/dev/null | base64 -d 2>/dev/null;;
+  st) secret-tool lookup service hostbook account "vault:$(vault_id)" 2>/dev/null | base64 -d 2>/dev/null;;
+  file:*) cat "${b#file:}-$(vault_id)" 2>/dev/null;;
+  *) return 1;; esac; }
+kc_set(){ local b v; b=$(kc_backend); v=$(base64 | tr -d '\n'); case $b in   # danh tính qua stdin
+  mac) security add-generic-password -U -s hostbook -a "vault:$(vault_id)" -w "$v" >/dev/null 2>&1;;
+  st) printf '%s' "$v" | secret-tool store --label "hostbook" service hostbook account "vault:$(vault_id)" 2>/dev/null;;
+  file:*) mkdir -p "$(dirname "${b#file:}")"; chmod 700 "$(dirname "${b#file:}")"; printf '%s' "$v" | base64 -d > "${b#file:}-$(vault_id)";;
+  *) return 0;; esac; }
+kc_del(){ local b; b=$(kc_backend); case $b in
+  mac) security delete-generic-password -s hostbook -a "vault:$(vault_id)" >/dev/null 2>&1;;
+  st) secret-tool clear service hostbook account "vault:$(vault_id)" 2>/dev/null;;
+  file:*) rm -f "${b#file:}-$(vault_id)";; esac; return 0; }
+id_ok(){ [ "$(age-keygen -y 2>/dev/null)" = "$(cat "$SEC/vault.pub")" ]; }   # danh tính qua stdin
+age_pw_enc(){ AGE_PASSPHRASE=$1 age -e -j batchpass -a; }
+age_pw_dec(){ AGE_PASSPHRASE=$1 age -d -j batchpass "$2" 2>/dev/null; }
+# In danh tính ra stdout. Chỉ dùng qua pipe: không đưa vào biến môi trường hay tham số lệnh.
+vault_identity(){
+  local id pw i
+  vault_exists || return 1
+  id=$(kc_get) && [ -n "$id" ] && printf '%s\n' "$id" | id_ok && { printf '%s\n' "$id"; return 0; }
+  for i in 1 2 3; do
+    if [ -n "${HOSTBOOK_MASTER:-}" ]; then pw=$HOSTBOOK_MASTER; else pw=$(gum input --password --header "Mật khẩu chính của kho secret") || return 1; fi
+    if id=$(age_pw_dec "$pw" "$SEC/vault.key.age") && [ -n "$id" ]; then printf '%s\n' "$id" | kc_set; printf '%s\n' "$id"; return 0; fi
+    err "Sai mật khẩu chính" >&2; [ -n "${HOSTBOOK_MASTER:-}" ] && return 1
+  done
+  confirm "Dùng mã khôi phục?" && vault_recover >&2 && vault_identity
+}
+recovery_new(){ LC_ALL=C tr -dc '0-9A-HJKMNP-TV-Z' < /dev/urandom | head -c 20; }
+recovery_fmt(){ echo "HB-$(printf '%s' "$1" | sed 's/..../&-/g; s/-$//')"; }
+recovery_norm(){ printf '%s' "$1" | tr 'a-z' 'A-Z' | sed 's/^HB-//' | tr -d ' -'; }
+vault_create(){ # mật-khẩu-chính → tạo kho, in mã khôi phục
+  local pw=$1 id rc; mkdir -p "$SEC"; chmod 700 "$SEC"
+  id=$(age-keygen 2>/dev/null) || return 1
+  printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub"
+  printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age"
+  rc=$(recovery_new); printf '%s\n' "$id" | age_pw_enc "$rc" > "$SEC/vault.recovery.age"
+  printf '%s\n' "$id" | kc_set
+  ensure_merge_setup
+  recovery_fmt "$rc"
+}
+ask_new_pw(){ # tiêu-đề số-ký-tự-tối-thiểu → in mật khẩu
+  local a b
+  while :; do a=$(gum input --password --header "$1 · ít nhất $2 ký tự") || return 1
+    [ ${#a} -ge "$2" ] || { err "Cần ít nhất $2 ký tự" >&2; continue; }
+    b=$(gum input --password --header "Nhập lại") || return 1
+    [ "$a" = "$b" ] && { printf '%s' "$a"; return 0; }; err "Hai lần nhập không khớp" >&2; done
+}
+show_recovery(){ # mã
+  box title "Mã khôi phục" "${CB}$1${C0}" "Dùng khi quên mật khẩu chính. Cất vào trình quản lý mật khẩu hoặc ghi ra giấy." "Mã này chỉ hiện một lần."
+  while :; do case $(pick "" "Đã cất, tiếp tục" "Copy mã vào clipboard") in 1) printf '%s' "$1" | copy && ok "Đã copy";; *) return 0;; esac; done
+}
+# Tạo kho secret nếu chưa có. Mọi thứ in ra stderr vì hàm này hay được gọi bên trong $(...).
+vault_init(){
+  vault_exists && return 0
+  check_age || return 1
+  local pw code
+  { title "Tạo kho secret"; dim "Kho secret giữ key và mật khẩu đã mã hoá, đồng bộ qua kho cùng danh sách server."; echo; } >&2
+  pw=$(ask_new_pw "Mật khẩu chính" 10) || return 1
+  code=$(vault_create "$pw") || { err "Không tạo được kho secret" >&2; return 1; }
+  save_and_sync "Tạo kho secret"
+  { ok "Đã tạo kho secret · máy này sẽ nhớ ($(kc_label)), không hỏi lại"; echo; show_recovery "$code"; } >&2
+  migrate_keys >&2
+  return 0
+}
+vault_passwd(){
+  local id pw; id=$(vault_identity) || return 1
+  pw=$(ask_new_pw "Mật khẩu chính mới" 10) || return 1
+  printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age" && save_and_sync "Đổi mật khẩu chính của kho secret" && ok "Đã đổi mật khẩu chính"
+}
+vault_new_recovery(){ # danh tính qua stdin → ghi mã mới, in mã
+  local rc; rc=$(recovery_new); age_pw_enc "$rc" > "$SEC/vault.recovery.age" && recovery_fmt "$rc"
+}
+vault_recover(){ # [mã] [mật khẩu mới] (hai tham số chỉ dùng khi kiểm thử)
+  local code=${1:-} pw=${2:-} id new
+  [ -n "$code" ] || code=$(ask "Mã khôi phục" "HB-XXXX-XXXX-XXXX-XXXX-XXXX") || return 1
+  id=$(age_pw_dec "$(recovery_norm "$code")" "$SEC/vault.recovery.age") && [ -n "$id" ] || { err "Mã khôi phục không đúng"; return 1; }
+  [ -n "$pw" ] || pw=$(ask_new_pw "Mật khẩu chính mới" 10) || return 1
+  printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age"
+  new=$(printf '%s\n' "$id" | vault_new_recovery); printf '%s\n' "$id" | kc_set
+  save_and_sync "Khôi phục kho secret"
+  if [ -n "${1:-}" ]; then echo "$new"; else ok "Đã đặt mật khẩu chính mới. Mã khôi phục cũ hết hiệu lực."; show_recovery "$new"; fi
+}
+vault_recovery_code(){ local id new; id=$(vault_identity) || return 1; new=$(printf '%s\n' "$id" | vault_new_recovery) && save_and_sync "Mã khôi phục mới" && show_recovery "$new"; }
+
+# ---------- secret ----------
+valid_secret_name(){ case $1 in vault|"") return 1;; esac; printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9._-]{0,39}$'; }
+secret_exists(){ [ -f "$SEC/$1.meta" ]; }
+secret_meta(){ sed -n "s/^$2=//p" "$SEC/$1.meta" 2>/dev/null | head -1; }
+secret_names(){ local f; for f in "$SEC"/*.meta; do [ -f "$f" ] && basename "$f" .meta; done; return 0; }
+secret_users(){ awk -F'\t' -v s="$1" '$12==s{print $1}' "$IDX"; }
+secret_label(){ if [ "$(secret_meta "$1" type)" = password ]; then echo "mật khẩu"; else echo "key $(secret_meta "$1" keytype)"; fi; }
+secret_enc(){ age -e -a -r "$(cat "$SEC/vault.pub")"; }
+secret_get(){ vault_identity | age -d -i - "$SEC/$1.age" 2>/dev/null; }
+secret_slug(){ printf '%s' "$1" | tr 'A-Z_ ' 'a-z--' | tr -cd 'a-z0-9.-' | sed 's/^[.-]*//' | cut -c1-40; }
+# Chuẩn hoá và kiểm tra một file key; gỡ passphrase nếu có (kho secret đã mã hoá thay). In "fingerprint<TAB>loại".
+key_prepare(){
+  local f=$1 pp
+  tr -d '\r' < "$f" > "$f.n" && mv "$f.n" "$f"; [ -n "$(tail -c1 "$f")" ] && echo >> "$f"; chmod 600 "$f"
+  if ! ssh-keygen -y -P "" -f "$f" >/dev/null 2>&1; then
+    if ssh-keygen -y -P "" -f "$f" 2>&1 | grep -qi 'passphrase'; then
+      pp=${HOSTBOOK_KEY_PASSPHRASE:-}; [ -n "$pp" ] || pp=$(gum input --password --header "Key này có passphrase. Nhập để gỡ (kho secret sẽ mã hoá thay)") || return 1
+      ssh-keygen -q -p -P "$pp" -N "" -f "$f" >/dev/null 2>&1 || { err "Sai passphrase" >&2; return 1; }
+    else err "Không phải private key hợp lệ" >&2; return 1; fi
+  fi
+  ssh-keygen -lf "$f" | awk '{ t=$NF; gsub(/[()]/,"",t); print $2 "\t" tolower(t) }'
+}
+secret_write_key(){ # tên file-key fp loại
+  ssh-keygen -y -f "$2" > "$SEC/$1.pub" && chmod 600 "$SEC/$1.pub"
+  printf 'type=key\nfp=%s\nkeytype=%s\ncreated=%s\n' "$3" "$4" "$(date +%F)" > "$SEC/$1.meta"
+  secret_enc < "$2" > "$SEC/$1.age"
+}
+ask_secret_name(){ # mặc-định → in tên hợp lệ, chưa dùng
+  local n=$1
+  while :; do n=$(ask "Tên secret · chữ thường, số, dấu gạch" "key-booking" "$n") || return 1
+    if ! valid_secret_name "$n"; then err "Tên chỉ gồm chữ thường, số và . _ -" >&2; elif secret_exists "$n"; then err "Đã có secret tên $n" >&2; else echo "$n"; return 0; fi; done
+}
+# Thêm key vào kho secret. In tên secret ra stdout (tên đã có nếu key trùng fingerprint).
+secret_add_key(){ # nguồn(clip|gen|đường dẫn) [tên] [replace]
+  local src=$1 name=${2:-} replace=${3:-} d f info fp kt dup def oldpub=""
+  vault_init || return 1
+  d=$(tmpd); f=$d/key
+  case $src in
+    clip) clip_get > "$f" 2>/dev/null
+          if ! grep -q 'PRIVATE KEY' "$f"; then printf '# Dán private key vào đây, lưu rồi đóng. Dòng bắt đầu bằng "# " bị bỏ qua.\n' > "$f"
+            ${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}} "$f" </dev/tty >/dev/tty; grep -v '^# ' "$f" > "$f.x"; mv "$f.x" "$f"; fi
+          def="";;
+    gen)  rm -f "$f"; ssh-keygen -q -t ed25519 -N "" -C "${name:-hostbook}" -f "$f" || return 1; def="";;
+    *)    cp "${src/#\~/$HOME}" "$f" 2>/dev/null || { err "Không đọc được $src" >&2; return 1; }; def=$(secret_slug "$(basename "$src")");;
+  esac
+  info=$(key_prepare "$f") || { rm -rf "$d"; return 1; }
+  fp=${info%%"$TAB"*}; kt=${info#*"$TAB"}
+  dup=$(grep -lxF "fp=$fp" "$SEC"/*.meta 2>/dev/null | head -1)
+  if [ -n "$dup" ]; then dup=$(basename "$dup" .meta); rm -rf "$d"
+    if [ -n "$replace" ]; then err "Key này đã có trong kho secret với tên $dup" >&2; return 1; fi
+    dim "Key này đã có trong kho secret với tên $dup" >&2; echo "$dup"; return 0; fi
+  if [ -n "$replace" ]; then secret_exists "$name" || return 1; cp "$SEC/$name.pub" "$d/old.pub" 2>/dev/null && oldpub=$d/old.pub
+  elif [ -n "$name" ]; then valid_secret_name "$name" && ! secret_exists "$name" || { err "Tên secret không hợp lệ hoặc đã có: $name" >&2; rm -rf "$d"; return 1; }
+  else name=$(ask_secret_name "$def") || { rm -rf "$d"; return 1; }; fi
+  secret_write_key "$name" "$f" "$fp" "$kt" || { rm -rf "$d"; return 1; }
+  [ -n "$oldpub" ] && ssh-add -q -d "$oldpub" 2>/dev/null
+  rm -rf "$d"
+  save_and_sync "$( [ -n "$replace" ] && echo "Đã thay key của secret $name" || echo "Đã thêm secret $name")"
+  echo "$name"
+}
+secret_add_password(){ # [tên] [mật khẩu] → in tên
+  local name=${1:-} pw=${2:-}
+  vault_init || return 1
+  if [ -n "$name" ]; then valid_secret_name "$name" && ! secret_exists "$name" || { err "Tên secret không hợp lệ hoặc đã có: $name" >&2; return 1; }
+  else name=$(ask_secret_name "") || return 1; fi
+  [ -n "$pw" ] || pw=$(ask_new_pw "Mật khẩu đăng nhập server" 1) || return 1
+  printf 'type=password\ncreated=%s\n' "$(date +%F)" > "$SEC/$name.meta"
+  printf '%s\n' "$pw" | secret_enc > "$SEC/$name.age"
+  save_and_sync "Đã thêm secret $name"; echo "$name"
+}
+pick_key_file(){ # → in đường dẫn một private key
+  local list=() f i
+  for f in "$HOME"/.ssh/*; do [ -f "$f" ] && head -1 "$f" 2>/dev/null | grep -q 'PRIVATE KEY' && list+=("${f/#$HOME/~}"); done
+  list+=("Đường dẫn khác…")
+  i=$(pick "Key nào?" "${list[@]}") || return 1
+  if [ "$i" -eq $(( ${#list[@]} - 1 )) ]; then gum file --all "$HOME"; else echo "${list[$i]}"; fi
+}
+# Chọn cách đăng nhập cho một server. In tên secret (rỗng = ssh tự lo). Mã 1 = huỷ.
+pick_login(){ # [secret gợi ý] [lý do]
+  local sug=${1:-} why=${2:-} items=() keys=() n i c f nm
+  ensure_index
+  for n in $(secret_names | awk -v s="$sug" '$0==s'; secret_names | awk -v s="$sug" '$0!=s'); do
+    c=$(secret_users "$n" | grep -c .)
+    if [ "$n" = "$sug" ] && [ -n "$why" ]; then items+=("$n|$(secret_label "$n") · $why"); else items+=("$n|$(secret_label "$n") · $c server"); fi
+    keys+=("s:$n"); done
+  items+=("+ Dán key mới|copy key trước rồi chọn mục này" "+ Nhập key từ file" "+ Tạo key mới|ed25519" "+ Mật khẩu mới" "Không lưu|ssh tự lo: agent riêng, YubiKey…")
+  keys+=(clip file gen pass none)
+  i=$(pick "Đăng nhập bằng" "${items[@]}") || return 1
+  case ${keys[$i]} in
+    s:*) echo "${keys[$i]#s:}";;
+    clip) secret_add_key clip;;
+    file) f=$(pick_key_file) || return 1; secret_add_key "$f";;
+    gen) vault_init || return 1; nm=$(ask_secret_name "") || return 1; secret_add_key gen "$nm" >/dev/null || return 1
+         { ok "Đã tạo key $nm. Public key (thêm vào ~/.ssh/authorized_keys trên server):"; cat "$SEC/$nm.pub"; cat "$SEC/$nm.pub" | copy && dim "Đã copy public key vào clipboard"; pause "enter để tiếp tục"; } >&2; echo "$nm";;
+    pass) secret_add_password;;
+    none) echo;;
+  esac
+}
+# Đưa các key mà server đang trỏ tới (file trên máy này) vào kho secret và viết lại config.
+# Chỉ tính dòng IdentityFile được ghi rõ trong các file .conf (không tính key mặc định mà "ssh -G" tự điền), và file phải tồn tại.
+legacy_keys(){ # in "đường dẫn<TAB>số server"
+  local k
+  cat "$DIR"/*.conf 2>/dev/null | awk 'tolower($1)=="identityfile" && $2 !~ /secrets\/[^\/]+\.pub$/ {print $2}' | sort -u | while read -r k; do
+    [ -f "${k/#\~/$HOME}" ] && printf '%s\t%s\n' "$k" "$(awk -F'\t' -v k="$k" '$12=="" && $7==k' "$IDX" | grep -c .)"; done
+}
+migrate_keys_raw(){ # không hỏi; in số key đã chuyển
+  local k c nm n=0 f full
+  ensure_index
+  while IFS="$TAB" read -r k c; do
+    nm=$(secret_slug "$(basename "$k")"); while secret_exists "$nm" && [ "$(secret_meta "$nm" fp)" != "$(ssh-keygen -lf "${k/#\~/$HOME}" 2>/dev/null | awk '{print $2}')" ]; do nm="$nm-2"; done
+    nm=$(secret_add_key "$k" "$( secret_exists "$nm" || echo "$nm")" 2>/dev/null) || { warn "Bỏ qua $k (không đọc được hoặc không phải key hợp lệ)" >&2; continue; }
+    full=${k/#\~/$HOME}
+    for f in "$DIR"/*.conf; do [ -f "$f" ] || continue
+      awk -v a="$k" -v b="$full" -v nm="$nm" -v pub="$(printf '%s' "$SEC/$nm.pub" | sed "s|^$HOME|~|")" '
+        function flush(  i){ for (i=1;i<=nb;i++) print buf[i]; nb=0 }
+        # gom từng khối Host; khối nào có IdentityFile trỏ tới key này thì đổi sang .pub của secret
+        tolower($1)=="host" || tolower($1)=="match" { flush(); hostline=NR; wild=($0 ~ /[*?]/); hit=0; hasio=0 }
+        { buf[++nb]=$0 }
+        tolower($1)=="identityfile" && ($2==a || $2==b) { match($0,/^[ \t]*/); ind=substr($0,1,RLENGTH); buf[nb]=ind "IdentityFile " pub "\n" ind "IdentitiesOnly yes"; hit=1
+            if (!wild) { for (i=nb;i>=1;i--) if (tolower(buf[i]) ~ /^[ \t]*host[ \t]/) { if (i==1 || buf[i-1] !~ /#[ \t]*secret:/) buf[i]="# secret: " nm "\n" buf[i]; break } } }
+        END { flush() }' "$f" > "$f.tmp"
+      cmp -s "$f" "$f.tmp" && rm -f "$f.tmp" || mv "$f.tmp" "$f"
+    done
+    n=$((n+1))
+  done < <(legacy_keys)
+  echo "$n"
+}
+migrate_keys(){
+  local list n; ensure_index; list=$(legacy_keys); [ -n "$list" ] || return 0
+  echo; echo "Các server đang dùng key nằm trên máy này:"
+  printf '%s\n' "$list" | while IFS="$TAB" read -r k c; do printf '  %s  %s%s server%s\n' "$k" "$CD" "$c" "$C0"; done; echo
+  case $(pick "" "Đưa vào kho secret|khuyên dùng: đồng bộ và chia sẻ được, file gốc giữ nguyên" "Để sau") in 0) ;; *) return 0;; esac
+  n=$(migrate_keys_raw)
+  if validate >/dev/null; then build_index; save_and_sync "Đưa $n key vào kho secret"; ok "Đã đưa $n key vào kho secret"
+  else g checkout -q -- '*.conf' 2>/dev/null; build_index; err "Config lỗi sau khi chuyển nên đã trả lại như cũ"; fi
+}
+
+# ---------- dùng secret khi kết nối ----------
+agent_ok(){ ssh-add -l >/dev/null 2>&1; [ $? -le 1 ]; }
+agent_ready(){ # dùng agent sẵn có (để ssh gõ tay và VS Code cũng thấy key); không có thì dựng agent riêng
+  agent_ok && return 0
+  if [ -f "$STATE/agent.env" ]; then . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID; agent_ok && return 0; fi
+  local d; d=$(mktemp -d /tmp/hb-XXXXXX) || return 1   # đường dẫn socket phải ngắn
+  ssh-agent -a "$d/a.sock" > "$STATE/agent.env" 2>/dev/null; . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID
+  [ "${SSH_AUTH_SOCK:-}" = "$d/a.sock" ] && agent_ok
+}
+load_secret(){ # nạp một key secret vào agent, có hạn
+  local n=$1 fp; [ "$(secret_meta "$n" type)" = key ] || return 0
+  fp=$(secret_meta "$n" fp); ssh-add -l 2>/dev/null | grep -qF "$fp" && return 0
+  secret_get "$n" | ssh-add -q -t "$KEY_TTL" - 2>/dev/null
+  ssh-add -l 2>/dev/null | grep -qF "$fp"
+}
+secrets_for(){ # secret của server và của mọi máy trung gian (tối đa 5 tầng)
+  local n=$1 depth=${2:-0} j s
+  s=$(host_field "$n" 12); [ -n "$s" ] && echo "$s"
+  [ "$depth" -ge 5 ] && return 0
+  for j in $(host_field "$n" 6 | tr ',' ' '); do host_exists "$j" && secrets_for "$j" $((depth+1)); done
+  return 0
+}
+ASKPASS_ON=""
+prepare_login(){ # server… → nạp key, bật askpass nếu có secret mật khẩu. Trả 1 nếu không mở được kho secret
+  local h s need=""
+  ASKPASS_ON=""
+  for h in "$@"; do for s in $(secrets_for "$h" | sort -u); do
+    secret_exists "$s" || { warn "Secret $s không còn trong kho secret"; continue; }
+    if [ "$(secret_meta "$s" type)" = password ]; then ASKPASS_ON=1
+    else agent_ready || { err "Không dựng được ssh-agent"; return 1; }
+      load_secret "$s" || { err "Chưa mở được kho secret nên chưa nạp được key $s"; return 1; }; fi
+  done; done
+  if [ -n "$ASKPASS_ON" ]; then
+    printf '#!/bin/sh\nexec %s _askpass "$@"\n' "$(printf %q "$SELF")" > "$STATE/askpass"; chmod 700 "$STATE/askpass"
+    vault_identity >/dev/null || { err "Chưa mở được kho secret"; return 1; }   # mở khoá ở đây, khi còn hỏi được người dùng
+  fi
+  return 0
+}
+ssh_login(){ # chạy sshx với askpass khi cần. $1 = tên server (để chọn secret mặc định), còn lại là tham số ssh
+  local h=$1; shift
+  if [ -n "$ASKPASS_ON" ]; then
+    SSH_ASKPASS="$STATE/askpass" SSH_ASKPASS_REQUIRE=force HB_ASKPASS_HOST="$h" HB_ASKPASS_COUNT="${HB_ASKPASS_COUNT:-$(tmpd)/count}" sshx "$@"
+  else sshx "$@"; fi
+}
+tty_ask(){ # prompt [ẩn] → hỏi trên terminal, in trả lời
+  local a; [ -n "${HB_ASKPASS_NOTTY:-}" ] && { echo; return 0; }
+  printf '%s' "$1" > /dev/tty
+  if [ -n "${2:-}" ]; then stty -echo < /dev/tty 2>/dev/null; IFS= read -r a < /dev/tty; stty echo < /dev/tty 2>/dev/null; printf '\n' > /dev/tty
+  else IFS= read -r a < /dev/tty; fi
+  printf '%s\n' "$a"
+}
+# ssh gọi hàm này (qua $STATE/askpass) mỗi khi cần hỏi. Mật khẩu đã lưu chỉ được đưa ra ở lần hỏi đầu;
+# nếu server hỏi lại nghĩa là mật khẩu đó sai, khi ấy hỏi người dùng.
+cmd_askpass(){
+  local prompt=${1:-} who host user s="" cnt=${HB_ASKPASS_COUNT:-/dev/null}
+  case $prompt in
+    *yes/no*) tty_ask "$prompt"; return;;
+    *[Pp]assword*)
+      ensure_index
+      who=$(printf '%s' "$prompt" | grep -oE '[A-Za-z0-9._-]+@[A-Za-z0-9._:-]+' | head -1); user=${who%%@*}; host=${who#*@}
+      [ -n "$who" ] && s=$(awk -F'\t' -v h="$host" -v u="$user" '$3==h && $4==u && $12!="" {print $12; exit}' "$IDX")
+      [ -n "$s" ] && [ "$(secret_meta "$s" type)" = password ] || s=$(host_field "${HB_ASKPASS_HOST:-}" 12)
+      if [ -n "$s" ] && [ "$(secret_meta "$s" type)" = password ] && ! grep -qxF "$s" "$cnt" 2>/dev/null; then
+        echo "$s" >> "$cnt" 2>/dev/null; secret_get "$s"; return; fi
+      [ -n "$s" ] && [ -z "${HB_ASKPASS_NOTTY:-}" ] && printf '%sMật khẩu đã lưu trong secret %s không đúng.%s\n' "$CY" "$s" "$C0" > /dev/tty
+      tty_ask "$prompt" hide;;
+    *) tty_ask "$prompt" hide;;
+  esac
+}
+cmd_unlock(){
+  local n c=0; vault_exists || { warn "Chưa có kho secret"; return 1; }
+  agent_ready || { err "Không dựng được ssh-agent"; return 1; }
+  for n in $(secret_names); do [ "$(secret_meta "$n" type)" = key ] || continue; load_secret "$n" && c=$((c+1)) || { err "Không nạp được $n"; return 1; }; done
+  ok "Đã nạp $c key vào ssh-agent, dùng được trong $((KEY_TTL/3600)) giờ (ssh, scp, VS Code đều thấy)"
+}
+cmd_lock(){
+  local n; for n in $(secret_names); do [ -f "$SEC/$n.pub" ] && ssh-add -q -d "$SEC/$n.pub" 2>/dev/null; done
+  if [ "${1:-}" = --forget ]; then kc_del; ok "Đã gỡ key khỏi ssh-agent và quên danh tính kho secret trên máy này"; else ok "Đã gỡ key của hostbook khỏi ssh-agent"; fi
+}
+
+# ---------- quản lý secret ----------
+secret_set_password(){ # tên [mật khẩu]
+  local n=$1 pw=${2:-}; [ -n "$pw" ] || pw=$(ask_new_pw "Mật khẩu mới cho $n" 1) || return 1
+  printf '%s\n' "$pw" | secret_enc > "$SEC/$n.age" && save_and_sync "Đã đổi mật khẩu của secret $n" && ok "Đã đổi mật khẩu của $n"
+}
+secret_rename_raw(){ # cũ mới
+  local o=$1 n=$2 f e; valid_secret_name "$n" && ! secret_exists "$n" || return 1
+  for e in age meta pub; do [ -f "$SEC/$o.$e" ] && mv "$SEC/$o.$e" "$SEC/$n.$e"; done
+  for f in "$DIR"/*.conf; do [ -f "$f" ] || continue
+    awk -v o="$o" -v n="$n" '
+      /^[ \t]*#[ \t]*secret:/ { v=$0; sub(/^[ \t]*#[ \t]*secret:[ \t]*/,"",v); sub(/[ \t]+$/,"",v); if (v==o) { print "# secret: " n; next } }
+      tolower($1)=="identityfile" { i=index($0, "secrets/" o ".pub"); if (i && i+length("secrets/" o ".pub")-1==length($0)) { print substr($0,1,i-1) "secrets/" n ".pub"; next } }
+      { print }' "$f" > "$f.tmp"; if cmp -s "$f" "$f.tmp"; then rm -f "$f.tmp"; else mv "$f.tmp" "$f"; fi
+  done
+}
+secret_delete_raw(){ # tên: xoá file và gỡ mọi dòng đăng nhập do hostbook ghi cho secret này
+  local n=${1:?} f ispw="" e; [ "$(secret_meta "$n" type)" = password ] && ispw=1
+  [ -f "$SEC/$n.pub" ] && ssh-add -q -d "$SEC/$n.pub" 2>/dev/null
+  for f in "$DIR"/*.conf; do [ -f "$f" ] || continue
+    awk -v n="$n" -v ispw="$ispw" '
+      function flush(  i,k){ for (i=1;i<=nb;i++) { k=tolower(key[i])
+          if (hit && buf[i] ~ /^[ \t]*#[ \t]*secret:/) continue
+          if (hit && !ispw && ((k=="identityfile" && index(buf[i], "secrets/" n ".pub")) || k=="identitiesonly")) continue
+          if (hit && ispw && (k=="pubkeyauthentication" || k=="preferredauthentications")) continue
+          print buf[i] } nb=0; hit=0 }
+      # một khối = các dòng comment ngay trên Host + Host + thân; gom rồi mới quyết định
+      /^[ \t]*#/ { if (inbody) { flush(); inbody=0 } }
+      tolower($1)=="host" || tolower($1)=="match" { if (inbody) flush(); inbody=1 }
+      { buf[++nb]=$0; key[nb]=$1 }
+      /^[ \t]*#[ \t]*secret:/ { v=$0; sub(/^[ \t]*#[ \t]*secret:[ \t]*/,"",v); sub(/[ \t]+$/,"",v); if (v==n) hit=1 }
+      tolower($1)=="identityfile" && index($0, "secrets/" n ".pub") { hit=1 }
+      END { flush() }' "$f" > "$f.tmp"; if cmp -s "$f" "$f.tmp"; then rm -f "$f.tmp"; else mv "$f.tmp" "$f"; fi
+  done
+  for e in age meta pub; do [ -f "${SEC:?}/$n.$e" ] && rm -f "${SEC:?}/${n:?}.$e"; done
+  return 0
+}
+secret_edit(){
+  local n=$1 d f info type; type=$(secret_meta "$n" type); d=$(tmpd); f=$d/s
+  secret_get "$n" > "$f" || { err "Chưa mở được kho secret"; return 1; }; cp "$f" "$f.orig"; chmod 600 "$f"
+  ${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}} "$f"
+  if cmp -s "$f" "$f.orig"; then dim "Không có thay đổi"; return 0; fi
+  if [ "$type" = password ]; then
+    [ "$(grep -c . "$f")" = 1 ] || { err "Mật khẩu phải là đúng một dòng"; return 1; }
+    head -1 "$f" | secret_enc > "$SEC/$n.age"
+  else
+    info=$(key_prepare "$f") || return 1
+    [ -f "$SEC/$n.pub" ] && ssh-add -q -d "$SEC/$n.pub" 2>/dev/null
+    secret_write_key "$n" "$f" "${info%%"$TAB"*}" "${info#*"$TAB"}"
+  fi
+  save_and_sync "Đã sửa secret $n"; ok "Đã lưu $n"
+}
+# Sau khi thay key: dùng key cũ (còn trong agent) để thêm key mới lên từng server, rồi thử key mới.
+push_new_key(){ # tên-secret file-pub-cũ [yes = không hỏi, không gỡ key cũ]
+  local sc=$1 oldpub=$2 auto=${3:-} h hosts okh="" bad="" oldblob
+  hosts=$(secret_users "$sc"); [ -n "$hosts" ] || return 0
+  [ -n "$auto" ] || confirm "Đưa key mới lên $(printf '%s\n' "$hosts" | grep -c .) server đang dùng $sc? (đăng nhập bằng key cũ)" || return 0
+  agent_ready && load_secret "$sc" || return 1
+  for h in $hosts; do
+    printf '  %s … ' "$h"
+    if sshx -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -o IdentityFile="$oldpub" "$h" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' < "$SEC/$sc.pub" 2>/dev/null \
+       && sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" true </dev/null 2>/dev/null; then okh="$okh $h"; printf '%s✓ key mới vào được%s\n' "$CG" "$C0"
+    else bad="$bad $h"; printf '%s✗ chưa đưa được key mới%s\n' "$CR" "$C0"; fi
+  done
+  [ -n "$bad" ] && warn "Các server này vẫn chỉ nhận key cũ:$bad. Thêm public key mới bằng tay rồi thử lại."
+  [ -n "$auto" ] && [ "$auto" != remove ] && return 0
+  if [ -n "$okh" ] && { [ "$auto" = remove ] || confirm --default=false "Gỡ key cũ khỏi các server đã vào được bằng key mới?"; }; then
+    oldblob=$(awk '{print $2}' "$oldpub")
+    for h in $okh; do
+      if sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" "grep -vF '$oldblob' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.hb && mv ~/.ssh/authorized_keys.hb ~/.ssh/authorized_keys" </dev/null 2>/dev/null; then printf '  %s ✓ đã gỡ key cũ\n' "$h"; else printf '  %s %s✗ chưa gỡ được%s\n' "$h" "$CR" "$C0"; fi; done
+  fi
+}
+secret_replace(){ # tên nguồn(clip|file|gen|đường dẫn) [auto: yes|remove]
+  local n=$1 src=$2 auto=${3:-} d
+  [ "$src" = file ] && { src=$(pick_key_file) || return 1; }
+  d=$(tmpd); cp "$SEC/$n.pub" "$d/old.pub"; chmod 600 "$d/old.pub"
+  secret_get "$n" > "$d/old.key" || { err "Chưa mở được kho secret"; return 1; }; chmod 600 "$d/old.key"
+  secret_add_key "$src" "$n" replace >/dev/null || return 1
+  ok "Đã thay key của $n"; [ "$src" = gen ] && { echo "Public key mới:"; cat "$SEC/$n.pub"; }
+  build_index
+  # nạp tạm key cũ (10 phút) để còn đăng nhập được mà đưa key mới lên
+  if agent_ready && ssh-add -q -t 600 "$d/old.key" 2>/dev/null; then push_new_key "$n" "$d/old.pub" "$auto"; ssh-add -q -d "$d/old.pub" 2>/dev/null; fi
+  return 0
+}
+secret_manager(){
+  local items keys n i c
+  while :; do
+    ensure_index; items=(); keys=()
+    for n in $(secret_names); do c=$(secret_users "$n" | grep -c .)
+      items+=("$n|$(secret_label "$n") · $( [ "$c" = 0 ] && echo 'không server nào dùng' || echo "$c server")$( [ "$(secret_meta "$n" type)" = key ] && echo " · $(secret_meta "$n" fp | cut -c1-17)…")"); keys+=("s:$n"); done
+    [ -n "$(legacy_keys)" ] && { items+=("Đưa key trên máy này vào kho secret|$(legacy_keys | grep -c .) key đang được server dùng"); keys+=(migrate); }
+    items+=("+ Thêm key (từ clipboard)" "+ Thêm key từ file" "+ Tạo key mới" "+ Thêm mật khẩu"); keys+=(clip file gen pass)
+    vault_exists && { items+=("Kho secret|đổi mật khẩu chính, mã khôi phục, khoá"); keys+=(vault); }
+    clear; title "Secret"
+    i=$(pick "$(if vault_exists; then echo "Kho secret: $(kc_get >/dev/null 2>&1 && echo "đã mở trên máy này ($(kc_label))" || echo 'chưa mở trên máy này')"; else echo 'Chưa có kho secret: sẽ được tạo khi bạn thêm secret đầu tiên'; fi)" "${items[@]}") || return 0
+    case ${keys[$i]} in
+      s:*) secret_actions "${keys[$i]#s:}" && return 0;;
+      migrate) migrate_keys; pause;;
+      clip) secret_add_key clip >/dev/null; pause;;
+      file) n=$(pick_key_file) && secret_add_key "$n" >/dev/null; pause;;
+      gen) vault_init && n=$(ask_secret_name "") && secret_add_key gen "$n" >/dev/null && { ok "Public key của $n:"; cat "$SEC/$n.pub"; pause; };;
+      pass) secret_add_password >/dev/null;;
+      vault) case $(pick "Kho secret" "Đổi mật khẩu chính" "Tạo mã khôi phục mới|mã cũ hết hiệu lực" "Khoá trên máy này|gỡ key khỏi ssh-agent và quên danh tính; lần sau hỏi mật khẩu chính" "Nạp mọi key vào ssh-agent|để ssh, scp, VS Code dùng được") in
+               0) vault_passwd; pause;; 1) vault_recovery_code;; 2) cmd_lock --forget; pause;; 3) cmd_unlock; pause;; esac;;
+    esac
+  done
+}
+secret_actions(){ # trả 0 nếu cần thoát hẳn màn Secret (để về ô tìm)
+  local n=$1 type users; type=$(secret_meta "$n" type); users=$(secret_users "$n" | tr '\n' ' ')
+  clear; title "Secret $n"; dim "$(secret_label "$n")$( [ "$type" = key ] && echo " · $(secret_meta "$n" fp)") · tạo $(secret_meta "$n" created)"; dim "Server đang dùng: ${users:-không có}"; echo
+  if [ "$type" = key ]; then
+    case $(pick "" "Xem server đang dùng|mở ô tìm với secret:$n" "Copy public key" "Thay bằng key khác (từ clipboard)" "Thay bằng key khác (từ file)" "Tạo key mới thay thế" "Sửa nội dung" "Đổi tên" "Xoá") in
+      0) SECRET_QUERY="secret:$n"; return 0;;
+      1) cat "$SEC/$n.pub" | copy && ok "Đã copy public key"; pause;;
+      2) secret_replace "$n" clip; pause;; 3) secret_replace "$n" file; pause;; 4) secret_replace "$n" gen; pause;;
+      5) secret_edit "$n"; pause;; 6) secret_rename "$n";; 7) secret_delete "$n";;
+    esac
+  else
+    case $(pick "" "Xem server đang dùng|mở ô tìm với secret:$n" "Đổi mật khẩu" "Sửa nội dung" "Đổi tên" "Xoá") in
+      0) SECRET_QUERY="secret:$n"; return 0;;
+      1) secret_set_password "$n"; pause;; 2) secret_edit "$n"; pause;; 3) secret_rename "$n";; 4) secret_delete "$n";;
+    esac
+  fi
+  return 1
+}
+secret_rename(){ local n=$1 m; m=$(ask_secret_name "$n") || return 1; apply_change "Đã đổi tên secret $n → $m" secret_rename_raw "$n" "$m"; }
+secret_delete(){
+  local n=$1 users; users=$(secret_users "$n" | tr '\n' ' ')
+  confirm --default=false "Xoá secret $n?${users:+ Các server $users sẽ không còn cách đăng nhập đã lưu.} Có thể hoàn tác trong Công cụ." || return 1
+  apply_change "Đã xoá secret $n" secret_delete_raw "$n"
+}
+
 # ---------- kết nối & báo lỗi ----------
 CTO=${HOSTBOOK_CONNECT_TIMEOUT:-15}   # giây chờ tối đa trước khi coi là không kết nối được (mặc định của hệ thống có thể tới 75 giây)
 # Theo dõi nhật ký "ssh -v" và hiện một dòng tiến trình: đang ở bước nào, đã chờ bao lâu.
@@ -444,13 +914,14 @@ conn_progress(){ # log ip cổng máy_trung_gian tên
 # Kết nối và cho thấy từng bước. Trả về mã của ssh. $2=pane: đang chạy trong một ô tmux, không mở menu.
 connect(){
   local n=$1 pane=${2:-} log rc jump ip port t0 wp
+  prepare_login "$n" || { [ -z "$pane" ] && pause; return 1; }
   log=$(mktemp); jump=$(host_field "$n" 6); ip=$(host_field "$n" 3); port=$(host_field "$n" 5); port=${port:-22}
   record "$n"
   printf '%s→ ssh %s%s%s%s\n' "$CB" "$n" "$C0" "$CD${jump:+ qua $jump}$C0" "$(is_prod "$n" && printf '   %s● PROD%s' "$CR$CB" "$C0")"
   t0=$(date +%s); printf '\n' >/dev/tty   # dòng trống: chỗ cho dòng tiến trình
   ( conn_progress "$log" "$ip" "$port" "$jump" "$n" ) & wp=$!
   trap 'true' INT   # ctrl-c chỉ huỷ ssh, không thoát hostbook
-  sshx -v -E "$log" -o ConnectTimeout="$CTO" "$n" 2>>"$log"; rc=$?   # stderr vào nhật ký; câu hỏi mật khẩu/host key đi qua /dev/tty nên vẫn hiện
+  ssh_login "$n" -v -E "$log" -o ConnectTimeout="$CTO" "$n" 2>>"$log"; rc=$?   # stderr vào nhật ký; câu hỏi mật khẩu/host key đi qua /dev/tty nên vẫn hiện
   trap - INT
   kill $wp 2>/dev/null; wait $wp 2>/dev/null
   [ -f "$log.done" ] || printf '\033[1A\r\033[K' >/dev/tty   # chưa tới được server: bỏ dòng tiến trình, khung lỗi sẽ thay chỗ
@@ -468,11 +939,13 @@ connect(){
 explain(){ # tên log [pane]
   local n=$1 f=$2 pane=${3:-} ip user key port j kind="" net=0 banner=0 auth=0 jump_ok=0 need=1 raw lines=() acts=()
   ip=$(host_field "$n" 3); user=$(host_field "$n" 4); key=$(host_field "$n" 7); port=$(host_field "$n" 5); port=${port:-22}; j=$(host_field "$n" 6)
+  local sc sctype=""; sc=$(host_field "$n" 12); [ -n "$sc" ] && sctype=$(secret_meta "$sc" type); [ -n "$sc" ] && key="secret $sc"
   [ -n "$j" ] && need=2
   grep -q 'Connection established' "$f" && net=1
   [ "$(grep -c 'Remote protocol version' "$f")" -ge $need ] && banner=1
   [ -n "$j" ] && grep -q 'Authenticated to' "$f" && jump_ok=1   # lần "Authenticated to" đầu tiên là của máy trung gian
   if grep -qiE 'IDENTIFICATION HAS CHANGED|Host key verification failed' "$f"; then kind=hostkey
+  elif grep -qi 'Permission denied' "$f" && [ "$sctype" = key ] && grep -q 'secrets/.*\.pub": invalid format' "$f" && ! ssh-add -l 2>/dev/null | grep -qF "$(secret_meta "$sc" fp)"; then kind=locked
   elif grep -qi 'Permission denied' "$f"; then kind=denied
   elif grep -qi 'Could not resolve hostname' "$f"; then kind=dns
   elif grep -qi 'Connection refused' "$f"; then kind=refused
@@ -497,9 +970,11 @@ explain(){ # tên log [pane]
   echo
   case $kind in
     hostkey) lines=("${CR}⚠ Host key của $n đã thay đổi${C0}" "Có thể server vừa được cài lại." "Cũng có thể có người đang chặn giữa đường." "${CR}Chỉ cập nhật khi bạn chắc chắn server vừa được cài lại.${C0}");;
-    denied)  if grep -q 'Next authentication method: password\|Next authentication method: keyboard' "$f"; then
-               lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, key ${key/#$HOME/~}, rồi mật khẩu" "• Sai mật khẩu, hoặc sai user" "• Key của máy này chưa được thêm lên server nên phải dùng mật khẩu")
-             else lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, key ${key/#$HOME/~}" "• Key của máy này có thể chưa được thêm lên server" "• Hoặc sai user"); fi;;
+    locked)  lines=("${CY}Kho secret chưa mở trên máy này${C0}" "Server này đăng nhập bằng secret $sc, nhưng key chưa được nạp vào ssh-agent.");;
+    denied)  if [ "$sctype" = password ]; then lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, mật khẩu trong secret $sc" "• Mật khẩu đã lưu không còn đúng, hoặc sai user")
+             elif grep -q 'Next authentication method: password\|Next authentication method: keyboard' "$f"; then
+               lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, ${key/#$HOME/~}, rồi mật khẩu" "• Sai mật khẩu, hoặc sai user" "• Key chưa được thêm lên server nên phải dùng mật khẩu")
+             else lines=("${CY}$n từ chối đăng nhập${C0}" "Đã thử: user $user, ${key/#$HOME/~}" "• Public key có thể chưa được thêm lên server" "• Hoặc sai user"); fi;;
     dns)     lines=("${CY}Không tìm thấy địa chỉ $ip${C0}" "• Sai tên máy, hoặc tên này chỉ dùng được trong mạng nội bộ/VPN");;
     refused) lines=("${CY}$ip từ chối kết nối ở cổng $port${C0}" "• Máy có chạy nhưng SSH không mở ở cổng này" "• Hoặc sai cổng");;
     unreachable) lines=("${CY}Không có đường mạng tới $ip${C0}" "• Máy này chưa vào được mạng của server (VPN, mạng nội bộ…)");;
@@ -510,21 +985,27 @@ explain(){ # tên log [pane]
     closed)  lines=("${CY}$n đóng kết nối giữa chừng${C0}" "• Server có thể đang chặn IP của máy này (fail2ban…) hoặc giới hạn số kết nối" "• Hoặc cổng này không phải SSH");;
     *)       lines=("${CY}Không kết nối được $n${C0}");;
   esac
-  box 221 "${lines[@]}" "" ${s0:+"$s0"} "$s1" "$s2" "$s3" ${raw:+"${CD}ssh báo: $raw${C0}"}
+  box warn "${lines[@]}" "" ${s0:+"$s0"} "$s1" "$s2" "$s3" ${raw:+"${CD}ssh báo: $raw${C0}"}
   if [ -n "$pane" ]; then return 0; fi
   if [ $kind = hostkey ]; then
     case $(pick "Làm gì tiếp?" "Quay lại ô tìm|an toàn" "Tôi đã kiểm tra, cập nhật host key") in
       1) ssh-keygen -R "$ip" >/dev/null 2>&1; ssh-keygen -R "[$ip]:$port" >/dev/null 2>&1; ssh-keygen -R "$n" >/dev/null 2>&1; connect "$n";; esac; return 0
   fi
   acts=("Thử lại" "Sửa server này")
-  [ $kind = denied ] && acts+=("Sao chép key từ máy khác")
+  [ $kind = locked ] && acts=("Mở khoá và thử lại")
+  [ $kind = denied ] && [ "$sctype" = key ] && acts+=("Copy public key của $sc")
+  [ $kind = denied ] && [ "$sctype" = password ] && acts+=("Đổi mật khẩu của $sc")
+  [ $kind = denied ] && acts+=("Đổi cách đăng nhập")
   acts+=("Xem nhật ký kết nối" "Quay lại ô tìm")
   local logcopy; logcopy=$(mktemp); cp "$f" "$logcopy"
   while :; do
     case ${acts[$(pick "Làm gì tiếp?" "${acts[@]}" || echo 99)]:-} in
       "Thử lại") rm -f "$logcopy"; connect "$n"; return 0;;
       "Sửa server này") rm -f "$logcopy"; edit_host "$n"; return 0;;
-      "Sao chép key từ máy khác") rm -f "$logcopy"; copy_keys; return 0;;
+      "Mở khoá và thử lại") rm -f "$logcopy"; cmd_unlock && connect "$n"; return 0;;
+      "Copy public key của "*) cat "$SEC/$sc.pub" | copy && ok "Đã copy. Thêm dòng này vào ~/.ssh/authorized_keys của user $user trên server.";;
+      "Đổi mật khẩu của "*) secret_set_password "$sc";;
+      "Đổi cách đăng nhập") rm -f "$logcopy"; change_login "$n"; return 0;;
       "Xem nhật ký kết nối") grep -vE '^debug[0-9]: (Reading|/|channel|client_input|pledge|kex|SSH2_MSG|expecting|rekey|setting up|identity file|Local version|compat|Skipping|load_hostkeys|checking match|hostkeys_find|get_agent|fd [0-9])' "$logcopy" | sed "s|$HOME|~|g" | gum pager --soft-wrap;;
       *) rm -f "$logcopy"; return 0;;
     esac
@@ -543,7 +1024,7 @@ infer(){ # host name user port [dự-án-bắt-buộc]
       if (force!="") { grp=force; src="bạn chọn" } else if (np) { grp=top(peer); src="cùng dải " net ".x" } else if (NR) { grp=top(allg); src="dự án có nhiều server nhất" } else { grp="servers"; src="dự án mặc định" }
       print "group=" grp; print "src_group=" src
       n=0
-      for (i=1;i<=NR;i++) { split(rows[i],f,"\t"); if (f[2]!=grp) continue; n++; us[f[4]]++; ks[f[7]]++; if (f[6]!="") { js[f[6]]++; nj++ }
+      for (i=1;i<=NR;i++) { split(rows[i],f,"\t"); if (f[2]!=grp) continue; n++; us[f[4]]++; if (f[12]!="") ks[f[12]]++; if (f[6]!="") { js[f[6]]++; nj++ }
         m=split(f[8],tg," "); for (t=1;t<=m;t++) { tc[tg[t]]++; pool[tg[t]]=1 } }
       if (user=="") { if (n) { print "user=" top(us); print "src_user=giống các server trong " grp } else { print "user=" me; print "src_user=user của máy này" } } else print "user=" user
       print "port=" (port==""?"22":port)
@@ -553,7 +1034,7 @@ infer(){ # host name user port [dự-án-bắt-buộc]
       for (t=1;t<=m;t++) if (parts[t]!="" && (parts[t] in pool) && !(parts[t] in common) && index(" " tags " ", " " parts[t] " ")==0) { tags=tags (tags==""?"":" ") parts[t]; extra=1 }
       print "tags=" tags; if (tags!="") print "src_tags=từ " grp (extra?" và tên server":"")
       if (nj && nj>=n-1) { print "jump=" top(js); print "src_jump=các server khác trong " grp " đều đi qua máy này" } else print "jump="
-      if (n) { print "key=" top(ks); print "src_key=key đang dùng cho " grp } else { print "key=~/.ssh/id_rsa"; print "src_key=key mặc định" }
+      sc=top(ks); if (sc!="") { print "secret=" sc; print "src_secret=đang dùng cho " ks[sc] " server trong " grp } else print "secret="
     }' "$IDX"
 }
 name_prefix(){ ensure_index; local net=${1%.*}; awk -F'\t' -v net="$net" 'index($3, net ".")==1 { split($1,a,"-"); if (a[2]!="") c[a[1] "-"]++ } END { for (k in c) if (c[k]>b) { b=c[k]; r=k } print r }' "$IDX"; }
@@ -568,14 +1049,38 @@ parse_addr(){ # "user@host:port" → in ra 3 dòng user, host, port
 }
 # Khối Host cho server mới. Ghi rõ Port / ProxyJump none khi một khối wildcard của dự án đặt giá trị khác,
 # vì ssh lấy giá trị khớp đầu tiên và wildcard có thể đứng trước.
-host_block(){ # name ip user port jump key tags desc
+login_lines(){ # tên secret → các dòng đăng nhập của khối Host. Có "/" = đường dẫn key kiểu cũ
+  local sc=$1; [ -n "$sc" ] || return 0
+  case $sc in */*) printf '  IdentityFile %s\n' "$sc"; return;; esac
+  if [ "$(secret_meta "$sc" type)" = password ]; then printf '  PubkeyAuthentication no\n  PreferredAuthentications password,keyboard-interactive\n'
+  else printf '  IdentityFile %s\n  IdentitiesOnly yes\n' "$(printf '%s' "$SEC/$sc.pub" | sed "s|^$HOME|~|")"; fi
+}
+host_block(){ # name ip user port jump secret tags desc
   local cur_port cur_jump
   cur_port=$(sshx -G "$1" 2>/dev/null | awk '$1=="port"{print $2}'); cur_jump=$(sshx -G "$1" 2>/dev/null | awk '$1=="proxyjump"{print $2}')
   [ -n "$7" ] && printf '# tags: %s\n' "$7"; [ -n "$8" ] && printf '# desc: %s\n' "$8"
+  case $6 in ""|*/*) ;; *) printf '# secret: %s\n' "$6";; esac
   printf 'Host %s\n  HostName %s\n  User %s\n' "$1" "$2" "$3"
   { [ "$4" != 22 ] || [ "${cur_port:-22}" != 22 ]; } && printf '  Port %s\n' "$4"
   if [ -n "$5" ]; then printf '  ProxyJump %s\n' "$5"; elif [ -n "$cur_jump" ] && [ "$cur_jump" != none ]; then printf '  ProxyJump none\n'; fi
-  printf '  IdentityFile %s\n' "$6"
+  login_lines "$6"
+}
+# Đổi cách đăng nhập của một server: gỡ các dòng đăng nhập cũ trong khối, ghi dòng mới.
+set_host_secret(){ # tên-server tên-secret(rỗng = ssh tự lo)
+  local n=$1 sc=${2:-} f l r old oldpw="" ll
+  f=$(host_field "$n" 10); l=$(host_field "$n" 11); r=$(block_range "$n"); old=$(host_field "$n" 12)
+  [ -n "$old" ] && [ "$(secret_meta "$old" type)" = password ] && oldpw=1
+  ll=$(tmpd)/ll; login_lines "$sc" > "$ll"
+  awk -v s="${r% *}" -v e="${r#* }" -v l="$l" -v sc="$sc" -v oldpw="$oldpw" -v ll="$ll" '
+    NR>=s && NR<=e {
+      k=tolower($1); skip=0
+      if ($0 ~ /^[ \t]*#[ \t]*secret:/ || k=="identityfile" || k=="identitiesonly") skip=1
+      if (oldpw && (k=="pubkeyauthentication" || k=="preferredauthentications")) skip=1
+      if (NR==l && sc!="" && sc !~ /\//) print "# secret: " sc
+      if (!skip) print
+      if (NR==e) while ((getline x < ll) > 0) print x
+      next }
+    { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 }
 # Ghi khối Host vào <dự án>.conf, đặt trước khối wildcard đầu tiên để giá trị riêng của server được ssh ưu tiên.
 write_host(){ # project block-file
@@ -587,12 +1092,12 @@ write_host(){ # project block-file
 read_infer(){ # gán kết quả của infer vào biến cùng tên (không dùng eval)
   local line k v
   while IFS= read -r line; do k=${line%%=*}; v=${line#*=}
-    case $k in group|src_group|user|src_user|port|tags|src_tags|jump|src_jump|key|src_key) printf -v "$k" '%s' "$v";; esac
+    case $k in group|src_group|user|src_user|port|tags|src_tags|jump|src_jump|secret|src_secret) printf -v "$k" '%s' "$v";; esac
   done < <(infer "$@")
 }
 add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn lại, cho xem lại rồi lưu
   local raw=${1:-} name=${2:-} u h p pre line i blk f dup
-  local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" key="" src_key="" desc=""
+  local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" secret="" src_secret="" desc=""
   while :; do
     [ -n "$raw" ] || raw=$(ask "Địa chỉ server · dán kiểu nào cũng được: 10.0.1.13, ubuntu@10.0.1.13, 10.0.1.13:2222" "10.0.1.13") || return 1
     if line=$(parse_addr "$raw"); then break; fi; err "Không đọc được \"$raw\". Ví dụ: ubuntu@10.0.1.13"; raw=""
@@ -607,20 +1112,21 @@ add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn l�
          elif host_exists "$name"; then err "Đã có server tên $name"; name=""; else break; fi;; esac
   done
   read_infer "$h" "$name" "$u" "$p"
+  if [ -z "$secret" ]; then clear; title "Thêm server $name"; secret=$(pick_login) || return 1; fi   # chưa có gì để gợi ý: hỏi luôn
   while :; do
     clear; title "Thêm server"
     dup=$(awk -F'\t' -v ip="$h" '$3==ip{print $1; exit}' "$IDX")
-    box 244 "$(row "Tên" "$name"
+    box dim "$(row "Tên" "$name"
       row "Địa chỉ" "$user@$h$( [ "$port" != 22 ] && echo ":$port")" "$src_user"
       row "Dự án" "$group" "$src_group"
       row "Tags" "${tags:-—}" "$src_tags"
       row "Máy trung gian" "${jump:-không}" "$src_jump"
-      row "Key" "$key" "$src_key"
+      row "Đăng nhập" "$( [ -n "$secret" ] && echo "$secret ($(secret_label "$secret"))" || echo "ssh tự lo")" "$src_secret"
       row "Mô tả" "${desc:-(trống)}")"
     [ -n "$dup" ] && warn "Trùng IP với $dup"
     case $(pick "" "Lưu|kiểm tra rồi tự đồng bộ" "Sửa một mục…" "Huỷ") in
       0) break;;
-      1) case $(pick "Sửa mục nào?" "Tên|$name" "Địa chỉ|$user@$h:$port" "Dự án|$group" "Tags|${tags:-—}" "Máy trung gian|${jump:-không}" "Key|$key" "Mô tả|${desc:-(trống)}") in
+      1) case $(pick "Sửa mục nào?" "Tên|$name" "Địa chỉ|$user@$h:$port" "Dự án|$group" "Tags|${tags:-—}" "Máy trung gian|${jump:-không}" "Đăng nhập|${secret:-ssh tự lo}" "Mô tả|${desc:-(trống)}") in
            0) i=$(ask "Tên" "" "$name") && { if valid_name "$i" && ! host_exists "$i"; then name=$i; else err "Tên không hợp lệ hoặc đã có"; sleep 1; fi; };;
            1) i=$(ask "Địa chỉ" "ubuntu@10.0.1.13:22" "$user@$h:$port") && line=$(parse_addr "$i") && { u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p); user=${u:-$user}; port=${p:-22}; src_user=""; };;
            2) i=$( { awk -F'\t' '{print $2}' "$IDX" | sort -u; echo "+ Dự án mới"; } | gum choose --header "Dự án") && {
@@ -628,13 +1134,13 @@ add_host(){ # [địa chỉ] [tên]: hỏi tối thiểu, đoán phần còn l�
                 else group=$i; fi; src_group=""; };;
            3) i=$(ask "Tags · cách nhau dấu cách" "prod web" "$tags") && { tags=$(printf '%s' "$i" | tr -cd 'A-Za-z0-9._ -'); src_tags=""; };;
            4) i=$( { echo "Không"; awk -F'\t' '$8 ~ /(^| )bastion( |$)/ {print $1}' "$IDX"; } | gum choose --header "Máy trung gian (ProxyJump)") && { [ "$i" = Không ] && jump="" || jump=$i; src_jump=""; };;
-           5) i=$( { ls "$HOME"/.ssh/ 2>/dev/null | grep -vE '\.pub$|^(config|known_hosts|authorized_keys|agent)' | sed 's|^|~/.ssh/|'; } | gum choose --header "Key") && { key=$i; src_key=""; };;
+           5) i=$(pick_login "$secret" "$src_secret") && { secret=$i; src_secret=""; };;
            6) i=$(ask "Mô tả · một dòng" "Nginx chính" "$desc") && desc=$(printf '%s' "$i" | tr -d '\t\n\r');;
          esac;;
       *) return 1;;
     esac
   done
-  blk=$(mktemp); host_block "$name" "$h" "$user" "$port" "$jump" "$key" "$tags" "$desc" > "$blk"
+  blk=$(mktemp); host_block "$name" "$h" "$user" "$port" "$jump" "$secret" "$tags" "$desc" > "$blk"
   f=$DIR/$group.conf; [ -f "$f" ] && cp "$f" "$blk.bak"
   write_host "$group" "$blk"
   if ! i=$(validate); then
@@ -654,7 +1160,7 @@ edit_host(){ # mở file ở đúng dòng, kiểm tra khi đóng, hỏi lại n�
     case $ed in code*|cursor*) $ed -g "$f:$l" --wait;; *) $ed "+$l" "$f";; esac
     cmp -s "$f" "$bak" && { rm -f "$bak"; return 0; }
     if e=$(validate); then rm -f "$bak"; build_index; save_and_sync "Đã sửa $n"; return 0; fi
-    echo; box 204 "${CR}Chưa đồng bộ: file lỗi sẽ không được đẩy sang máy khác.${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
+    echo; box err "${CR}Chưa đồng bộ: file lỗi sẽ không được đẩy sang máy khác.${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
     l=$(printf '%s' "$e" | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -1); l=${l:-1}
     case $(pick "Làm gì tiếp?" "Mở lại để sửa|tới dòng $l" "Bỏ thay đổi|khôi phục bản trước") in
       0) ;;
@@ -667,9 +1173,10 @@ edit_host(){ # mở file ở đúng dòng, kiểm tra khi đóng, hỏi lại n�
 # ---------- xoá, đổi tên, chuyển dự án ----------
 # block_range tên → "đầu cuối": khối Host của server, gồm các dòng "# tags:"/"# desc:" ngay phía trên, bỏ dòng trống cuối
 block_range(){ local f l; f=$(host_field "$1" 10); l=$(host_field "$1" 11)
-  awk -v l="$l" '{ line[NR]=$0 } END { s=l; while (s>1 && line[s-1] ~ /^[ \t]*#[ \t]*(tags|desc):/) s--
+  awk -v l="$l" '{ line[NR]=$0 } END { s=l; while (s>1 && line[s-1] ~ /^[ \t]*#[ \t]*(tags|desc|secret):/) s--
     e=l; for (i=l+1;i<=NR;i++) { if (tolower(line[i]) ~ /^[ \t]*(host|match)[ \t]/) break; e=i }
-    while (e>l && line[e] ~ /^[ \t]*$/) e--; print s, e }' "$f"; }
+    # dòng trống và comment ở cuối thuộc về khối kế tiếp (tags/desc/secret của server sau)
+    while (e>l && (line[e] ~ /^[ \t]*$/ || line[e] ~ /^[ \t]*#/)) e--; print s, e }' "$f"; }
 host_shared(){ local f l; f=$(host_field "$1" 10); l=$(host_field "$1" 11); [ "$(awk -v l="$l" 'NR==l{print NF-1; exit}' "$f")" -gt 1 ]; }
 jump_users(){ awk -F'\t' -v n="$1" '{ m=split($6,a,","); for (i=1;i<=m;i++) if (a[i]==n) print $1 }' "$IDX" | tr '\n' ' '; }
 groups_rename(){ # cũ [mới]: đổi hoặc bỏ tên server trong mọi nhóm; nhóm không còn server nào thì bỏ luôn
@@ -717,8 +1224,8 @@ move_host_raw(){ # tên dự_án: chuyển nguyên khối, rồi ghi rõ các gi
 # Bọc các thao tác trên: kiểm tra config, nếu hỏng thì trả lại nguyên trạng bằng git.
 apply_change(){ # mô tả lệnh...
   local msg=$1 e; shift
-  "$@" || { g checkout -q -- . 2>/dev/null; g clean -fdq -- '*.conf' 2>/dev/null; return 1; }
-  if ! e=$(validate); then g checkout -q -- . 2>/dev/null; g clean -fdq -- '*.conf' 2>/dev/null; build_index; err "Không đổi được vì config sẽ lỗi:"; dim "$e"; return 1; fi
+  "$@" || { g checkout -q -- . 2>/dev/null; g clean -fdq -- '*.conf' secrets 2>/dev/null; return 1; }
+  if ! e=$(validate); then g checkout -q -- . 2>/dev/null; g clean -fdq -- '*.conf' secrets 2>/dev/null; build_index; err "Không đổi được vì config sẽ lỗi:"; dim "$e"; return 1; fi
   build_index; save_and_sync "$msg"
 }
 delete_server(){
@@ -766,15 +1273,15 @@ import_parse(){
 }
 import_write(){ # file-tsv dự_án(rỗng = đoán theo dải IP) → ghi tất cả, in số server đã ghi
   local list=$1 to=$2 n u h pt tg blk cnt=0 seen=" "
-  local group src_group user src_user port tags src_tags jump src_jump key src_key
+  local group src_group user src_user port tags src_tags jump src_jump secret src_secret
   blk=$(mktemp)
   while IFS="$TAB" read -r n u h pt tg; do
     [ "$u" = - ] && u=""; [ "$pt" = - ] && pt=""; [ "$tg" = - ] && tg=""
     case $seen in *" $n "*) continue;; esac; host_exists "$n" && continue; seen="$seen$n "
-    group=""; user=""; port=""; tags=""; jump=""; key=""
+    group=""; user=""; port=""; tags=""; jump=""; secret=""
     read_infer "$h" "$n" "$u" "$pt" "$to"
     [ -n "$tg" ] && tags=$tg
-    host_block "$n" "$h" "$user" "$port" "$jump" "$key" "$tags" "" > "$blk"
+    host_block "$n" "$h" "$user" "$port" "$jump" "$secret" "$tags" "" > "$blk"
     write_host "$group" "$blk"; cnt=$((cnt+1))
   done < "$list"
   rm -f "$blk"; echo "$cnt"
@@ -841,7 +1348,7 @@ merge_split(){ # thư-mục: nối từng file tách ra vào ~/ssh-hosts (file t
 # ---------- xung đột với kho ----------
 # Gộp bằng merge (không rebase) để không mất phần không xung đột của cả hai bên.
 resolve_conflict(){ # [ours|theirs] để chạy không hỏi (kiểm thử)
-  local how=${1:-} files e
+  local how=${1:-} files e f
   export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 8)
   lock 10 || { err "Đang có một lần đồng bộ khác, thử lại sau"; [ -z "$how" ] && pause; return 1; }
   g fetch -q origin 2>/dev/null || { unlock; err "Không kết nối được kho"; [ -z "$how" ] && pause; return 1; }
@@ -858,10 +1365,17 @@ resolve_conflict(){ # [ours|theirs] để chạy không hỏi (kiểm thử)
     esac
   fi
   case $how in
-    ours|theirs) g merge --abort; HOSTBOOK_MERGE_PREFER=$how g merge -q --no-edit '@{u}' >/dev/null 2>&1 || { g merge --abort; unlock; err "Không gộp được"; return 1; };;
-    edit) local f l ed; ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
+    ours|theirs) g merge --abort; HOSTBOOK_MERGE_PREFER=$how g merge -q --no-edit '@{u}' >/dev/null 2>&1
+       # secret không tự trộn được: lấy nguyên file của phía đã chọn
+       for f in $(g diff --name-only --diff-filter=U 2>/dev/null); do case $f in secrets/*) g checkout -q "--$how" -- "$f" 2>/dev/null || g rm -q --cached "$f" 2>/dev/null; g add -A -- "$f" 2>/dev/null;; esac; done
+       if [ -n "$(g diff --name-only --diff-filter=U 2>/dev/null)" ]; then g merge --abort; unlock; err "Không gộp được"; return 1; fi
+       [ -f "$DIR/.git/MERGE_HEAD" ] && g commit -q --no-edit >/dev/null 2>&1;;
+    edit) local l ed sn side seen=" "; ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
+      for f in $(g diff --name-only --diff-filter=U); do case $f in secrets/*) sn=$(basename "$f"); sn=${sn%.*}
+        case $seen in *" $sn "*) ;; *) seen="$seen$sn "; case $(pick "Secret $sn bị sửa ở cả hai nơi" "Giữ bản của máy này" "Lấy bản trong kho") in 1) side=theirs;; *) side=ours;; esac
+          for l in age meta pub; do g checkout -q "--$side" -- "secrets/$sn.$l" 2>/dev/null; g add -A -- "secrets/$sn.$l" 2>/dev/null; done;; esac;; esac; done
       while :; do
-        for f in $(g diff --name-only --diff-filter=U); do l=$(grep -n '^<<<<<<<' "$DIR/$f" | head -1 | cut -d: -f1); $ed "+${l:-1}" "$DIR/$f"; done
+        for f in $(g diff --name-only --diff-filter=U | grep -v '^secrets/'); do l=$(grep -n '^<<<<<<<' "$DIR/$f" | head -1 | cut -d: -f1); $ed "+${l:-1}" "$DIR/$f"; done
         if grep -l '^<<<<<<<\|^>>>>>>>' "$DIR"/*.conf "$GRP" >/dev/null 2>&1; then warn "Vẫn còn dấu <<<<<<< chưa xử lý"
         elif ! e=$(validate); then warn "Config lỗi: $(printf '%s' "$e" | head -1)"
         else g add -A; g commit -qm "Gộp với kho" >/dev/null; break; fi
@@ -901,7 +1415,7 @@ save_group(){
 need_tmux(){
   have tmux && return 0
   if is_mac && have brew; then confirm "Cần tmux để mở nhiều server cùng lúc. Cài ngay bằng brew install tmux?" && gum spin --title "Đang cài tmux" -- brew install tmux && return 0
-  else box 221 "Cần tmux để mở nhiều server cùng lúc." "Cài bằng trình quản lý gói của máy, ví dụ: sudo apt install tmux"; pause; fi
+  else box warn "Cần tmux để mở nhiều server cùng lúc." "Cài bằng trình quản lý gói của máy, ví dụ: sudo apt install tmux"; pause; fi
   return 1
 }
 open_many(){ # group-name-or-empty host...
@@ -935,6 +1449,7 @@ open_many(){ # group-name-or-empty host...
   else s="hb-$1+$(( $# - 1 ))-$(printf '%s\n' "$@" | sort | cksum | cut -c1-4)"; fi
   s=$(printf '%s' "$s" | tr -c 'a-zA-Z0-9_+-' '-')
   if tmux has-session -t "=$s" 2>/dev/null; then attach "$s"; return; fi
+  prepare_login "$@" || { pause; return 1; }   # mở khoá và nạp key một lần ở đây, để các ô không cùng hỏi
   record "$@"
   sshcmd=$(pane_cmd)
   for h in "$@"; do
@@ -955,7 +1470,7 @@ open_many(){ # group-name-or-empty host...
 # Lệnh chạy trong mỗi ô tmux: chính hostbook, để ô nào cũng có dòng tiến trình và lời giải thích khi lỗi.
 # tmux server có thể đã chạy từ trước nên không mang theo biến môi trường của lần chạy này: truyền rõ ra.
 pane_cmd(){ local v e=""
-  for v in HOSTBOOK_DIR HOSTBOOK_STATE HOSTBOOK_SSH_CONFIG HOSTBOOK_CONNECT_TIMEOUT LC_CTYPE; do eval "[ -n \"\${$v:-}\" ] && e=\"\$e $v=\$(printf %q \"\${$v}\")\""; done
+  for v in HOSTBOOK_DIR HOSTBOOK_STATE HOSTBOOK_SSH_CONFIG HOSTBOOK_CONNECT_TIMEOUT HOSTBOOK_KEYCHAIN HOSTBOOK_MASTER XDG_CONFIG_HOME SSH_AUTH_SOCK LC_CTYPE; do eval "[ -n \"\${$v:-}\" ] && e=\"\$e $v=\$(printf %q \"\${$v}\")\""; done
   printf 'env%s %q _connect' "$e" "$SELF"; }
 attach(){ if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$1"; else tmux attach -t "$1"; fi; }
 
@@ -975,7 +1490,7 @@ port_forward(){ # name [cổng]
   case $port in ""|*[!0-9]*) err "Cổng phải là số"; pause; return 1;; esac
   use=$(pf_presets "$n" | awk -F'|' -v p="$port" '$1==p{print $3}')
   lp=$port; while port_open 127.0.0.1 "$lp"; do lp=$((lp+1)); done
-  echo; box 114 "${CG}${CB}localhost:$lp  →  $n:$port${C0}" "Dùng: ${use:-localhost:$lp}" "$( [ "$lp" != "$port" ] && echo "Cổng $port trên máy này đang bận nên dùng $lp.")" "${CD}Ctrl-C để dừng chuyển tiếp${C0}"
+  echo; box ok "${CG}${CB}localhost:$lp  →  $n:$port${C0}" "Dùng: ${use:-localhost:$lp}" "$( [ "$lp" != "$port" ] && echo "Cổng $port trên máy này đang bận nên dùng $lp.")" "${CD}Ctrl-C để dừng chuyển tiếp${C0}"
   record "$n"
   sshx -N -o ExitOnForwardFailure=yes -L "$lp:localhost:$port" "$n"
 }
@@ -991,6 +1506,13 @@ get_file(){
   [ -n "$src" ] || return 1
   record "$n"; scpx -r "$n:$src" "$PWD/" && ok "Đã tải về $PWD/$(basename "$src")" || err "Không tải được"; pause
 }
+change_login(){
+  local n=$1 sc
+  host_shared "$n" && { err "$n được khai báo chung một dòng Host với server khác. Sửa bằng ^e."; pause; return 1; }
+  sc=$(pick_login "$(host_field "$n" 12)") || return 1
+  ensure_index
+  apply_change "Đổi cách đăng nhập của $n" set_host_secret "$n" "$sc"
+}
 host_actions(){
   local n=$1 ip p1 pport pname
   ip=$(host_field "$n" 3); p1=$(pf_presets "$n" | head -1); pport=${p1%%|*}; pname=$(printf '%s' "$p1" | cut -d'|' -f2)
@@ -998,7 +1520,7 @@ host_actions(){
   local tmx="Mở trong tmux|giữ kết nối khi đóng terminal"; [ -n "${TMUX:-}" ] && tmx="Mở trong tab tmux mới"
   case $(pick "" "SSH vào server|enter ở ô tìm" "$tmx" "Chuyển tiếp cổng $pname|localhost:$pport → $n:$pport" "Chuyển tiếp cổng khác…" \
       "Gửi file lên server…" "Tải file về máy này…" "Copy IP|$ip" "Copy lệnh ssh|ssh $n" \
-      "Sửa|^e" "Đổi tên" "Chuyển sang dự án khác|đang ở $(host_field "$n" 2)" "Xoá server") in
+      "Sửa|^e" "Đổi tên" "Chuyển sang dự án khác|đang ở $(host_field "$n" 2)" "Xoá server" "Đổi cách đăng nhập|đang là: $(host_field "$n" 12 | grep . || echo 'ssh tự lo')") in
     0) connect "$n";;
     1) open_many "" "$n";;
     2) port_forward "$n" "$pport";;
@@ -1011,6 +1533,7 @@ host_actions(){
     9) rename_server "$n";;
     10) move_server "$n";;
     11) delete_server "$n";;
+    12) change_login "$n";;
   esac
 }
 group_actions(){
@@ -1100,8 +1623,8 @@ make_kho_here(){
   local addrs
   title "Tạo kho trên máy này"; dim "Chạy một lần trên máy luôn bật. Các máy khác chỉ cần thấy máy này qua mạng."; echo
   if ! port_open 127.0.0.1 22; then
-    if is_mac; then box 221 "${CY}Cần bật SSH trên máy này:${C0}" "System Settings → General → Sharing → Remote Login"
-    else box 221 "${CY}Cần bật SSH trên máy này:${C0}" "sudo systemctl enable --now ssh"; fi
+    if is_mac; then box warn "${CY}Cần bật SSH trên máy này:${C0}" "System Settings → General → Sharing → Remote Login"
+    else box warn "${CY}Cần bật SSH trên máy này:${C0}" "sudo systemctl enable --now ssh"; fi
     pause "bật xong nhấn enter để kiểm tra lại"; port_open 127.0.0.1 22 || { err "SSH vẫn chưa bật"; pause; return 1; }
   fi
   ok "SSH đang bật"
@@ -1111,7 +1634,7 @@ make_kho_here(){
     g push -q -u origin HEAD 2>/dev/null && ok "Đã đưa danh sách của máy này vào kho"
   fi
   addrs="$( (is_mac && echo "$(scutil --get LocalHostName 2>/dev/null).local"); (is_mac && ipconfig getifaddr en0 2>/dev/null) || hostname -I 2>/dev/null | awk '{print $1}'; have tailscale && tailscale ip -4 2>/dev/null | head -1 ) | grep . | tr '\n' ' ')"
-  echo; box 114 "${CG}Kho đã sẵn sàng.${C0}" "Máy khác vào được bằng: $addrs" "Mở hostbook trên máy khác cùng mạng, app sẽ tự tìm thấy kho này." "${CD}Khi khác mạng, dùng VPN hoặc Tailscale để các máy thấy kho.${C0}"
+  echo; box ok "${CG}Kho đã sẵn sàng.${C0}" "Máy khác vào được bằng: $addrs" "Mở hostbook trên máy khác cùng mạng, app sẽ tự tìm thấy kho này." "${CD}Khi khác mạng, dùng VPN hoặc Tailscale để các máy thấy kho.${C0}"
   pause
 }
 copy_keys(){
@@ -1167,13 +1690,13 @@ tools(){
   items+=("Nhập nhiều server|dán danh sách hoặc ssh config" "Đồng bộ ngay|thường không cần, app tự đồng bộ" "Kiểm tra máy này|phần mềm, ssh config, quyền key, kết nối" \
     "Hoàn tác thay đổi gần nhất|$(g log -1 --format=%s 2>/dev/null)" \
     "$(has_remote && echo "Đổi kho|đang dùng kho ở $(kho_addr)" || echo 'Kết nối kho|để sao lưu và dùng trên nhiều máy')" \
-    "Sao chép key từ máy khác|khi chuyển máy" "Tạo kho trên máy này|chạy một lần trên máy luôn bật")
+    "Secret|key và mật khẩu đăng nhập server" "Tạo kho trên máy này|chạy một lần trên máy luôn bật")
   keys+=(import sync doctor undo kho keys hub)
   local i; i=$(pick "Công cụ · việc ít dùng, phần lớn app đã tự làm" "${items[@]}") || return
   case ${keys[$i]} in
     conflict) resolve_conflict;; import) import_flow;;
     sync) gum spin --title "Đang đồng bộ với kho" -- "$SELF" _sync_now;;
-    doctor) doctor;; undo) undo_last;; kho) connect_kho;; keys) copy_keys;; hub) make_kho_here;;
+    doctor) doctor;; undo) undo_last;; kho) connect_kho;; keys) SECRET_QUERY=""; secret_manager;; hub) make_kho_here;;
   esac
 }
 show_help(){
@@ -1241,7 +1764,7 @@ home(){
       ctrl-a) add_host; [ -n "${ADDED:-}" ] && q=$ADDED;;
       ctrl-e) [ "$t" = h ] && edit_host "$n";;
       ctrl-g) set -- $hosts; if [ $# -ge 2 ]; then save_group "$@"; else flash "${CY}Chọn ít nhất 2 server bằng tab rồi nhấn ^g${C0}"; fi;;
-      ctrl-o) tools;;
+      ctrl-o) SECRET_QUERY=""; tools; [ -n "${SECRET_QUERY:-}" ] && q=$SECRET_QUERY;;
       ctrl-s) gum spin --title "Đang đồng bộ với kho" -- "$SELF" _sync_now;;
       right) case $t in h) host_actions "$n";; g) group_actions "$n";;
                s) confirm --default=false "Đóng hẳn phiên ${n#hb-}? Các kết nối trong đó sẽ bị ngắt." && tmux kill-session -t "$n" && flash "Đã đóng phiên ${n#hb-}";; esac;;
@@ -1256,9 +1779,12 @@ home(){
 shortcut_free(){ local out; out=$("${SHELL:-/bin/sh}" -ic "type $1" </dev/null 2>/dev/null) || return 0
   case $out in *hostbook*) return 0;; esac; return 1; }
 shortcut_name(){ grep -hoE '^alias (hb|hop)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
+check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "Cần age >= $AGE_MIN cho kho secret. Cài lại: curl -fsSL $REPO_URL/raw/main/install.sh | bash" >&2; return 1; }; }
 check_deps(){ # report: in từng dòng; im lặng: trả về 1 và in hướng dẫn nếu thiếu
   local bad=0 v
   have git || { err "Thiếu git"; bad=1; }
+  if have age && have age-plugin-batchpass; then v=$(age --version | sed 's/^v//'); if ver_ge "$v" "$AGE_MIN"; then [ "${1:-}" = report ] && ok "age $v"; else err "age $v quá cũ, cần >= $AGE_MIN"; bad=1; fi
+  else err "Thiếu age (kèm age-plugin-batchpass)"; bad=1; fi
   if have fzf; then v=$(fzf --version | awk '{print $1}')
     if ver_ge "$v" "$FZF_MIN"; then [ "${1:-}" = report ] && ok "fzf $v"; else err "fzf $v quá cũ, cần >= $FZF_MIN"; bad=1; fi
   else err "Thiếu fzf"; bad=1; fi
@@ -1307,13 +1833,13 @@ update(){
 }
 first_run(){ # chưa có ~/ssh-hosts
   local i m url n
-  clear; box 141 "${CU}${CB}Chào mừng đến hostbook${C0}" "Máy này chưa có danh sách server."; echo
+  clear; box title "${CU}${CB}Chào mừng đến hostbook${C0}" "Máy này chưa có danh sách server."; echo
   i=$(pick "Bắt đầu thế nào?" "Dùng kho ở máy khác|lấy danh sách server về máy này" "Đây là máy đầu tiên|tạo danh sách ở máy này, kho để sau" "Tạo kho trên máy này|máy luôn bật, các máy khác đồng bộ với nó") || return 1
   case $i in
     0) m=$(pick_machine "Kho ở máy nào?" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
        GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ kho" -- git clone -q "$url" "$DIR" || { err "Không lấy được kho từ $url"; return 1; };;
-    *) mkdir -p "$DIR"; git -C "$DIR" init -q; printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n' > "$DIR/.gitignore"
+    *) mkdir -p "$DIR"; git -C "$DIR" init -q; printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
        if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && confirm "Nhập các server đang có trong ~/.ssh/config?"; then
          cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
          n=$(split_config "$HOME/.ssh/config.bak" "$DIR" "$HOME/.ssh/config")
@@ -1335,6 +1861,14 @@ case ${1:-} in
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
              printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _explain) ensure_index; explain "$2" "$3" pane;;
+  _askpass) cmd_askpass "${2:-}";;
+  _vault_init) vault_exists || vault_create "$2";; _vault_recover) vault_recover "$2" "$3";; _vault_id) vault_identity >/dev/null && echo ok;;
+  _secret_add_key) secret_add_key "$2" "${3:-}" "${4:-}";; _secret_add_password) secret_add_password "$2" "$3";; _secret_get) secret_get "$2";;
+  _set_host_secret) ensure_index; apply_change "đổi đăng nhập" set_host_secret "$2" "${3:-}";; _migrate) migrate_keys_raw;;
+  _secret_rename) ensure_index; apply_change "đổi tên secret" secret_rename_raw "$2" "$3";; _secret_delete) ensure_index; apply_change "xoá secret" secret_delete_raw "$2";;
+  _load) agent_ready && load_secret "$2";; _secrets_for) ensure_index; secrets_for "$2";;
+  unlock) cmd_unlock;; lock) cmd_lock "${2:-}";; secret|secrets) check_deps || exit 1; ensure_index; secret_manager;;
+  vault) case ${2:-} in init) vault_init;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) echo "hostbook vault init | passwd | recover | recovery-code";; esac;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
   _infer) infer "$2" "$3" "${4:-}" "${5:-}";; _prefix) name_prefix "$2";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;
