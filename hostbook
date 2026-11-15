@@ -2664,7 +2664,6 @@ home(){
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err "$(t err_ctl_key)"; return 1; }; export FZF_API_KEY
   clip_offer
   fd=$(tmpd) || return 1
-  export HB_HOME_NO_MATCH="$(t home_no_matches)" HB_HOME_SELECTION_KEPT="$(t home_selection_kept)" HB_HOME_EMPTY_VIEW="$(t home_empty_view)"
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
   foot="if [ \"\${FZF_TOTAL_COUNT:-0}\" -gt 0 ] && [ \"\${FZF_MATCH_COUNT:-0}\" -eq 0 ] && [ -n \"\$FZF_QUERY\" ]; then printf '%s\\n' \"\$HB_HOME_NO_MATCH\"; [ \"\${FZF_SELECT_COUNT:-0}\" -eq 0 ] || printf '%s\\n' \"\$HB_HOME_SELECTION_KEPT\"; elif [ \"\${FZF_TOTAL_COUNT:-0}\" -eq 0 ] && [ -n \"\${HOSTBOOK_ONLY:-}\" ]; then printf '%s\\n' \"\$HB_HOME_EMPTY_VIEW\"; fi
     c=\${FZF_SELECT_COUNT:-0}
@@ -2674,6 +2673,7 @@ home(){
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }
     ADDED=""; rm -f "$STATE/current" "$STATE/share-request"
+    export HB_HOME_NO_MATCH="$(t home_no_matches)" HB_HOME_SELECTION_KEPT="$(t home_selection_kept)" HB_HOME_EMPTY_VIEW="$(t home_empty_view)"
     cmd_footers "$fd"; IFS= read -r ft < "$fd/f-x"
     # After a resize: same footer for the current row. Read-only on purpose: only the focus bind writes current, since a
     # write-back here could put a stale row there while focus moves, and → / ^e would open the wrong server.

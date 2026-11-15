@@ -70,6 +70,16 @@ k Escape; wait_for beta; end_ui
 unset HOSTBOOK_ONLY
 printf 'PASS empty imported view can return to all hosts\n'
 
+# Changing language in Tools updates the no-match message without restarting home.
+export HOSTBOOK_LANG=vi WIDTH=100
+printf 'border = rounded\nlist = compact\n' > "$XDG_CONFIG_HOME/hostbook/config"
+start; wait_for alpha; k C-o; wait_for 'Giao diện'; k -l 'Giao diện'; k Enter
+wait_for 'Language / Ngôn ngữ'; k -l 'Language'; k Enter; wait_for 'English'; k Down Enter
+wait_for 'Appearance'; k Escape; wait_for alpha
+k -l 'nothing-matches'; wait_for 'No matches'; wait_for 'Esc clears search'
+end_ui
+printf 'PASS language change updates recovery without restart\n'
+
 # Empty data keeps the real Add and Tools/Import instructions even after typing.
 export HOSTBOOK_DIR=$T/empty HOSTBOOK_STATE=$T/empty-state
 mkdir -p "$HOSTBOOK_DIR" "$HOSTBOOK_STATE"
