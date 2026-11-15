@@ -38,3 +38,7 @@ Prototype: /Users/duong.vv/works/hostbook-ui-prototype (v3, synthetic UI fixture
 - Module eager extraction committed9732cb9, benchmark reportde95e78: core150/platform17/UI111/import13/TUI/screens all pass; initial eager timings roughly unchanged. Correcting benchmark TMUX isolation and remeasuring snapshots before final decision.
 - Import task plan persisted2026-11-15-import.md; includes explicit dirty-data rollback, commit failure and unsafe source/archive handling checks.
 - CI review accepted all changes through2d6f88c; hosted cold run currently macOS/Ubuntu green, Windows running.
+
+- CI task1 acceptance complete:PR13 runs43697720583 and43698073522 allOSgreen. Windows cold/warm job208/170s, fresh install100.45/46.53s; see ci-hosted.md for exact limits and evidence. No main merge.
+- Sol module review found Windows ln-s copy semantics and normal underscore search incorrectly skipping imports; Terra fixing both with regressions.
+- UI task plan saved2026-11-15-ui.md. Independent Terra form_spike tests direct-edit feasibility only in/tmp/hostbook-form-spike.8ZW7de; no app writes until sequential integration phase.
