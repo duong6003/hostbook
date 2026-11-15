@@ -47,14 +47,14 @@ see [Secrets and security](Secrets-and-security).
 
 Choose the path that matches your setup:
 
-- **First machine** (`Đây là máy đầu tiên`): create a host list and optionally import existing `~/.ssh/config` entries.
-- **Use a remote repository** (`Dùng kho ở máy khác`): clone your existing host list onto this machine.
-- **Host a repository here** (`Tạo kho trên máy này`): create a Git hub on an always-on machine.
+- **Start on this machine** (`Bắt đầu trên máy này`): create a host list and optionally import existing `~/.ssh/config` entries.
+- **Use an existing sync repository** (`Dùng kho đồng bộ có sẵn`): clone your existing host list onto this machine.
+- **Host a sync repository here** (`Tạo kho đồng bộ trên máy này`): create a Git hub on an always-on machine.
 
-First launch initializes the encrypted vault before the optional SSH import. If you decline or cancel that import, your original SSH config remains in place. An accepted import preserves a backup without overwriting an existing backup. Includes, executable Match rules, inherited identity settings, and some ordering that cannot be preserved are rejected; adjust the source before retrying.
+The secure vault encrypts SSH keys and passwords and is required before entering the app. A sync repository is optional and can be connected later. First launch initializes the vault before the optional SSH import. If you decline or cancel that import, your original SSH config remains in place. An accepted import preserves a backup without overwriting an existing backup. Includes, executable Match rules, inherited identity settings, and some ordering that cannot be preserved are rejected; adjust the source before retrying.
 
 The first-run flow also lets you choose an appearance preset. You can change it later
-with `hostbook settings`.
+in **Tools → Appearance**. Press Escape during the first-run appearance selection to choose it later.
 
 ## Add a host
 

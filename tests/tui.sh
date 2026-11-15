@@ -280,11 +280,11 @@ for width in 60 100 200; do
  tmux -L "$socket" send-keys -t ui 'synthetic-password' Enter
  wait_for 'Mã khôi phục'
  tmux -L "$socket" send-keys -t ui Enter
- wait_for 'Kết nối kho ngay'
+ wait_for 'Kết nối kho đồng bộ ngay'
  tmux -L "$socket" send-keys -t ui n   # confirm screens: y/n or ↑↓ enter
  wait_for 'light · right'
  tmux -L "$socket" send-keys -t ui Enter
- wait_for 'enter để bắt đầu'
+ wait_for 'enter để mở danh sách server'
  grep -qx 'theme = light' "$XDG_CONFIG_HOME/hostbook/config"
  grep -qx 'list = cards' "$XDG_CONFIG_HOME/hostbook/config"
  tmux -L "$socket" send-keys -t ui Enter
