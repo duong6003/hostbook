@@ -45,13 +45,12 @@ see [Secrets and security](Secrets-and-security).
 
 ## First launch
 
-Choose the path that matches your setup:
+Setup asks one question at a time. Use the arrow keys and Enter; Escape cancels.
 
-Use the arrow keys to choose a starting option. The text below explains the selected option; Enter continues and Escape cancels. Starting on this machine is selected initially. Search is only needed when browsing a larger list of machines.
-
-- **Start on this machine** (`Bắt đầu trên máy này`): create a host list and optionally import existing `~/.ssh/config` entries.
-- **Use an existing sync repository** (`Dùng kho đồng bộ có sẵn`): clone your existing host list onto this machine.
-- **Host a sync repository here** (`Tạo kho đồng bộ trên máy này`): create a Git hub on an always-on machine.
+1. Choose the machine's role: **Connect to and manage servers** for your personal machine, or **Host a shared sync repository** for a machine other devices will sync with.
+2. For a personal machine, choose **Create a new server list** or **Get data from a sync repository**. New users can start with an empty list; sync can wait.
+3. Create the secure vault when no vault exists, then save its recovery code. The vault protection password is separate from server login passwords. It needs at least ten characters; server passwords retain their existing value and only need to be nonempty.
+4. Optionally import existing SSH entries, connect sync, and choose an appearance preset.
 
 The secure vault encrypts SSH keys and passwords and is required before entering the app. A sync repository is optional and can be connected later. First launch initializes the vault before the optional SSH import. If you decline or cancel that import, your original SSH config remains in place. An accepted import preserves a backup without overwriting an existing backup. Includes, executable Match rules, inherited identity settings, and some ordering that cannot be preserved are rejected; adjust the source before retrying.
 

@@ -102,3 +102,12 @@ The subsequent user test identified that the three-way start screen still expose
 Validation: onboarding 19/19; controls at 44 columns; full screens and TUI suites passed, including complete setup at 60/100/200 columns. Additional real first-run checks at 44×24 passed in vi/en: all three actions, selected explanation, no filter, and entry into vault setup. A quiet 100×24 pointer sample (nine measurements after three warmups, including tmux send/capture) measured old median10.756ms (10.141–11.534) and new10.971ms (10.526–11.924). The preview command uses only a precomputed case and builtin printf, not an app callback. Measurements preceded the final footer wording change; artifacts are in /tmp/hb-onboarding-ux-fglx_igy. Hosted CI has not run this interaction change yet.
 
 Independent review found one fixture mismatch: the native Windows first-run test still stubbed the old menu. It now stubs the compact choice with the local-start index. Scoped review approved the fix; syntax checks passed, but native Windows execution remains pending. The final picker cancellation path and local/remote/hub mappings passed onboarding 19/19 again. This update is prepared for local user testing, not a main merge.
+
+
+### Role-first setup correction
+
+The initial menu mixed machine roles with data sources. Setup now explains and asks the role first (connect/manage servers or host a sync repository), then asks client machines whether to create a server list or retrieve existing synced data. Both use the existing compact choice control; no search or per-selection preview subprocess is needed. The encryption-password screen explicitly distinguishes the vault password (minimum ten characters) from existing server credentials (nonempty, no strength policy). Server password fields no longer advertise a length rule.
+
+Validation: onboarding 21/21, full screen suite and TUI suite passed locally; fresh vi/en launches at 44 columns showed both choices and the password explanation. Updated clone and hub fixtures cover the new branch mapping. A short server password is accepted; a short vault password is rejected. No hosted Windows run for this revision.
+
+The isolated preview launcher passed an explicit missing SSH config to OpenSSH. Reproduced the reported “Can't open user config file” failure; an empty config returns success. The launcher now creates that private file before launch. This is a preview-fixture repair, not a relaxation of application config validation. Existing personal config and vault data were untouched.

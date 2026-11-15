@@ -271,11 +271,13 @@ for width in 60 100 200; do
  start "$width"
  wait_for 'Choose a language'   # the first screen picks the language; Tiếng Việt is preselected from HOSTBOOK_LANG
  tmux -L "$socket" send-keys -t ui Enter
- wait_for 'Bắt đầu thế nào?'
+ wait_for 'Máy này sẽ làm nhiệm vụ gì?'
+ tmux -L "$socket" send-keys -t ui Enter
+ wait_for 'Bạn đã có dữ liệu Hostbook chưa?'
  grep -qx 'lang = vi' "$XDG_CONFIG_HOME/hostbook/config"
  ! grep -q 'Lọc' "$T/screen" || { echo 'FAIL first-run choice must not show a filter'; exit 1; }
  tmux -L "$socket" send-keys -t ui Enter
- wait_for 'Mật khẩu chính'
+ wait_for 'Mật khẩu bảo vệ vault'
  tmux -L "$socket" send-keys -t ui 'synthetic-password' Enter
  wait_for 'Nhập lại'
  tmux -L "$socket" send-keys -t ui 'synthetic-password' Enter

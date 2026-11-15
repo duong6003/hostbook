@@ -41,7 +41,7 @@ cloned_vault(){ (
   cp -R "$T/new/hosts/secrets" "$seed/"
   git -C "$seed" add -A; git -C "$seed" commit -qm vault
   before=$(cat "$seed/secrets/vault.pub")
-  ui_choice(){ echo 1; }; pick_machine(){ echo "file://$seed"; }
+  ui_choice(){ if [ "$1" = "$(t first_role)" ]; then echo 0; else echo 1; fi; }; pick_machine(){ echo "file://$seed"; }
   gum(){ if [ "$1" = spin ]; then while [ "$1" != -- ]; do shift; done; shift; "$@"; else command gum "$@"; fi; }
   ask_new_pw(){ echo unexpected > "$STATE/unexpected"; return 1; }
   vault_identity(){ echo unexpected > "$STATE/unexpected"; return 1; }
@@ -194,10 +194,41 @@ canceled_start_choice(){ (
 ); }
 hub_start_choice(){ (
   case_setup hub_choice
-  ui_choice(){ echo 2; }
+  ui_choice(){ echo 1; }
   make_kho_here(){ : > "$T/hub-selected"; }
   first_run >/dev/null 2>&1 && vault_exists && [ -f "$T/hub-selected" ]
 ); }
+guided_setup_choices(){ (
+  case_setup guided
+  ui_choice(){
+    printf '%s\n' "$1" >> "$T/guided-steps"
+    [ "$#" = 3 ] || return 1
+    echo 0
+  }
+  first_run > "$T/guided-result" 2>&1 || exit 1
+  [ "$(sed -n '1p' "$T/guided-steps")" = "$(t first_role)" ] &&
+  [ "$(sed -n '2p' "$T/guided-steps")" = "$(t first_how)" ]
+); }
+password_prompt_policies(){ (
+  case_setup password_policy
+  . "$T/lib"
+  clear(){ :; }; title(){ :; }; ui_keys(){ :; }
+  gum(){
+    printf '%s\n' "$*" >> "$T/password-headers"
+    printf '%s' 'x'
+  }
+  [ "$(ask_new_pw "$(t pw_login_head)" 1 2>/dev/null)" = x ] || exit 1
+  ! grep -q 'ít nhất' "$T/password-headers" || exit 1
+  : > "$T/password-headers"
+  gum(){
+    printf '%s\n' "$*" >> "$T/password-headers"
+    if [ "$(wc -l < "$T/password-headers")" -eq 1 ]; then printf x; else printf synthetic-password; fi
+  }
+  [ "$(ask_new_pw "$(t vault_master)" 10 2>/dev/null)" = synthetic-password ] &&
+  [ "$(wc -l < "$T/password-headers" | tr -d ' ')" = 3 ] && grep -q 'ít nhất 10' "$T/password-headers"
+); }
+check password_prompt_policies
+check guided_setup_choices
 check machine_picker_controls
 check canceled_start_choice
 check hub_start_choice

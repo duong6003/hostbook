@@ -881,10 +881,11 @@ vault_create(){ # master-password → create the vault and print the recovery co
   recovery_fmt "$rc"
 }
 ask_new_pw(){ # heading minimum-length [intro] → print the password (the caller sets the breadcrumb with "at")
-  local a b e=
+  local a b e= head=$1
+  [ "$2" -le 1 ] || head=$(t pw_head_min "$1" "$2")
   while :; do
     { clear; title "$UI_AT"; [ -z "${3:-}" ] || { dimw "$3"; echo; }; [ -z "$e" ] || err "$e"; ui_keys "enter:$(t key_confirm)" "esc:$(t key_cancel)"; printf '\n\n'; } >&2
-    a=$(gum input --password --placeholder "" --header "$(t pw_head_min "$1" "$2")") || return 1
+    a=$(gum input --password --placeholder "" --header "$head") || return 1
     [ ${#a} -ge "$2" ] || { e=$(t err_pw_short "$2"); continue; }
     b=$(gum input --password --placeholder "" --header "$(t pw_again)") || return 1
     [ "$a" = "$b" ] && { printf '%s' "$a"; return 0; }; e=$(t err_pw_mismatch); done
@@ -2621,19 +2622,17 @@ update(){
   else dim "$(t up_nogit "$REPO_URL")"; fi
 }
 first_run(){ # ~/ssh-hosts does not exist yet
-  local i m url n initial= newcfg backup hint quoted preview='case {1} in '
-  set_language "$(t set_language)" || return 1   # first: the language, preselected from the locale
+  local i m url initial= newcfg backup role
+  set_language "$(t set_language)" || return 1
   at "$(t first_title)"
-  n=0
-  for hint in act_first_new_hint act_first_remote_hint act_first_hub_hint; do
-    printf -v quoted '%q' "$(t "$hint")"
-    preview="$preview$n) printf '%s\\n' $quoted;; "; n=$((n+1))
-  done
-  preview="${preview}esac"
-  i=$(UI_HEAD="$CU$CB$(t first_welcome)$C0"$'\n'"$(t first_none)" \
-    UI_POS=1 UI_PREVIEW="$preview" UI_PREVIEW_WINDOW='down,3,wrap' \
-    UI_FOOT="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_continue)" "esc:$(t key_cancel)")" \
-    ui_choice "$(t first_how)" "$(t act_first_new)" "$(t act_first_remote)" "$(t act_first_hub)") || return 1
+  role=$(UI_HEAD="$(t first_role_intro)" \
+    ui_choice "$(t first_role)" "$(t first_role_client)" "$(t first_role_hub)") || return 1
+  if [ "$role" = 1 ]; then
+    i=2
+  else
+    i=$(UI_HEAD="$(t first_data_intro)" \
+      ui_choice "$(t first_how)" "$(t act_first_new)" "$(t act_first_remote)") || return 1
+  fi
   case $i in
     1) m=$(pick_machine "$(t first_pick_machine)" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
