@@ -1,0 +1,77 @@
+{
+  "method": "9 samples after 3 warmups; private tmux send plus capture polling, 5ms poll; no tracing; includes tmux/process overhead.",
+  "results": [
+    {
+      "columns": 44,
+      "key": "char",
+      "samples_ms": [
+        17.854,
+        17.888,
+        17.762,
+        17.182,
+        19.92,
+        16.217,
+        14.354,
+        18.774,
+        15.064
+      ],
+      "median_ms": 17.762,
+      "min_ms": 14.354,
+      "max_ms": 19.92
+    },
+    {
+      "columns": 44,
+      "key": "tab",
+      "samples_ms": [
+        14.633,
+        15.697,
+        18.551,
+        18.196,
+        17.642,
+        17.272,
+        16.039,
+        15.988,
+        15.221
+      ],
+      "median_ms": 16.039,
+      "min_ms": 14.633,
+      "max_ms": 18.551
+    },
+    {
+      "columns": 100,
+      "key": "char",
+      "samples_ms": [
+        17.681,
+        17.604,
+        16.244,
+        15.735,
+        15.078,
+        15.357,
+        17.876,
+        17.805,
+        17.697
+      ],
+      "median_ms": 17.604,
+      "min_ms": 15.078,
+      "max_ms": 17.876
+    },
+    {
+      "columns": 100,
+      "key": "tab",
+      "samples_ms": [
+        16.674,
+        18.442,
+        15.898,
+        17.574,
+        18.173,
+        16.994,
+        17.553,
+        18.869,
+        19.612
+      ],
+      "median_ms": 17.574,
+      "min_ms": 15.898,
+      "max_ms": 19.612
+    }
+  ]
+}
