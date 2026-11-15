@@ -41,7 +41,7 @@ cloned_vault(){ (
   cp -R "$T/new/hosts/secrets" "$seed/"
   git -C "$seed" add -A; git -C "$seed" commit -qm vault
   before=$(cat "$seed/secrets/vault.pub")
-  ui_menu(){ echo 0; }; pick_machine(){ echo "file://$seed"; }
+  ui_choice(){ echo 1; }; pick_machine(){ echo "file://$seed"; }
   gum(){ if [ "$1" = spin ]; then while [ "$1" != -- ]; do shift; done; shift; "$@"; else command gum "$@"; fi; }
   ask_new_pw(){ echo unexpected > "$STATE/unexpected"; return 1; }
   vault_identity(){ echo unexpected > "$STATE/unexpected"; return 1; }
@@ -168,6 +168,39 @@ match_exec_rejected(){ (
   printf 'Match "exec" "touch %s"\n' "$T/match-executed" > "$T/match.conf"
   ! import_config_guard "$T/match.conf" && [ ! -e "$T/match-executed" ]
 ); }
+# A short destination list is a choice; a discovered list can still be searched.
+machine_picker_controls(){ (
+  case_setup picker
+  local count=0 selected=1 result
+  run_progress(){ local j; : > "$3"; for ((j=1;j<=count;j++)); do printf 'node%s.example|fixture\n' "$j" >> "$3"; done; }
+  ui_choice(){ printf choice > "$T/picker-kind"; printf '%s' "$selected"; }
+  ui_menu(){ printf menu > "$T/picker-kind"; printf '%s' "$selected"; }
+  ui_field(){ printf 'https://example.invalid/hosts.git'; }
+  result=$(pick_machine Pick url) || exit 1
+  [ "$result" = https://example.invalid/hosts.git ] && [ "$(cat "$T/picker-kind")" = choice ] || exit 1
+  count=2
+  result=$(pick_machine Pick url) || exit 1
+  [ "$result" = "$ME@node2.example" ] && [ "$(cat "$T/picker-kind")" = choice ] || exit 1
+  count=4; selected=2
+  result=$(pick_machine Pick url) || exit 1
+  [ "$result" = "$ME@node3.example" ] && [ "$(cat "$T/picker-kind")" = menu ] || exit 1
+  count=0; ui_choice(){ return 1; }
+  ! pick_machine Pick url
+); }
+canceled_start_choice(){ (
+  case_setup canceled_choice
+  ui_choice(){ return 1; }
+  ! first_run >/dev/null 2>&1 && [ ! -d "$DIR/.git" ] && ! vault_started
+); }
+hub_start_choice(){ (
+  case_setup hub_choice
+  ui_choice(){ echo 2; }
+  make_kho_here(){ : > "$T/hub-selected"; }
+  first_run >/dev/null 2>&1 && vault_exists && [ -f "$T/hub-selected" ]
+); }
+check machine_picker_controls
+check canceled_start_choice
+check hub_start_choice
 check new_install
 check canceled_install
 if [ -d "$T/new/hosts/secrets" ]; then check cloned_vault; else fail=$((fail+1)); echo 'FAIL  cloned_vault: new-install fixture has no vault'; fi

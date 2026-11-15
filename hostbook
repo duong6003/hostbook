@@ -2143,7 +2143,7 @@ discover(){
   rm -rf "$tmp"
 }
 pick_machine(){ # header [url] [intro] → print one "user@host" line (or a git URL if allowed) to stdout; screens go to the terminal because callers use $(...)
-  local header=$1 allow_url=${2:-} intro=${3:-} items=() kinds=() vals=() x i m= e= base=$UI_AT d f head
+  local header=$1 allow_url=${2:-} intro=${3:-} items=() kinds=() vals=() choices=() x i m= e= base=$UI_AT d f head picker=ui_menu
   d=$(tmpd) || return 1
   { clear; title "${base:+$base|}$(t disc_title)"; dimw "$(t disc_intro)"; echo; } >&2   # Progress: what runs, elapsed / limit, ctrl-c
   run_progress "$(t disc_running)" 8 "$d/found" bash "$SELF" _discover; [ $? = 130 ] && { UI_AT=$base; rm -rf "${d:?}"; return 1; }
@@ -2153,7 +2153,11 @@ pick_machine(){ # header [url] [intro] → print one "user@host" line (or a git 
   items+=("#$(t sec_other)" "$(t act_machine_other)|$(t act_machine_other_hint "$ME")"); kinds+=(a); vals+=("")
   [ -z "$allow_url" ] || { items+=("$(t act_machine_url)|$(t act_machine_url_hint)"); kinds+=(u); vals+=(""); }
   head=${intro:+$CD$intro$C0}; [ ${#kinds[@]} -gt 1 ] || head="${head:+$head$NL}$CD$(t disc_none)$C0"
-  i=$(UI_HEAD=$head ui_menu "$header" "${items[@]}") || { rm -rf "${d:?}"; return 1; }
+  if [ ${#kinds[@]} -le 5 ]; then
+    picker=ui_choice
+    for x in "${items[@]}"; do case $x in \#*) ;; *) choices+=("$x");; esac; done
+  else choices=("${items[@]}"); fi
+  i=$(UI_HEAD=$head "$picker" "$header" "${choices[@]}") || { rm -rf "${d:?}"; return 1; }
   rm -rf "${d:?}"
   case ${kinds[$i]} in
     u) at "${base:+$base|}$(t act_machine_url)"
@@ -2218,7 +2222,7 @@ make_kho_here(){
   if is_windows; then clear; title "$UI_AT"; warn "$(t hub_win)"; dimw "  $(t hub_win_fix)"; pause; return 1; fi
   while ! port_open 127.0.0.1 22; do   # Result with a next step: turn SSH on, then check again
     if is_mac; then how=$(t hub_ssh_mac); else how=$(t hub_ssh_linux); fi
-    i=$(UI_HEAD="$CY$ICON_WARN $(t hub_ssh_off)$C0$NL  $CB$how$C0${note:+$NL $NL$note}" ui_menu "$(t hub_ssh_q)" "$(t act_hub_check)") || return 1
+    i=$(UI_HEAD="$CY$ICON_WARN $(t hub_ssh_off)$C0$NL  $CB$how$C0${note:+$NL $NL$note}" ui_choice "$(t hub_ssh_q)" "$(t act_hub_check)") || return 1
     note="$CR$ICON_ERR $(t err_hub_ssh)$C0"
   done
   steps="$CG$ICON_OK$C0 $(t hub_ssh_ok)"
@@ -2231,7 +2235,7 @@ make_kho_here(){
   first=${addrs%% *}
   head="$steps$NL $NL$CG$CB$(t hub_ready)$C0$NL$(t hub_addrs "${addrs% }")$NL$(t hub_auto)$NL$CD$(t hub_vpn)$C0"
   while :; do
-    case $(UI_HEAD=$head ui_menu "$(t hub_next)" "$(t act_hub_done)" "$(t act_hub_copy)|$first") in
+    case $(UI_HEAD=$head ui_choice "$(t hub_next)" "$(t act_hub_done)" "$(t act_hub_copy)|$first") in
       1) printf '%s' "$first" | copy && head="$head$NL $NL$CG$ICON_OK$C0 $(t hub_copied "$first")";;
       *) break;;
     esac
@@ -2617,12 +2621,21 @@ update(){
   else dim "$(t up_nogit "$REPO_URL")"; fi
 }
 first_run(){ # ~/ssh-hosts does not exist yet
-  local i m url n initial= newcfg backup
+  local i m url n initial= newcfg backup hint quoted preview='case {1} in '
   set_language "$(t set_language)" || return 1   # first: the language, preselected from the locale
   at "$(t first_title)"
-  i=$(UI_HEAD="$CU$CB$(t first_welcome)$C0"$'\n'"$(t first_none)" ui_menu "$(t first_how)" "$(t act_first_remote)|$(t act_first_remote_hint)" "$(t act_first_new)|$(t act_first_new_hint)" "$(t act_first_hub)|$(t act_first_hub_hint)") || return 1
+  n=0
+  for hint in act_first_new_hint act_first_remote_hint act_first_hub_hint; do
+    printf -v quoted '%q' "$(t "$hint")"
+    preview="$preview$n) printf '%s\\n' $quoted;; "; n=$((n+1))
+  done
+  preview="${preview}esac"
+  i=$(UI_HEAD="$CU$CB$(t first_welcome)$C0"$'\n'"$(t first_none)" \
+    UI_POS=1 UI_PREVIEW="$preview" UI_PREVIEW_WINDOW='down,3,wrap' \
+    UI_FOOT="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_continue)" "esc:$(t key_cancel)")" \
+    ui_choice "$(t first_how)" "$(t act_first_new)" "$(t act_first_remote)" "$(t act_first_hub)") || return 1
   case $i in
-    0) m=$(pick_machine "$(t first_pick_machine)" url) || return 1
+    1) m=$(pick_machine "$(t first_pick_machine)" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
        GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "$(t first_cloning)" -- git clone -q "$url" "$(native_path "$DIR")" || { err "$(t err_clone "$url")"; return 1; };;
     *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
@@ -2662,7 +2675,7 @@ first_run(){ # ~/ssh-hosts does not exist yet
   migrate_keys
   [ "$i" = 2 ] && make_kho_here
   at "$(t first_title)"
-  [ "$i" = 1 ] && ui_confirm --affirmative "$(t first_kho_yes)" --negative "$(t first_later)" "$(t first_kho_q)" && connect_kho
+  [ "$i" = 0 ] && ui_confirm --affirmative "$(t first_kho_yes)" --negative "$(t first_later)" "$(t first_kho_q)" && connect_kho
   cfg_set list cards
   local pos=1; case ${COLORFGBG:-} in 7|15|*\;7|*\;15) pos=6;; esac
   setting_pick preset "$(t first_theme_head)" "$pos" || :

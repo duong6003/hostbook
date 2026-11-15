@@ -47,6 +47,8 @@ see [Secrets and security](Secrets-and-security).
 
 Choose the path that matches your setup:
 
+Use the arrow keys to choose a starting option. The text below explains the selected option; Enter continues and Escape cancels. Starting on this machine is selected initially. Search is only needed when browsing a larger list of machines.
+
 - **Start on this machine** (`Bắt đầu trên máy này`): create a host list and optionally import existing `~/.ssh/config` entries.
 - **Use an existing sync repository** (`Dùng kho đồng bộ có sẵn`): clone your existing host list onto this machine.
 - **Host a sync repository here** (`Tạo kho đồng bộ trên máy này`): create a Git hub on an always-on machine.

@@ -25,6 +25,13 @@ k Enter; wait_done
 [ "$(cat "$T/status")" = 0 ] && [ "$(cat "$T/result")" = 1 ] || { echo 'FAIL current choice'; exit 1; }
 end_ui
 echo 'PASS compact choice preselection and apply'
+start 'UI_HEAD="First context line${NL}Second context line${NL}Third context line${NL}Fourth context line" ui_choice Pick alpha beta gamma'
+wait_text 'Fourth context line'; wait_text gamma; wait_text 'esc cancel'
+! grep -q 'Filter' "$T/screen" || { echo 'FAIL context choice shows search'; exit 1; }
+k Down Down Enter; wait_done
+[ "$(cat "$T/result")" = 2 ] || { echo 'FAIL context hid a choice'; exit 1; }
+end_ui
+echo 'PASS compact choice reserves room for context and actions'
 start 'ui_toggle Switch off'
 wait_text '[Off]'
 [ -z "${HOSTBOOK_TEST_ARTIFACTS:-}" ] || cp "$T/screen" "$HOSTBOOK_TEST_ARTIFACTS/toggle-${CONTROL_WIDTH:-60}.txt"

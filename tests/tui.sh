@@ -273,7 +273,8 @@ for width in 60 100 200; do
  tmux -L "$socket" send-keys -t ui Enter
  wait_for 'Bắt đầu thế nào?'
  grep -qx 'lang = vi' "$XDG_CONFIG_HOME/hostbook/config"
- tmux -L "$socket" send-keys -t ui Down Enter
+ ! grep -q 'Lọc' "$T/screen" || { echo 'FAIL first-run choice must not show a filter'; exit 1; }
+ tmux -L "$socket" send-keys -t ui Enter
  wait_for 'Mật khẩu chính'
  tmux -L "$socket" send-keys -t ui 'synthetic-password' Enter
  wait_for 'Nhập lại'

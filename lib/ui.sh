@@ -178,11 +178,14 @@ ui_menu(){
 }
 # Compact single-choice list. Values remain zero-based indices, like ui_menu.
 ui_choice(){
-  local header=$1 x i=0 list= height rows out; shift
+  local header=$1 x i=0 list= height rows out head rest; shift
   for x in "$@"; do list="$list$i$TAB${x/|/  }$NL"; i=$((i+1)); done
-  rows=$(term_rows); height=$((i+9)); [ -z "${UI_PREVIEW:-}" ] || [ "$height" -ge 22 ] || height=22
+  head=$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")
+  rows=$(term_rows); height=$((i+9)); rest=$head
+  while [[ $rest == *"$NL"* ]]; do height=$((height+1)); rest=${rest#*"$NL"}; done
+  [ -z "${UI_PREVIEW:-}" ] || [ "$height" -ge 22 ] || height=22
   [ "$height" -le "$rows" ] || height=$rows
-  out=$(printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --height="$height" --no-input \
+  out=$(printf '%s' "$list" | ui_fzf "$head" --height="$height" --no-input \
     --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --highlight-line \
     --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_cancel)}")}" \
     --bind 'esc:abort,tab:down,btab:up,left:up,right:down' ${UI_POS:+--bind "load:pos($UI_POS)"} \

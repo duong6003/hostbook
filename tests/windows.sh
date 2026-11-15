@@ -42,7 +42,7 @@ echo 'ok    native fzf CLI filter'
 (
   unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-  set_language(){ :; }; ui_menu(){ echo 1; }; ui_confirm(){ return 1; }; setting_pick(){ return 1; }
+  set_language(){ :; }; ui_choice(){ echo 0; }; ui_confirm(){ return 1; }; setting_pick(){ return 1; }
   clear(){ :; }; box(){ :; }; title(){ :; }; pause(){ :; }
   # The app deliberately uses set -u without errexit; run this sourced flow with the same semantics.
   first_run || { echo 'FAIL first-machine setup'; exit 1; }

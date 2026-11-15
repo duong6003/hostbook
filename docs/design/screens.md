@@ -56,6 +56,8 @@ Multiline input is a native `gum write` screen: gum does not expose a live outer
 
 Searchable menus with choices show the live match count and a persistent localized Ctrl-U clear-search hint. Ctrl-U clears the entire query; empty file-picker directories retain their distinct empty-folder message.
 
+First-run setup uses compact choices, not a searchable action menu. Starting locally is the first and initially selected option; a small preview explains the focused option, and Enter continues. Language and appearance keep their compact controls, passwords keep their input forms, and optional actions keep their confirmations. Machine destinations use compact choices for up to five options and search for larger lists; hub setup actions are also compact. There is no overall wizard progress indicator. Compact-choice height includes wrapped context lines so the explanation does not hide actions.
+
 When a screen only reports that something finished, it does not stay open: it returns to the search screen and calls
 `flash` (shown in the header there).
 
