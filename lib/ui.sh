@@ -149,8 +149,8 @@ ui_multiline(){
 # UI_QUERY enables query input/output; include esc in UI_EXPECT when cancellation must preserve it.
 ui_menu(){
   local header=$1; shift; local x lab desc sec= cols lw=0 sw=0 i=0 pad spad line list= danger
-  local -a query_opts; query_opts=()
-  local esc_bind='esc:abort'
+  local -a query_opts match_opts; query_opts=(); match_opts=()
+  local esc_bind='esc:abort' foot
   if [ "${UI_QUERY+x}" ]; then query_opts=(--print-query --query="$UI_QUERY"); esc_bind=; fi
   cols=$(term_cols)
   for x in "$@"; do case $x in \#*) continue;; esac; x=${x#!}; x=${x%%|*}; [ ${#x} -gt $lw ] && lw=${#x}; done
@@ -164,9 +164,14 @@ ui_menu(){
     line="$line$danger$lab$C0${desc:+$pad$CD$desc$C0}"; list="$list$line"$'\n'
     sec=; i=$((i+1))
   done
+  foot=${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_back)}")}
+  if [ -n "$list" ]; then
+    foot="$foot$NL$(t menu_search_recovery)"
+    match_opts=(--info=right --bind 'ctrl-u:clear-query')
+  fi
   printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
     --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" --highlight-line \
-    --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_back)}")}" ${esc_bind:+--bind "$esc_bind"} ${query_opts[@]+"${query_opts[@]}"} \
+    --footer="$foot" ${esc_bind:+--bind "$esc_bind"} ${query_opts[@]+"${query_opts[@]}"} ${match_opts[@]+"${match_opts[@]}"} \
     ${UI_POS:+--bind "load:pos($UI_POS)"} ${UI_EXPECT:+--expect="$UI_EXPECT"} \
     ${UI_MULTI:+--multi --marker='✓' --bind 'tab:toggle+down' --bind 'enter:transform:[ "$FZF_SELECT_COUNT" = 0 ] && echo "become(true)" || echo accept'} \
     ${UI_SELECT:+--bind "load:$(local r=; for i in $UI_SELECT; do r="$r+pos($i)+select"; done; printf '%s' "${r#+}+first")"}
