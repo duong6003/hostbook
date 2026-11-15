@@ -153,7 +153,7 @@ lang_load(){
   case $l in vi|en) ;; *) l=;; esac   # a name is used as a file name below: only known languages
   if [ -z "$l" ]; then case ${LC_ALL:-${LC_MESSAGES:-${LANG:-}}} in vi*) l=vi;; *) l=en;; esac; fi
   # every language file defines every key (tests/screens.sh, S11), so one file is enough
-  UI_LANG=$l; if [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; else . "$d/vi.sh"; UI_LANG=vi; fi
+  UI_LANG=$l; if [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; elif [ -f "$d/vi.sh" ]; then . "$d/vi.sh"; UI_LANG=vi; fi   # no lang dir (a copied script): keys show as ‹L_…›, nothing fails
 }
 t(){ # key [args…] → text for key (printf format when arguments follow); an unknown key prints ‹L_key›
   local _k=L_$1; shift

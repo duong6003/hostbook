@@ -101,8 +101,10 @@ worker(){
   menu_pick(){ typ "$1"; sleep .4; k Enter; }   # filter a menu by the item's label, then enter
   # the checks every screen goes through. $1 = name, $2 = kind (normal | progress | report)
   check(){
-    local name=$1 kind=${2:-normal} f=$ARTIFACTS/$lang-$width-$bd-$1.txt bad='' line first esc
-    snap; cp "$cap" "$f"
+    local name=$1 kind=${2:-normal} f=$ARTIFACTS/$lang-$width-$bd-$1.txt bad='' line first esc i=0
+    # a loaded CI runner can catch fzf mid-redraw: wait (bounded) for the frame's first line before judging it
+    while [ "$i" -lt 30 ]; do snap; case $(sed -n 1p "$cap") in *'hostbook ›'*) break;; esac; sleep .1; i=$((i+1)); done
+    cp "$cap" "$f"
     first=$(sed -n 1p "$cap")
     case $first in *'hostbook ›'*) ;; *) bad="$bad S1 (dòng đầu: '$first')";; esac
     case $kind in
