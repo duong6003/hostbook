@@ -58,7 +58,7 @@ private=1
 if is_windows; then [ "${HOSTBOOK_PRIVATE_STATE:-}" != "$STATE" ] || private=
 else case ${1:-} in _*|--version|-v|version) [ -d "$STATE" ] && [ -O "$STATE" ] && private=;; esac; fi
 if [ -n "$private" ]; then
-  private_dir "$STATE" || { echo "Không bảo vệ được thư mục state của hostbook" >&2; exit 1; }
+  private_dir "$STATE" || STATE_FAIL=1   # reported once the language is loaded (bottom of this file)
   if is_windows; then export HOSTBOOK_PRIVATE_STATE=$STATE; fi
 fi
 [ -f "$HIST" ] || { cp "$HOME/.local/state/sshm/history" "$HIST" 2>/dev/null || : > "$HIST"; }   # preserve history from the sshm prototype
@@ -369,7 +369,7 @@ cfg_errors(){
     i=$((i+1)); line=${line%$'\r'}; case $line in ''|\#*) continue;; esac
     k=$(printf '%s' "${line%%=*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'); case $k in ''|\#*) continue;; esac
     v=$(printf '%s' "${line#*=}" | sed 's/[[:space:]]# .*$//;s/^[[:space:]]*//;s/[[:space:]]*$//')
-    cfg_valid "$k" "$v" || printf '%s dòng %s: %s = %s không hợp lệ\n' "$CFG" "$i" "$k" "$v"
+    cfg_valid "$k" "$v" || t cfg_bad_line "$CFG" "$i" "$k" "$v"; echo
   done < "$CFG"
 }
 theme_names(){ printf '%s\n' hostbook dracula nord gruvbox solarized-dark solarized-light light high-contrast terminal; }
@@ -407,11 +407,11 @@ theme_check(){ # never source/eval user-written files
         else valid_color "$v" || bad=1; fi;;
       *) bad=1;;
     esac
-    if [ "$bad" = 1 ]; then printf '%s dòng %s: %s không hợp lệ\n' "$1" "$i" "$line" >&2; return 1; fi
+    if [ "$bad" = 1 ]; then { t theme_bad_line "$1" "$i" "$line"; echo; } >&2; return 1; fi
     seen="$seen$k "
   done < "$1"
   for k in accent title dim ok warn err border sel_bg chip_fg chips base; do
-    case $seen in *" $k "*) ;; *) printf '%s: thiếu %s\n' "$1" "$k" >&2; return 1;; esac
+    case $seen in *" $k "*) ;; *) { t theme_missing "$1" "$k"; echo; } >&2; return 1;; esac
   done
 }
 esc_fg(){ # color [var]
@@ -550,7 +550,8 @@ list_width(){ # [var]
   if [ -n "${1:-}" ]; then printf -v "$1" '%s' "$w"; else echo "$w"; fi
 }
 list_data(){ # key, name, project, IP, user, tags, description, secret, last use / secondary line
-  local s alive line only=${HOSTBOOK_ONLY:-} IDX=$IDX GRP=$GRP
+  local s alive line only=${HOSTBOOK_ONLY:-} IDX=$IDX GRP=$GRP f_sess f_sess_h f_grp
+  tv f_sess list_session; tv f_sess_h list_session_hint; tv f_grp list_group   # once, not per row (hot path)
   if [ -n "$only" ] && [ -f "$only" ]; then
     awk -F'\t' 'NR==FNR {w[$1]=1; next} ($1 in w)' "$only" "$IDX" > "$STATE/index.only"; IDX=$STATE/index.only; GRP=/dev/null
   fi
@@ -558,12 +559,12 @@ list_data(){ # key, name, project, IP, user, tags, description, secret, last use
     for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep '^hb-'); do
       alive=$(tmux list-panes -s -t "$s" -F '#{pane_dead}' 2>/dev/null | grep -c 0)
       [ "$alive" != 0 ] || continue
-      printf 's:%s\t%s\t\t\t\t\tphiên tmux · %s ô còn kết nối\t\tenter để vào lại\n' "$s" "${s#hb-}" "$alive"
+      printf "s:%s\t%s\t\t\t\t\t$f_sess\t\t%s\n" "$s" "${s#hb-}" "$alive" "$f_sess_h"
     done
   fi
   if [ -f "$GRP" ]; then while IFS= read -r line; do
     [ -n "$line" ] || continue; group_line "$line"; set -- $GH
-    printf 'g:%s\t%s\t\t\t\t\tnhóm · %s server · %s\t\t%s\n' "$GN" "$GN" "$#" "$(mode_label "$GM")" "$GH"
+    printf "g:%s\t%s\t\t\t\t\t$f_grp\t\t%s\n" "$GN" "$GN" "$#" "$(mode_label "$GM")" "$GH"
   done < "$GRP"; fi
   awk -F'\t' -v now="$(date +%s)" '
     function ago(t, d){if(!t)return "-"; d=now-t; return d<3600?(d<120?1:int(d/60)) "m":d<86400?int(d/3600) "h":int(d/86400) "d"}
@@ -658,7 +659,7 @@ fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eva
   local border preview
   border=$(cfg border rounded); preview=$(cfg preview right)
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
-  else printf '%s\n' "--style=full:$border" '--input-label= Tìm ' "--list-label= $(wc -l < "$IDX" | tr -d ' ') server " '--preview-label= Chi tiết '; fi
+  else printf '%s\n' "--style=full:$border" "--input-label= $(t fzf_find) " "--list-label= $(t fzf_servers "$(wc -l < "$IDX" | tr -d ' ')") " "--preview-label= $(t fzf_detail) "; fi
   case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
   printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
@@ -676,9 +677,12 @@ cmd_preview(){
        while IFS= read -r l; do [ "${l%%$TAB*}" = "$n" ] && { r=$l; break; }; done < "$IDX"   # key path: test it here, never read it in awk (directory/FIFO)
        if [ -n "${r:-}" ]; then for i in 1 2 3 4 5 6; do r=${r#*$TAB}; done; r=${r%%$TAB*}; [ -n "$r" ] && [ -f "${r/#\~/$HOME}" ] && kx=1; fi
        awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" -v cy="$CY" -v cg="$CG" -v iprod="$ICON_PROD" \
-         -v iok="$ICON_OK" -v ierr="$ICON_ERR" -v kx="$kx" -v home="$HOME" -v sec="$SEC" -v hist="$HIST" -v lc="$lc" '
+         -v iok="$ICON_OK" -v ierr="$ICON_ERR" -v kx="$kx" -v home="$HOME" -v sec="$SEC" -v hist="$HIST" -v lc="$lc" \
+         -v w_am="$L_ago_min" -v w_ah="$L_ago_hour" -v w_ad="$L_ago_day" -v w_now="$L_ago_now" -v w_nodesc="$L_pv_nodesc" -v w_notag="$L_pv_notag" \
+         -v w_login="$L_pv_login" -v w_pw="$L_pv_pw" -v w_key="$L_pv_key" -v w_gone="$L_pv_login_gone" -v w_local="$L_pv_login_local" \
+         -v w_never="$L_pv_never" -v w_last="$L_pv_last" -v w_cnone="$L_pv_chk_none" -v w_cok="$L_pv_chk_ok" -v w_cskip="$L_pv_chk_skip" -v w_cbad="$L_pv_chk_bad" '
          function tilde(s,  o, i) { if (home=="") return s; while ((i=index(s,home))) { o=o substr(s,1,i-1) "~"; s=substr(s,i+length(home)) } return o s }
-         function ago(d) { if (d<0) d=0; return d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày" }
+         function ago(d) { if (d<0) d=0; return d<3600? sprintf(w_am, int(d/60)) : d<86400? sprintf(w_ah, int(d/3600)) : sprintf(w_ad, int(d/86400)) }
          function meta(f, k,  l, v) { while ((getline l < f) > 0) if (index(l, k "=")==1) { v=substr(l, length(k)+2); break }; close(f); return v }
          BEGIN { srand(); now=srand() }   # srand() returns the previous seed, which is the current time: no date fork
          { sub(/\r$/,"") } $1==n { r=$0; split($0, f, "\t"); exit }
@@ -686,8 +690,8 @@ cmd_preview(){
            if (r=="") exit
            prod=(" " f[8] " " ~ / prod /)
            o=sprintf("%s%s%s%s\n", cb, f[1], c0, (prod? "  " cr cb iprod " PROD" c0 : ""))
-           o=o sprintf("%s%s%s\n", cd, (f[9]==""?"(chưa có mô tả)":f[9]), c0)
-           t=f[8]; gsub(/ /," #",t); o=o sprintf("%s%s%s\n\n", cu, (f[8]==""?"(chưa có tag)":"#" t), c0)
+           o=o sprintf("%s%s%s\n", cd, (f[9]==""?w_nodesc:f[9]), c0)
+           t=f[8]; gsub(/ /," #",t); o=o sprintf("%s%s%s\n\n", cu, (f[8]==""?w_notag:"#" t), c0)
            o=o sprintf("%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, f[1], cd, c0, f[3], cd, c0, f[4])
            if (f[5]!="22") o=o sprintf("  %sPort%s %s\n", cd, c0, f[5])
            if (f[6]!="") o=o sprintf("  %sProxyJump%s %s\n", cd, c0, f[6])
@@ -697,30 +701,30 @@ cmd_preview(){
            ps=f[12]
            if (ps!="") {
              mf=sec "/" ps ".meta"
-             if ((getline x < mf) >= 0) { close(mf); ty=meta(mf, "type"); lb=(ty=="password" ? "mật khẩu" : "key " meta(mf, "keytype"))
-               printf "%sĐăng nhập:%s %s %s(%s)%s\n", cd, c0, ps, cd, lb, c0 }
-             else printf "%sĐăng nhập: secret %s không còn trong kho secret%s\n", cr, ps, c0
-           } else if (kx) printf "%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n", cy, c0
+             if ((getline x < mf) >= 0) { close(mf); ty=meta(mf, "type"); lb=(ty=="password" ? w_pw : sprintf(w_key, meta(mf, "keytype")))
+               printf "%s%s%s %s %s(%s)%s\n", cd, w_login, c0, ps, cd, lb, c0 }
+             else printf "%s" sprintf(w_gone, ps) "%s\n", cr, c0
+           } else if (kx) printf "%s%s%s\n", cy, w_local, c0
            while ((getline l < hist) > 0) { split(l, h, "\t"); if (h[2]==n) { c++; if (h[1]>last) last=h[1] } }
-           if (!c) printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0
-           else printf "%sLần gần nhất: %s · %d lần%s\n", cd, ago(now-last) " trước", c, c0
+           if (!c) printf "%s%s%s\n", cd, w_never, c0
+           else printf "%s" sprintf(w_last, ago(now-last), c) "%s\n", cd, c0
            while ((getline l < lc) > 0) { split(l, h, "\t"); if (h[1]==n) { st=h[2]; why=h[3]; ep=h[4]; break } }
-           when=(ep=="" ? "" : " · " (now-ep<60 ? "vừa xong" : ago(now-ep) " trước"))   # old 3-column rows have no time
-           if (st=="") printf "%s→ Kiểm tra kết nối%s\n", cd, c0
-           else if (st=="ok") printf "%s%s Kiểm tra lần cuối: vào được%s%s\n", cg, iok, when, c0
-           else if (st=="skip") { sub(/^bỏ qua: /, "", why); printf "%s· Kiểm tra lần cuối: bỏ qua, %s%s%s\n", cd, why, when, c0 }
-           else printf "%s%s Kiểm tra lần cuối: không vào được (%s)%s%s\n", cy, ierr, why, when, c0
+           when=(ep=="" ? "" : " · " (now-ep<60 ? w_now : ago(now-ep)))   # old 3-column rows have no time
+           if (st=="") printf "%s%s%s\n", cd, w_cnone, c0
+           else if (st=="ok") printf "%s%s %s%s%s\n", cg, iok, w_cok, when, c0
+           else if (st=="skip") { sub(/^[^:]*: /, "", why); printf "%s· %s%s%s\n", cd, sprintf(w_cskip, why), when, c0 }   # the stored reason starts "<word>: " in the language it was checked in
+           else printf "%s%s %s%s%s\n", cy, ierr, sprintf(w_cbad, why), when, c0
          }' "$IDX" ;;
     g) local h; ensure_index
-       printf '%s%s%s\n%sNhóm · mở bằng: %s%s\n\n' "$CU$CB" "$n" "$C0" "$CD" "$(mode_label "$(group_field "$n" 2)")" "$C0"
+       printf '%s%s%s\n%s' "$CU$CB" "$n" "$C0" "$CD"; t pv_group "$(mode_label "$(group_field "$n" 2)")"; printf '%s\n\n' "$C0"
        for h in $(group_field "$n" 3); do
-         if ! host_exists "$h"; then printf '  %s%s  đã bị xoá%s\n' "$CD" "$h" "$C0"
+         if ! host_exists "$h"; then printf '  %s%s  %s%s\n' "$CD" "$h" "$L_pv_removed" "$C0"
          elif is_prod "$h"; then printf '  %s%s%s  %s%s%s\n' "$CR" "$h" "$C0" "$CD" "$(host_field "$h" 3)" "$C0"
          else printf '  %s  %s%s%s\n' "$h" "$CD" "$(host_field "$h" 3)" "$C0"; fi; done
-       printf '\n%s→ để đổi kiểu mở hoặc xoá nhóm%s\n' "$CD" "$C0" ;;
-    s) printf '%s%s%s\n%sPhiên tmux đang chạy nền. Đóng terminal không mất phiên.%s\n\n' "$CG$CB" "${n#hb-}" "$C0" "$CD" "$C0"
-       tmux list-panes -s -t "$n" -F '  #{pane_title}#{?pane_dead, (đã thoát),}' 2>/dev/null
-       printf '\n%senter vào lại · → để đóng hẳn%s\n' "$CD" "$C0" ;;
+       printf '\n%s%s%s\n' "$CD" "$L_pv_group_hint" "$C0" ;;
+    s) printf '%s%s%s\n%s%s%s\n\n' "$CG$CB" "${n#hb-}" "$C0" "$CD" "$L_pv_sess" "$C0"
+       tmux list-panes -s -t "$n" -F "  #{pane_title}#{?pane_dead, ($L_pv_exited),}" 2>/dev/null
+       printf '\n%s%s%s\n' "$CD" "$L_pv_sess_hint" "$C0" ;;
   esac
 }
 
@@ -739,35 +743,36 @@ cmd_header(){
   if [ -f "$FLASH" ]; then IFS="$TAB" read -r t f < "$FLASH"; [ $(( $(date +%s) - t )) -lt 30 ] && fl=$f; fi
   # each state has a long and short version; use the short one on narrow screens
   state=; f=; { IFS= read -r state; IFS= read -r f; } 2>/dev/null < "$ST" || :
-  if [ "$state" = invalid ]; then long="${CR}${ICON_ERR} File lỗi, chưa đồng bộ: $f${C0}"; short="${CR}${ICON_ERR} File lỗi: ${f%%:*}${C0}"   # report errors even without a shared repository
-  elif ! has_remote; then long="${CY}${ICON_PROD} Chưa có kho, danh sách chỉ nằm trên máy này${C0}${CD} · ^o kết nối kho${C0}"; short="${CY}${ICON_PROD} Chưa có kho${C0}${CD} · ^o${C0}"
+  local w1 w2 w3   # words come from the language files through builtins only (hot path)
+  if [ "$state" = invalid ]; then tv w1 hd_bad_long "$f"; tv w2 hd_bad_short "${f%%:*}"; long="${CR}${ICON_ERR} $w1${C0}"; short="${CR}${ICON_ERR} $w2${C0}"   # report errors even without a shared repository
+  elif ! has_remote; then long="${CY}${ICON_PROD} $L_hd_norepo${C0}${CD}$L_hd_norepo_k${C0}"; short="${CY}${ICON_PROD} $L_hd_norepo_s${C0}${CD} · ^o${C0}"
   else
     case $state in
-      ok) long="${CD}${ICON_OK} đã đồng bộ với kho${C0}"; short="${CD}${ICON_OK} đã đồng bộ${C0}";;
-      checking) long="${CP}… đang kiểm tra kho${C0}"; short=$long;;
-      offline) long="${CY}⏸ Không kết nối được kho ($(kho_addr))${C0}${CD} · ^s thử lại${C0}"; short="${CY}⏸ Không thấy kho${C0}${CD} · ^s${C0}";;
-      pending) long="${CY}⏸ $f thay đổi chờ đẩy lên kho${C0}${CD} · ^s thử lại${C0}"; short="${CY}⏸ $f chờ đẩy${C0}${CD} · ^s${C0}";;
-      conflict) long="${CR}${ICON_ERR} Kho và máy này cùng sửa một chỗ${C0}${CD} · ^o → Gộp xung đột${C0}"; short="${CR}${ICON_ERR} Xung đột${C0}${CD} · ^o${C0}";;
-      invalid) long="${CR}${ICON_ERR} File lỗi, chưa đồng bộ: $f${C0}"; short="${CR}${ICON_ERR} File lỗi${C0}${CD} · ^o kiểm tra${C0}";;
-      pulled) long="${CG}↓ $f${C0}"; short="${CG}↓ Có thay đổi từ máy khác${C0}";;
-      *) long="${CD}kho ở $(kho_addr) · chưa kiểm tra${C0}"; short="${CD}chưa kiểm tra kho${C0}";;
+      ok) long="${CD}${ICON_OK} $L_hd_ok_long${C0}"; short="${CD}${ICON_OK} $L_hd_ok_short${C0}";;
+      checking) long="${CP}… $L_hd_checking${C0}"; short=$long;;
+      offline) tv w1 hd_off_long "$(kho_addr)"; long="${CY}⏸ $w1${C0}${CD}$L_hd_retry${C0}"; short="${CY}⏸ $L_hd_off_short${C0}${CD} · ^s${C0}";;
+      pending) tv w1 hd_pend_long "$f"; tv w2 hd_pend_short "$f"; long="${CY}⏸ $w1${C0}${CD}$L_hd_retry${C0}"; short="${CY}⏸ $w2${C0}${CD} · ^s${C0}";;
+      conflict) long="${CR}${ICON_ERR} $L_hd_conf_long${C0}${CD}$L_hd_conf_k${C0}"; short="${CR}${ICON_ERR} $L_hd_conf_short${C0}${CD} · ^o${C0}";;
+      invalid) tv w1 hd_bad_long "$f"; long="${CR}${ICON_ERR} $w1${C0}"; short="${CR}${ICON_ERR} $L_hd_bad_tiny${C0}${CD}$L_hd_inv_k${C0}";;
+      pulled) long="${CG}↓ $f${C0}"; short="${CG}↓ $L_hd_pulled${C0}";;
+      *) tv w1 hd_unk_long "$(kho_addr)"; long="${CD}$w1${C0}"; short="${CD}$L_hd_unk_short${C0}";;
     esac
   fi
   local hn ps room; hn=${HOSTNAME%%.*}; room=$(( cols - ${#n} - 22 ))   # truncate long machine names (CI or corporate machines)
   [ ${#hn} -gt $room ] && { [ $room -gt 4 ] && hn="${hn:0:$((room - 1))}…" || hn=""; }
-  line1="${CU}${CB}hostbook${C0} ${CD}${hn:+$hn · }$n server${C0}"; strip_ansi "$line1" p1
+  tv w3 hd_count "$n"; line1="${CU}${CB}hostbook${C0} ${CD}${hn:+$hn · }$w3${C0}"; strip_ansi "$line1" p1
   strip_ansi "$long" pl; strip_ansi "$short" ps
   if [ $(( ${#p1} + ${#pl} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$long"
   elif [ $(( ${#pl} + 4 )) -le "$cols" ]; then printf '%s\n%s\n' "$line1" "$long"
   elif [ $(( ${#p1} + ${#ps} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$short"
   else printf '%s\n%s\n' "$line1" "$short"; fi
   [ -n "$fl" ] && printf '%s\n' "$fl"
-  [ -n "${HOSTBOOK_ONLY:-}" ] && [ -f "${HOSTBOOK_ONLY:-}" ] && printf '%sĐang xem %s server vừa nhập · esc để xem tất cả%s\n' "$CU" "$(grep -c . "$HOSTBOOK_ONLY")" "$C0"
+  [ -n "${HOSTBOOK_ONLY:-}" ] && [ -f "${HOSTBOOK_ONLY:-}" ] && { printf '%s' "$CU"; t hd_only "$(grep -c . "$HOSTBOOK_ONLY")"; printf '%s\n' "$C0"; }
   if [ "$n" = 0 ]; then   # empty state: one action per line, without clipping on narrow screens
-    printf '\n%sChưa có server nào.%s\n\n' "$CB" "$C0"
-    printf '  %s^a%s  thêm server đầu tiên %s(dán user@ip là đủ)%s\n' "$CP" "$C0" "$CD" "$C0"
-    printf '  %s^o%s  công cụ: nhập nhiều server, kết nối kho\n' "$CP" "$C0"
-    printf '  %s?%s   trợ giúp\n' "$CP" "$C0"
+    printf '\n%s%s%s\n\n' "$CB" "$L_hd_empty" "$C0"
+    printf '  %s^a%s  %s %s%s%s\n' "$CP" "$C0" "$L_hd_empty_add" "$CD" "$L_hd_empty_add_h" "$C0"
+    printf '  %s^o%s  %s\n' "$CP" "$C0" "$L_hd_empty_tools"
+    printf '  %s?%s   %s\n' "$CP" "$C0" "$L_fk_help"
   fi
   return 0
 }
@@ -778,22 +783,22 @@ cmd_footer(){
 }
 # The focus/multi binds read these files inline: booting hostbook there blocked every cursor move ~100 ms (#1).
 cmd_footers(){ # dir [row]: write f-h f-g f-s f-x and f-m<digits> (printf format, %s = count); with row, print its footer
-  local cols t n o; list_width cols
+  local cols t n o w; list_width cols
   for t in h g s x; do footer_line "$t" 0 "$cols" > "$1/f-$t"; done
   for n in 1 10 100 1000; do   # the count's digits change which keys fit
-    o=$(footer_line '' "$n" "$cols"); o=${o//\%/%%}; printf '%s\n' "${o/"mở $n server"/mở %s server}" > "$1/f-m${#n}"
+    o=$(footer_line '' "$n" "$cols"); o=${o//\%/%%}; tv w fk_open "$n"; printf '%s\n' "${o/"$w"/$L_fk_open}" > "$1/f-m${#n}"
   done
   [ $# -lt 2 ] || { [ -z "$2" ] || printf '%s\n' "$2" > "$STATE/current"; footer_line "${2%%:*}" "${FZF_SELECT_COUNT:-0}" "$cols"; }
 }
 footer_line(){ # row-type select-count list-width
-  local t=$1 c=$2 cols=$3 used=2
+  local t=$1 c=$2 cols=$3 used=2 w   # labels are the $L_fk_* words, read without forks
   k(){ local w=$(( ${#1} + ${#2} + 4 )); [ $(( used + w )) -gt "$cols" ] && return 0; used=$(( used + w )); printf '%s%s%s %s%s%s   ' "$CP" "$1" "$C0" "$CD" "$2" "$C0"; }   # omit lower-priority keys at the end when space runs out
-  if [ "$c" -gt 0 ]; then k enter "mở $c server"; k '→' 'thao tác khác'; k '^y' 'chia sẻ'; k esc 'bỏ chọn'; k '^g' 'lưu thành nhóm'; k tab 'chọn thêm'
+  if [ "$c" -gt 0 ]; then tv w fk_open "$c"; k enter "$w"; k '→' "$L_fk_more"; k '^y' "$L_fk_share"; k esc "$L_fk_unselect"; k '^g' "$L_fk_savegroup"; k tab "$L_fk_selmore"
   else case $t in
-    h) k enter ssh; k '→' 'thao tác'; k '?' 'trợ giúp'; k '^a' thêm; k '^o' 'công cụ'; k '^t' 'kiểu'; k tab 'chọn nhiều'; k '^y' 'chia sẻ'; k '^e' sửa;;
-    g) k enter 'mở nhóm'; k '→' 'đổi kiểu mở / xoá'; k '?' 'trợ giúp'; k '^a' thêm; k '^o' 'công cụ';;
-    s) k enter 'vào lại phiên'; k '→' 'đóng hẳn'; k '?' 'trợ giúp'; k '^a' thêm; k '^o' 'công cụ';;
-    *) k '^a' 'thêm server'; k '^o' 'công cụ'; k '?' 'trợ giúp';;
+    h) k enter ssh; k '→' "$L_fk_actions"; k '?' "$L_fk_help"; k '^a' "$L_fk_add"; k '^o' "$L_fk_tools"; k '^t' "$L_fk_style"; k tab "$L_fk_multi"; k '^y' "$L_fk_share"; k '^e' "$L_fk_edit";;
+    g) k enter "$L_fk_open_group"; k '→' "$L_fk_group_more"; k '?' "$L_fk_help"; k '^a' "$L_fk_add"; k '^o' "$L_fk_tools";;
+    s) k enter "$L_fk_rejoin"; k '→' "$L_fk_close_session"; k '?' "$L_fk_help"; k '^a' "$L_fk_add"; k '^o' "$L_fk_tools";;
+    *) k '^a' "$L_fk_add_server"; k '^o' "$L_fk_tools"; k '?' "$L_fk_help";;
   esac; fi
   echo
 }
@@ -805,7 +810,8 @@ footer_line(){ # row-type select-count list-width
 # only differing edits to the same server on both sides are real conflicts.
 merge_driver(){ # base ours theirs path
   local kind=conf rc; case ${4:-} in *.tsv) kind=tsv;; esac
-  awk -v kind="$kind" -v prefer="${HOSTBOOK_MERGE_PREFER:-}" '
+  # The conflict markers carry a label in the user's own file: this one is data, written in the language in use when merging.
+  awk -v kind="$kind" -v prefer="${HOSTBOOK_MERGE_PREFER:-}" -v lm="$(t merge_mine)" -v lt="$(t merge_theirs)" '
     function norm(t){ sub(/\n+$/, "", t); return t }
     function add(fi, key, t){ if (!((fi, key) in txt)) { ord[fi, ++cnt[fi]]=key } txt[fi, key]=txt[fi, key] t }
     FNR==1 { if (fi && pend!="") add(fi, (blk==""?"__head__":blk), pend)
@@ -829,7 +835,7 @@ merge_driver(){ # base ours theirs path
         if (o==t) r=o; else if (o==b) r=t; else if (t==b) r=o
         else if (o=="\001") r=t; else if (t=="\001") r=o          # one side edits, the other deletes: preserve the edited version to avoid data loss
         else if (prefer=="ours") r=o; else if (prefer=="theirs") r=t
-        else { r="<<<<<<< máy này\n" o "\n=======\n" t "\n>>>>>>> kho"; conflict=1 }
+        else { r="<<<<<<< " lm "\n" o "\n=======\n" t "\n>>>>>>> " lt; conflict=1 }
         if (r=="\001") continue
         out=out r "\n" (kind=="conf" && k!="__head__" ? "\n" : "")
       }
@@ -848,7 +854,7 @@ ensure_merge_setup(){ # register the merger for the data repo (git config is mac
   [ -d "$DIR/.git" ] || return 0
   ensure_git_identity || return 1
   if is_windows; then g config core.autocrlf false; fi
-  g config merge.hostbook.name "gộp theo từng server (hostbook)"
+  g config merge.hostbook.name "hostbook: merge per server"   # git config in the user's repo (data, not screen text)
   g config merge.hostbook.driver "$(printf %q "$SELF") _merge %O %A %B %P"
   local changed=""
   grep -qs 'merge=hostbook' "$DIR/.gitattributes" || { printf '*.conf merge=hostbook\ngroups.tsv merge=hostbook\n' >> "$DIR/.gitattributes"; changed=1; }
@@ -877,6 +883,7 @@ lock(){ local w=${1:-0} i=0
   echo $$ > "$STATE/sync.lock/pid"; LOCK_HELD=1; }   # the owner's pid: a screen that kills a sync may release only its own lock
 unlock(){ rm -rf "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
 # Commit all changes in ~/ssh-hosts if the config is valid.
+# Commit messages ("Gộp với kho", apply_change descriptions…) and the share-file header are data written into the user's repo and files, not screen text: they stay as they are.
 commit_all(){ local msg=$1 e
   [ -z "$(g status --porcelain)" ] && return 0
   ensure_git_identity || return 1
@@ -1088,7 +1095,7 @@ secret_exists(){ [ -f "$SEC/$1.meta" ]; }
 secret_meta(){ sed -n "s/^$2=//p" "$SEC/$1.meta" 2>/dev/null | head -1; }
 secret_names(){ local f; for f in "$SEC"/*.meta; do [ -f "$f" ] && basename "$f" .meta; done; return 0; }
 secret_users(){ awk -F'\t' -v s="$1" '$12==s{print $1}' "$IDX"; }
-secret_label(){ if [ "$(secret_meta "$1" type)" = password ]; then t secret_password; echo; else echo "key $(secret_meta "$1" keytype)"; fi; }
+secret_label(){ if [ "$(secret_meta "$1" type)" = password ]; then t secret_password; echo; else t pv_key "$(secret_meta "$1" keytype)"; echo; fi; }
 secret_enc(){ age -e -a -r "$(cat "$SEC/vault.pub")"; }
 secret_get(){ vault_identity | age -d -i - "$(native_path "$SEC/$1.age")" 2>/dev/null; }
 secret_slug(){ printf '%s' "$1" | tr 'A-Z_ ' 'a-z--' | tr -cd 'a-z0-9.-' | sed 's/^[.-]*//' | cut -c1-40; }
@@ -1409,25 +1416,25 @@ push_new_key(){ # secret-name old-public-key-file [yes = no prompts, keep the ol
   for h in $hosts; do
     printf '  %s … ' "$h"
     if sshx -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -o IdentityFile="$oldpub" "$h" 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' < "$SEC/$sc.pub" 2>/dev/null \
-       && sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" true </dev/null 2>/dev/null; then okh="$okh $h"; printf "%s${ICON_OK} key mới vào được%s\n" "$CG" "$C0"
-    else bad="$bad $h"; printf "%s${ICON_ERR} chưa đưa được key mới%s\n" "$CR" "$C0"; fi
+       && sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" true </dev/null 2>/dev/null; then okh="$okh $h"; printf "%s${ICON_OK} %s%s\n" "$CG" "$(t pn_ok)" "$C0"
+    else bad="$bad $h"; printf "%s${ICON_ERR} %s%s\n" "$CR" "$(t pn_fail)" "$C0"; fi
   done
-  [ -n "$bad" ] && warn "Các server này vẫn chỉ nhận key cũ:$bad. Thêm public key mới bằng tay rồi thử lại."
+  [ -n "$bad" ] && warn "$(t pn_warn "$bad")"
   [ -n "$auto" ] && [ "$auto" != remove ] && return 0
   if [ -n "$okh" ] && { [ "$auto" = remove ] || { at "$(t secrets_title)|$sc|$(t pn_remove_title)"
       ui_confirm --danger --default=false --affirmative "$(t pn_remove_yes)" --negative "$(t cancel)" "$(t pn_remove_q)" "$CB$(t delete_removes)$C0" "  • $(t pn_removes)" "    ${okh# }" " " "$CB$(t delete_keeps)$C0" "  • $(t pn_keeps)" " " "$CD$(t pn_undo)$C0"; }; }; then
     oldblob=$(awk '{print $2}' "$oldpub")
     for h in $okh; do
-      if sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" "grep -vF '$oldblob' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.hb && mv ~/.ssh/authorized_keys.hb ~/.ssh/authorized_keys" </dev/null 2>/dev/null; then printf "  %s ${ICON_OK} đã gỡ key cũ\n" "$h"; else printf "  %s %s${ICON_ERR} chưa gỡ được%s\n" "$h" "$CR" "$C0"; fi; done
+      if sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" "grep -vF '$oldblob' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.hb && mv ~/.ssh/authorized_keys.hb ~/.ssh/authorized_keys" </dev/null 2>/dev/null; then printf "  %s ${ICON_OK} %s\n" "$h" "$(t pn_removed)"; else printf "  %s %s${ICON_ERR} %s%s\n" "$h" "$CR" "$(t pn_not_removed)" "$C0"; fi; done
   fi
 }
 secret_replace(){ # name source(clip|file|gen|path) [auto: yes|remove]
   local n=$1 src=$2 auto=${3:-} d
   [ "$src" = file ] && { src=$(pick_key_file) || return 1; }
   d=$(tmpd) || return 1; cp "$SEC/$n.pub" "$d/old.pub"; chmod 600 "$d/old.pub"
-  secret_get "$n" > "$d/old.key" || { err "Chưa mở được kho secret"; return 1; }; chmod 600 "$d/old.key"
+  secret_get "$n" > "$d/old.key" || { err "$(t err_vault_locked)"; return 1; }; chmod 600 "$d/old.key"
   secret_add_key "$src" "$n" replace >/dev/null || return 1
-  ok "Đã thay key của $n"; [ "$src" = gen ] && { echo "Public key mới:"; cat "$SEC/$n.pub"; }
+  ok "$(t ok_replaced "$n")"; [ "$src" = gen ] && { t pub_new; echo; cat "$SEC/$n.pub"; }
   build_index
   # temporarily load the old key (10 minutes) so it can authenticate while installing the new key
   if agent_ready && ssh-add -q -t 600 "$d/old.key" 2>/dev/null; then push_new_key "$n" "$d/old.pub" "$auto"; ssh-add -q -d "$d/old.pub" 2>/dev/null; fi
@@ -1522,16 +1529,16 @@ conn_progress(){ # log ip port jump-host name
 $(awk '/Remote protocol version/{r++} /Authenticated to/{a++} /Connection established/{c++} END{print r+0, a+0, c+0}' "$log" 2>/dev/null)
 EOF
     if [ "${rp:-0}" -ge $need ]; then
-      msg="$n trả lời sau ${el}s · đang đăng nhập"; [ $(( ${#msg} + 3 )) -gt "$cols" ] && msg="$n trả lời sau ${el}s"
+      tv msg cp_ok "$n" "$el"; [ $(( ${#msg} + 3 )) -gt "$cols" ] && tv msg cp_ok_s "$n" "$el"
       conn_line "$(printf "%s${ICON_OK}%s %s" "$CG" "$C0" "$msg")"; : > "$log.done"; return 0; fi
     if [ "$el" -ge $((CTO + 3)) ]; then   # fallback deadline: SSH does not apply its timeout while connecting through the jump host
-      echo "hostbook: hết $CTO giây chờ" >> "$log"; pkill -TERM -P $$ -x ssh 2>/dev/null; return 0; fi
+      echo "hostbook: timeout after ${CTO}s" >> "$log"; pkill -TERM -P $$ -x ssh 2>/dev/null; return 0; fi
     if [ -n "$jump" ]; then
-      if [ "${au:-0}" -gt 0 ]; then msg="Đã vào $jump, đang nối tới $ip:$port"; else msg="Đang vào máy trung gian $jump"; fi
-    elif [ "${ce:-0}" -gt 0 ]; then msg="Đã thông mạng tới $ip:$port, chờ SSH trả lời"
-    else msg="Đang mở kết nối tới $ip:$port"; fi
-    tail=" · ${el}s / tối đa ${CTO}s · ctrl-c để huỷ"
-    [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && tail=" · ${el}s/${CTO}s"
+      if [ "${au:-0}" -gt 0 ]; then tv msg cp_jump_in "$jump" "$ip" "$port"; else tv msg cp_jump_to "$jump"; fi
+    elif [ "${ce:-0}" -gt 0 ]; then tv msg cp_net "$ip" "$port"
+    else tv msg cp_open "$ip" "$port"; fi
+    tv tail prog_tail "$el" "$CTO"
+    [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && tv tail prog_tail_short "$el" "$CTO"
     [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && msg=${msg:0:$(( cols - ${#tail} - 4 ))}…
     conn_line "$(printf '%s%s%s %s%s%s%s' "$CP" "${sp:k%8:1}" "$C0" "$msg" "$CD" "$tail" "$C0")"
     k=$((k+1)); sleep 0.15
@@ -1543,7 +1550,7 @@ connect(){
   prepare_login "$n" || { [ -z "$pane" ] && pause; return 1; }
   log=$(mktemp); jump=$(host_field "$n" 6); ip=$(host_field "$n" 3); port=$(host_field "$n" 5); port=${port:-22}
   record "$n"
-  printf '%s→ ssh %s%s%s%s\n' "$CB" "$n" "$C0" "$CD${jump:+ qua $jump}$C0" "$(is_prod "$n" && printf "   %s${ICON_PROD} PROD%s" "$CR$CB" "$C0")"
+  printf '%s→ ssh %s%s%s%s\n' "$CB" "$n" "$C0" "$CD$([ -z "$jump" ] || t conn_via "$jump")$C0" "$(is_prod "$n" && printf "   %s${ICON_PROD} PROD%s" "$CR$CB" "$C0")"
   t0=$(date +%s); printf '\n' >/dev/tty   # blank line reserves space for connection progress
   ( conn_progress "$log" "$ip" "$port" "$jump" "$n" ) & wp=$!
   trap 'true' INT   # Ctrl-C cancels SSH without exiting hostbook
@@ -1553,10 +1560,10 @@ connect(){
   [ -f "$log.done" ] || printf '\033[1A\r\033[K' >/dev/tty   # server not reached: remove progress so the error box can take its place
   local need=1 entered=0; [ -n "$jump" ] && need=2   # the SSH subprocess for the jump host also logs these milestones once
   [ "$(grep -c 'Entering interactive session' "$log")" -ge $need ] && entered=1
-  if { [ $rc -eq 255 ] || grep -q 'hostbook: hết' "$log"; } && [ $entered = 0 ]; then explain "$n" "$log" "$pane"; rc=255
+  if { [ $rc -eq 255 ] || grep -q 'hostbook: timeout' "$log"; } && [ $entered = 0 ]; then explain "$n" "$log" "$pane"; rc=255
   elif [ $entered = 1 ]; then
     local m=$(( ($(date +%s) - t0) / 60 )) msg
-    msg="Đã ngắt kết nối $n sau $( [ $m -gt 0 ] && echo "$m phút" || echo "chưa tới 1 phút")$( [ $rc -ne 0 ] && [ $rc -ne 255 ] && echo " · lệnh cuối trả về mã $rc")"
+    msg=$(t conn_end "$n" "$( [ $m -gt 0 ] && t conn_min "$m" || t conn_lt_min)")$( [ $rc -ne 0 ] && [ $rc -ne 255 ] && t conn_rc "$rc")
     printf '%s← %s%s\n' "$CD" "$msg" "$C0"; flash "${CD}$msg${C0}"
   fi
   rm -f "$log" "$log.done"; return $rc
@@ -1576,7 +1583,7 @@ explain(){ # name log [pane]
   elif grep -qi 'Could not resolve hostname' "$f"; then kind=dns
   elif grep -qi 'Connection refused' "$f"; then kind=refused
   elif grep -qiE 'No route to host|Network is unreachable|Host is down' "$f"; then kind=unreachable
-  elif grep -qiE 'timed out|hostbook: hết' "$f"; then kind=timeout
+  elif grep -qiE 'timed out|hostbook: timeout' "$f"; then kind=timeout
   elif grep -qiE 'Connection closed|Connection reset|kex_exchange_identification|Broken pipe' "$f"; then kind=closed
   else kind=cancel; fi
   raw=$(tr -d '\r' < "$f" | grep -vE '^(debug[0-9]|OpenSSH_|Warning: Permanently added|Killed by signal)' | grep . | tail -2 | tr '\n' ' ' | sed 's/ $//')   # SSH logs "\r\n": remove \r so the cursor cannot return to the start and break the box
@@ -1936,12 +1943,12 @@ edit_host(){ # open the file at the correct line, validate on close, and prompt 
   while :; do
     case $ed in code*|cursor*) $ed -g "$f:$l" --wait;; *) $ed "+$l" "$f";; esac
     cmp -s "$f" "$bak" && { rm -f "$bak"; return 0; }
-    if e=$(validate); then rm -f "$bak"; build_index; save_and_sync "Đã sửa $n"; return 0; fi
-    echo; box err "${CR}Chưa đồng bộ: file lỗi sẽ không được đẩy sang máy khác.${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
+    if e=$(validate); then rm -f "$bak"; build_index; save_and_sync "$(t done_edited "$n")"; return 0; fi
+    echo; box err "${CR}$(t eh_unsynced)${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
     l=$(printf '%s' "$e" | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -1); l=${l:-1}
-    case $(pick "Làm gì tiếp?" "Mở lại để sửa|tới dòng $l" "Bỏ thay đổi|khôi phục bản trước") in
+    case $(pick "$(t eh_next)" "$(t eh_reopen)|$(t eh_reopen_h "$l")" "$(t eh_revert)|$(t eh_revert_h)") in
       0) ;;
-      *) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ Đã khôi phục $(basename "$f")${C0}"; return 0;;
+      *) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ $(t done_restored "$(basename "$f")")${C0}"; return 0;;
     esac
   done
 }
@@ -2063,10 +2070,10 @@ import_parse(){
     set -- $rest
     if [ $# -ge 2 ]; then name=$1; addr=$2
     elif [ $# -eq 1 ]; then addr=$1; h=${addr#*@}; h=${h%%:*}
-      case $h in *[A-Za-z]*) name=${h%%.*};; *) echo "dòng $no: thiếu tên server cho $addr" >&2; continue;; esac
+      case $h in *[A-Za-z]*) name=${h%%.*};; *) { t impf_line_missing "$no" "$addr"; echo; } >&2; continue;; esac
     else continue; fi
-    valid_name "$name" || { echo "dòng $no: tên \"$name\" có ký tự lạ" >&2; continue; }
-    p=$(parse_addr "$addr") || { echo "dòng $no: không đọc được địa chỉ \"$addr\"" >&2; continue; }
+    valid_name "$name" || { { t impf_line_name "$no" "$name"; echo; } >&2; continue; }
+    p=$(parse_addr "$addr") || { { t impf_line_addr "$no" "$addr"; echo; } >&2; continue; }
     u=$(echo "$p" | sed -n 1p); h=$(echo "$p" | sed -n 2p); pt=$(echo "$p" | sed -n 3p)
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$u" "$h" "$pt" "$(printf '%s' "$tags" | tr -cd 'A-Za-z0-9._ -')" | sed 's/\t\t/\t-\t/g; s/\t\t/\t-\t/g; s/\t$/\t-/'   # write "-" for empty columns: read with IFS=tab collapses adjacent tabs
   done
@@ -2090,7 +2097,7 @@ import_write(){ # tsv-file project(empty = infer from IP range) → write all en
 import_flow(){ # [file]
   local src=${1:-} raw list errs n to cnt to_dir
   [ -z "$src" ] || src=$(unix_path "$src")
-  title "Nhập nhiều server"
+  title "$(t impf_title)"
   list=$(mktemp); errs=$(mktemp)
   if [ -n "$src" ] && is_pack "$src"; then import_pack "$src"; return; fi
   if [ -z "$src" ] && clip_get 2>/dev/null | head -c 300 | grep -q '^# hostbook-share v1'; then   # a share package is already in the clipboard
@@ -2099,9 +2106,7 @@ import_flow(){ # [file]
   else
     # use an editor to allow unlimited pasted lines (gum 2 input treats Enter as submit)
     local tf ed; tf=$(mktemp); ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
-    printf '%s\n' "# Paste the server list below, save, and close the editor. Lines starting with \"# \" are ignored." \
-      "# Each line: name address [#tag …]   example:  a-web1 ubuntu@10.0.1.11 #prod #web" \
-      "# You can also paste a complete SSH config (Host blocks)." "" > "$tf"
+    printf '%s\n' "$(t impf_tpl1)" "$(t impf_tpl2)" "$(t impf_tpl3)" "" > "$tf"
     $ed "$tf"
     if grep -q 'BEGIN AGE ENCRYPTED FILE' "$tf"; then { echo "# hostbook-share v1"; sed -n '/BEGIN AGE ENCRYPTED FILE/,$p' "$tf"; } > "$tf.pack"; rm -f "$tf"; import_pack "$tf.pack"; rm -f "$tf.pack"; return; fi
     raw=$(grep -v '^# ' "$tf" | sed '/./,$!d'); rm -f "$tf"   # strip leading blank lines so error line numbers match the pasted content
@@ -2112,20 +2117,21 @@ import_flow(){ # [file]
     printf '%s\n' "$raw" > "$list"; to_dir=$(mktemp -d)
     split_config "$list" "$to_dir" "$to_dir/global" >/dev/null
     n=$(awk 'tolower($1)=="host" {for(i=2;i<=NF;i++) if($i !~ /[*?!]/) print $i}' "$to_dir"/*.conf | wc -l | tr -d ' ')
-    dim "Đây là ssh config: $n khối Host, sẽ chia vào dự án theo phần đầu của tên."
-    confirm "Nhập?" || { rm -rf "$list" "$errs" "$to_dir"; return 1; }
+    dim "$(t impf_ssh "$n")"
+    confirm "$(t impf_ask)" || { rm -rf "$list" "$errs" "$to_dir"; return 1; }
     apply_change "Nhập server từ SSH config" merge_split "$to_dir" || { rm -rf "$list" "$errs" "$to_dir"; return 1; }
     cnt=$(grep -c . "$STATE/last-import"); rm -rf "$list" "$errs" "$to_dir"
     import_done "$cnt" 0 "$((n-cnt))"; return
   fi
   printf '%s\n' "$raw" | import_parse > "$list" 2> "$errs"
-  n=$(grep -c . "$list"); [ -s "$errs" ] && { warn "Bỏ qua $(grep -c . "$errs") dòng:"; sed 's/^/  /' "$errs" | head -10; }
-  [ "$n" -gt 0 ] || { err "Không có dòng nào hợp lệ"; pause; rm -f "$list" "$errs"; return 1; }
+  n=$(grep -c . "$list"); [ -s "$errs" ] && { warn "$(t impf_skipped "$(grep -c . "$errs")")"; sed 's/^/  /' "$errs" | head -10; }
+  [ "$n" -gt 0 ] || { err "$(t impf_none)"; pause; rm -f "$list" "$errs"; return 1; }
   ensure_index
   local dupe; dupe=$(cut -f1 "$list" | while read -r x; do host_exists "$x" && printf '%s ' "$x"; done)
-  [ -n "$dupe" ] && warn "Đã có, bỏ qua: $dupe"
-  echo; to=$( { echo "Đoán theo dải IP từng server"; awk -F'\t' '{print $2}' "$IDX" | sort -u; } | gum choose --header "Đưa $n server vào dự án nào?") || { rm -f "$list" "$errs"; return 1; }
-  [ "$to" = "Đoán theo dải IP từng server" ] && to=""
+  [ -n "$dupe" ] && warn "$(t impf_dupes "$dupe")"
+  local projs pi; projs=$(awk -F'\t' '{print $2}' "$IDX" | sort -u)
+  pi=$(pick "$(t impf_which "$n")" "$(t impf_guess)" $projs) || { rm -f "$list" "$errs"; return 1; }
+  if [ "$pi" = 0 ]; then to=""; else to=$(printf '%s\n' "$projs" | sed -n "${pi}p"); fi
   apply_change "Đã nhập server từ danh sách" import_write "$list" "$to" >/dev/null || { rm -f "$list" "$errs"; return 1; }
   cnt=$(grep -c . "$STATE/last-import"); rm -f "$list" "$errs"
   import_done "$cnt" 0 "$((n-cnt))"
@@ -2191,17 +2197,17 @@ merge_split(){ # Preserve complete blocks while skipping aliases already present
 resolve_conflict(){ # [ours|theirs] for noninteractive operation (tests)
   local how=${1:-} files e f
   export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 8)
-  lock 10 || { err "Đang có một lần đồng bộ khác, thử lại sau"; [ -z "$how" ] && pause; return 1; }
-  g fetch -q origin 2>/dev/null || { unlock; err "Không kết nối được kho"; [ -z "$how" ] && pause; return 1; }
+  lock 10 || { err "$(t sync_busy)"; [ -z "$how" ] && pause; return 1; }
+  g fetch -q origin 2>/dev/null || { unlock; err "$(t rc_offline)"; [ -z "$how" ] && pause; return 1; }
   ensure_merge_setup
-  if g merge -q --no-edit '@{u}' >/dev/null 2>&1 && validate >/dev/null; then g push -q 2>/dev/null; set_status ok; unlock; build_index; ok "Đã gộp, không còn xung đột"; [ -z "$how" ] && pause; return 0; fi
+  if g merge -q --no-edit '@{u}' >/dev/null 2>&1 && validate >/dev/null; then g push -q 2>/dev/null; set_status ok; unlock; build_index; ok "$(t rc_merged)"; [ -z "$how" ] && pause; return 0; fi
   files=$(g diff --name-only --diff-filter=U | tr '\n' ' ')
   if [ -z "$how" ]; then
-    title "Gộp xung đột"
-    warn "Kho và máy này cùng sửa: $files"; echo
+    title "$(t rc_title)"
+    warn "$(t rc_both "$files")"; echo
     g -c color.ui=always diff | head -40; echo
-    case $(pick "Giữ bản nào? Server chỉ sửa ở một bên đã được gộp sẵn." \
-        "Sửa tay|mở file, chọn giữa hai bản được đánh dấu <<<<<<< máy này / >>>>>>> kho" "Lấy bản trong kho|cho các server bị sửa ở cả hai nơi" "Giữ bản của máy này|cho các server bị sửa ở cả hai nơi" "Để sau") in
+    case $(pick "$(t rc_keep)" \
+        "$(t rc_edit)|$(t rc_edit_h "$(t merge_mine)" "$(t merge_theirs)")" "$(t rc_theirs)|$(t rc_both_sides)" "$(t rc_ours)|$(t rc_both_sides)" "$(t rc_later)") in
       0) how=edit;; 1) how=theirs;; 2) how=ours;; *) g merge --abort; unlock; return 1;;
     esac
   fi
@@ -2209,23 +2215,23 @@ resolve_conflict(){ # [ours|theirs] for noninteractive operation (tests)
     ours|theirs) g merge --abort; HOSTBOOK_MERGE_PREFER=$how g merge -q --no-edit '@{u}' >/dev/null 2>&1
        # secrets cannot be merged automatically: take the entire file from the selected side
        for f in $(g diff --name-only --diff-filter=U 2>/dev/null); do case $f in secrets/*) g checkout -q "--$how" -- "$f" 2>/dev/null || g rm -q --cached "$f" 2>/dev/null; g add -A -- "$f" 2>/dev/null;; esac; done
-       if [ -n "$(g diff --name-only --diff-filter=U 2>/dev/null)" ]; then g merge --abort; unlock; err "Không gộp được"; return 1; fi
+       if [ -n "$(g diff --name-only --diff-filter=U 2>/dev/null)" ]; then g merge --abort; unlock; err "$(t rc_failed)"; return 1; fi
        [ -f "$DIR/.git/MERGE_HEAD" ] && g commit -q --no-edit >/dev/null 2>&1;;
     edit) local l ed sn side seen=" "; ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
       for f in $(g diff --name-only --diff-filter=U); do case $f in secrets/*) sn=$(basename "$f"); sn=${sn%.*}
-        case $seen in *" $sn "*) ;; *) seen="$seen$sn "; case $(pick "Secret $sn bị sửa ở cả hai nơi" "Giữ bản của máy này" "Lấy bản trong kho") in 1) side=theirs;; *) side=ours;; esac
+        case $seen in *" $sn "*) ;; *) seen="$seen$sn "; case $(pick "$(t rc_secret "$sn")" "$(t rc_ours)" "$(t rc_theirs)") in 1) side=theirs;; *) side=ours;; esac
           for l in age meta pub; do g checkout -q "--$side" -- "secrets/$sn.$l" 2>/dev/null; g add -A -- "secrets/$sn.$l" 2>/dev/null; done;; esac;; esac; done
       while :; do
         for f in $(g diff --name-only --diff-filter=U | grep -v '^secrets/'); do l=$(grep -n '^<<<<<<<' "$DIR/$f" | head -1 | cut -d: -f1); $ed "+${l:-1}" "$DIR/$f"; done
-        if grep -l '^<<<<<<<\|^>>>>>>>' "$DIR"/*.conf "$GRP" >/dev/null 2>&1; then warn "Vẫn còn dấu <<<<<<< chưa xử lý"
-        elif ! e=$(validate); then warn "Config lỗi: $(printf '%s' "$e" | head -1)"
+        if grep -l '^<<<<<<<\|^>>>>>>>' "$DIR"/*.conf "$GRP" >/dev/null 2>&1; then warn "$(t rc_markers)"
+        elif ! e=$(validate); then warn "$(t rc_cfg_bad "$(printf '%s' "$e" | head -1)")"
         else g add -A; g commit -qm "Gộp với kho" >/dev/null; break; fi
-        confirm "Mở lại để sửa tiếp?" || { g merge --abort; unlock; return 1; }
+        confirm "$(t rc_again)" || { g merge --abort; unlock; return 1; }
       done;;
   esac
-  if ! e=$(validate); then g reset -q --hard ORIG_HEAD 2>/dev/null; unlock; err "Bản gộp làm config lỗi nên đã huỷ: $e"; return 1; fi
+  if ! e=$(validate); then g reset -q --hard ORIG_HEAD 2>/dev/null; unlock; err "$(t rc_undone "$e")"; return 1; fi
   g push -q 2>/dev/null && set_status ok || set_status pending 1
-  unlock; build_index; flash "${CG}${ICON_OK} Đã gộp với kho${C0}"
+  unlock; build_index; flash "${CG}${ICON_OK} $(t done_merged)${C0}"
 }
 
 # ---------- connection checks ----------
@@ -2241,7 +2247,7 @@ classify_log(){ # name log
   elif grep -qi 'Could not resolve hostname' "$f"; then t cl_dns "$ip"
   elif grep -qi 'Connection refused' "$f"; then t cl_refused "$ip" "$port"
   elif grep -qiE 'No route to host|Network is unreachable|Host is down' "$f"; then t cl_unreach "$ip"
-  elif grep -qiE 'timed out|hostbook: hết' "$f"; then
+  elif grep -qiE 'timed out|hostbook: timeout' "$f"; then
     if [ -n "$j" ] && ! grep -q 'Authenticated to' "$f"; then t cl_jump_down "$j"
     elif [ -n "$j" ]; then t cl_jump_hop "$j" "$ip" "$port"
     else t cl_noresp "$ip" "$port"; fi
@@ -2257,7 +2263,7 @@ check_one(){ # name directory → write <directory>/<name>.res = "ok|fail<TAB>re
       sshx -v -E "$d/$h.log" -o ConnectTimeout=5 -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=accept-new "$h" true </dev/null >/dev/null 2>&1 & pid=$!
   else sshx -v -E "$d/$h.log" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$h" true </dev/null >/dev/null 2>&1 & pid=$!; fi
   while kill -0 $pid 2>/dev/null && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done   # eight-second fallback deadline
-  if kill -0 $pid 2>/dev/null; then kill $pid 2>/dev/null; echo "hostbook: hết 8 giây chờ" >> "$d/$h.log"; rc=124; else wait $pid; rc=$?; fi
+  if kill -0 $pid 2>/dev/null; then kill $pid 2>/dev/null; echo "hostbook: timeout after 8s" >> "$d/$h.log"; rc=124; else wait $pid; rc=$?; fi
   if [ $rc -eq 0 ]; then printf 'ok\t%s\n' "$(if [ -n "$sc" ]; then t chk_ok_sc "$sc"; else t chk_ok; fi)" > "$d/$h.res"; else printf 'fail\t%s\n' "$(classify_log "$h" "$d/$h.log")" > "$d/$h.res"; fi
 }
 check_rec(){ printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date +%s)" >> "$4/run.tsv"; }   # name result reason dir; the epoch is the per-host check time
@@ -3132,13 +3138,13 @@ settings(){
 }
 demo_rows(){
   printf '%s\n' \
-    'h:booking-api|booking-api|booking|10.0.1.11|ubuntu|prod api|API chính, nhận đặt phòng|key-prod|2h' \
-    'h:booking-web|booking-web|booking|10.0.1.12|ubuntu|prod web|Nginx chính, mô tả dài sẽ tự cắt khi cửa sổ hẹp|key-prod|1d' \
-    'h:booking-db|booking-db|booking|10.0.1.20|postgres|prod db|Cơ sở dữ liệu|key-prod|3h' \
-    'h:staging-api|staging-api|booking|10.0.2.11|deploy|staging api|Môi trường thử nghiệm|key-dev|5m' \
-    'h:infra-gate|infra-gate|infra|203.0.113.10|admin|bastion|Cổng vào mạng nội bộ|key-infra|1h' \
+    "h:booking-api|booking-api|booking|10.0.1.11|ubuntu|prod api|$L_dm_d1|key-prod|2h" \
+    "h:booking-web|booking-web|booking|10.0.1.12|ubuntu|prod web|$L_dm_d2|key-prod|1d" \
+    "h:booking-db|booking-db|booking|10.0.1.20|postgres|prod db|$L_dm_d3|key-prod|3h" \
+    "h:staging-api|staging-api|booking|10.0.2.11|deploy|staging api|$L_dm_d4|key-dev|5m" \
+    "h:infra-gate|infra-gate|infra|203.0.113.10|admin|bastion|$L_dm_d5|key-infra|1h" \
     'h:infra-cache|infra-cache|infra|10.8.0.5|admin|cache|Redis|key-infra|-' \
-    'g:booking-prod|booking-prod|||||nhóm · 3 server · chia ô||booking-api booking-web booking-db' | tr '|' '\t'
+    "g:booking-prod|booking-prod|||||$(t list_group 3 "$(mode_label split)")||booking-api booking-web booking-db" | tr '|' '\t'
 }
 cmd_demo(){ # fixed sample data; no network checks or changes to real configuration
   local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record rule style sep theme IDX
@@ -3158,11 +3164,11 @@ cmd_demo(){ # fixed sample data; no network checks or changes to real configurat
       [ "$sep" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
     done < "$d/rows")
   else rendered=$(cut -f2 "$d/rows"); fi
-  left=$(printf '%sTìm > booking%s\n\n%s\n\n%senter ssh · tab chọn · ^t đổi kiểu%s' "$CP" "$C0" "$rendered" "$CD" "$C0")
-  right=$(printf '%sbooking-api  %sprod%s\n10.0.1.11 · @ubuntu\nĐăng nhập: key-prod\nLần dùng: 2 giờ trước' "$CU$CB" "$CR" "$C0")
+  left=$(printf '%s%s > booking%s\n\n%s\n\n%s%s%s' "$CP" "$L_dm_find" "$C0" "$rendered" "$CD" "$L_dm_foot" "$C0")
+  right=$(printf '%sbooking-api  %sprod%s\n10.0.1.11 · @ubuntu\n%s key-prod\n%s' "$CU$CB" "$CR" "$C0" "$L_pv_login" "$(t dm_last "$(t ago_hour 2)")")
   local split=0; [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ] && split=1
   if [ $split = 0 ]; then
-    if [ "$preview" = bottom ]; then left=$(printf '%s\n\n%sChi tiết%s\n%s' "$left" "$CU" "$C0" "$right"); fi
+    if [ "$preview" = bottom ]; then left=$(printf '%s\n\n%s%s%s\n%s' "$left" "$CU" "$L_fzf_detail" "$C0" "$right"); fi
     right=
   fi
   printf '%s%s · %s · %s%s\n' "$CU" "$style" "$theme" "$preview" "$C0"
@@ -3200,7 +3206,7 @@ demo_box(){ # left right wl wr total border; plain box like "gum join | gum styl
 home(){
   local q=${1:-} out rc key sel first t n hosts opt opts=() fd foot ft
   # fzf control-port token: only child processes of this invocation may send commands
-  FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err 'Không tạo được khoá cho ô tìm'; return 1; }; export FZF_API_KEY
+  FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err "$(t err_ctl_key)"; return 1; }; export FZF_API_KEY
   clip_offer
   fd=$(tmpd) || return 1
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
@@ -3218,7 +3224,7 @@ home(){
     opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts "$fd")
     out=$(cmd_list | fzf "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
-      --prompt='> ' --ghost='Tìm theo tên, #tag, @user, IP, mô tả…' --marker='+' \
+      --prompt='> ' --ghost="$(t home_ghost)" --marker='+' \
       --header "$(cmd_header)" --footer "$ft" \
       --preview "$(self_cmd) _preview {1}" --gutter=' ' --ellipsis='' --no-hscroll \
       --bind "resize:$(relayout_actions "$fd")" \
@@ -3249,13 +3255,13 @@ home(){
          elif [ "$t" = s ]; then attach "$n"; fi;;
       ctrl-a) add_host; [ -n "${ADDED:-}" ] && q=$ADDED;;
       ctrl-e) [ "$t" = h ] && edit_host "$n";;
-      ctrl-g) set -- $hosts; if [ $# -ge 2 ]; then save_group "$@"; else flash "${CY}Chọn ít nhất 2 server bằng tab rồi nhấn ^g${C0}"; fi;;
+      ctrl-g) set -- $hosts; if [ $# -ge 2 ]; then save_group "$@"; else flash "${CY}$(t done_grp_need)${C0}"; fi;;
       ctrl-o) SECRET_QUERY=""; tools; [ -n "${SECRET_QUERY:-}" ] && q=$SECRET_QUERY;;
       ctrl-t) if [ "$(cfg list cards)" = cards ]; then cfg_set list compact; else cfg_set list cards; fi;;
       ctrl-s) sync_ui;;
       right) set -- $hosts; if [ $# -ge 2 ]; then batch_actions "$@"; continue; fi
              case $t in h) host_actions "$n";; g) group_actions "$n";;
-               s) confirm --default=false "Đóng hẳn phiên ${n#hb-}? Các kết nối trong đó sẽ bị ngắt." && tmux kill-session -t "$n" && flash "Đã đóng phiên ${n#hb-}";; esac;;
+               s) confirm --default=false "$(t sess_close_q "${n#hb-}")" && tmux kill-session -t "$n" && flash "$(t done_sess_closed "${n#hb-}")";; esac;;
       '?') show_help;;
     esac
   done
@@ -3268,10 +3274,10 @@ shortcut_free(){ local out; out=$("${SHELL:-/bin/sh}" -ic "type $1" </dev/null 2
   case $out in *hostbook*) return 0;; esac; return 1; }
 shortcut_name(){ grep -hoE '^alias (hb|hop)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
 install_hint(){
-  if is_windows; then printf "Cài lại từ PowerShell: powershell -NoProfile -ExecutionPolicy Bypass -File '%s'\n" "$(native_path "$(dirname "$SELF")/install.ps1" | sed "s/'/''/g")"
-  else printf 'Cài lại: curl -fsSL %s/raw/main/install.sh | bash\n' "$REPO_URL"; fi
+  if is_windows; then t inst_win "$(native_path "$(dirname "$SELF")/install.ps1" | sed "s/'/''/g")"; else t inst "$REPO_URL"; fi
+  echo
 }
-check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "Cần age >= $AGE_MIN cho kho secret" >&2; install_hint >&2; return 1; }; }
+check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "$(t err_need_age "$AGE_MIN")" >&2; install_hint >&2; return 1; }; }
 # A passing check is cached in $STATE/deps: line 1 is the key, the rest are the tool paths. It stays valid while PATH and
 # the minimum versions are unchanged and the stamp is strictly newer than every tool binary and PATH directory (a tool
 # added, removed or replaced changes one of them; equal times count as changed, as -nt may have 1 s precision) (#5).
@@ -3301,46 +3307,46 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
 }
 setup(){
   local rc_file
-  title "Cài hostbook cho máy này"
-  if is_windows; then ok "Lệnh hostbook: PowerShell / Windows Terminal"
-  else mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "Lệnh hostbook: ~/.local/bin/hostbook"; fi
+  title "$(t su_title)"
+  if is_windows; then ok "$(t su_cmd_win)"
+  else mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "$(t su_cmd)"; fi
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   if ! grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config"; then
     [ -f "$HOME/.ssh/config" ] && cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
     { echo "# Server list in ~/ssh-hosts (hostbook syncs it with the shared repository)"; echo "Include ~/ssh-hosts/*.conf"; echo; cat "$HOME/.ssh/config" 2>/dev/null || true; } > "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config"
-    chmod 600 "$HOME/.ssh/config"; ok "Đã thêm Include vào ~/.ssh/config$( [ -f "$HOME/.ssh/config.bak" ] && echo ', bản cũ ở ~/.ssh/config.bak')"
-  else ok "~/.ssh/config đã có Include"; fi
+    chmod 600 "$HOME/.ssh/config"; ok "$(t su_include)$( [ -f "$HOME/.ssh/config.bak" ] && t su_include_bak)"
+  else ok "$(t su_include_has)"; fi
   if is_windows; then rc_file=""
   else case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac; fi
   if [ -n "$rc_file" ]; then
     # older versions used "s" (too generic and prone to collisions): remove it and switch to hb
     if grep -qsE '^alias s=(sshm|hostbook)$' "$rc_file"; then
-      sed -i.bak -E '/^# (sshm|hostbook): tìm và kết nối server SSH$/d; /^alias s=(sshm|hostbook)$/d' "$rc_file" && rm -f "$rc_file.bak"; ok "Đã bỏ lối tắt cũ s"; fi
+      sed -i.bak -E '/^# (sshm|hostbook): tìm và kết nối server SSH$/d; /^alias s=(sshm|hostbook)$/d' "$rc_file" && rm -f "$rc_file.bak"; ok "$(t su_old_alias)"; fi
     if ! grep -qsE '^alias (hb|hop)=hostbook$' "$rc_file"; then
       local sc="" c
       for c in hb hop; do shortcut_free "$c" && { sc=$c; break; }; done
       if [ -n "$sc" ]; then printf '\n# hostbook: find and connect to SSH servers\nalias %s=hostbook\n' "$sc" >> "$rc_file"
-        if [ "$sc" = hb ]; then ok "Lối tắt: hb"; else ok "hb đã được dùng cho việc khác trên máy này, lối tắt là hop"; fi
-      else warn "hb và hop đều đã được dùng cho việc khác, không thêm lối tắt: gõ hostbook"; fi
+        if [ "$sc" = hb ]; then ok "$(t su_short_hb)"; else ok "$(t su_short_hop)"; fi
+      else warn "$(t su_short_none)"; fi
     fi
-    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) grep -qs '.local/bin' "$rc_file" || { printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$rc_file"; ok "Đã thêm ~/.local/bin vào PATH"; };; esac
+    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) grep -qs '.local/bin' "$rc_file" || { printf 'export PATH="$HOME/.local/bin:$PATH"\n' >> "$rc_file"; ok "$(t su_path)"; };; esac
   fi
   if [ -d /Applications/Ghostty.app ] || have ghostty; then
     mkdir -p "$HOME/.config/ghostty"
-    grep -qs 'ssh-env' "$HOME/.config/ghostty/config" || { printf '# ssh-env: use TERM=xterm-256color for SSH so servers without Ghostty terminfo display correctly\nshell-integration-features = ssh-env\n' >> "$HOME/.config/ghostty/config"; ok "Đã bật ssh-env cho Ghostty"; }
+    grep -qs 'ssh-env' "$HOME/.config/ghostty/config" || { printf '# ssh-env: use TERM=xterm-256color for SSH so servers without Ghostty terminfo display correctly\nshell-integration-features = ssh-env\n' >> "$HOME/.config/ghostty/config"; ok "$(t su_ghostty)"; }
   fi
-  [ -d "$DIR" ] && { chmod 700 "$DIR"; build_index; ok "Sẵn sàng · $(wc -l < "$IDX" | tr -d ' ') server"; }
+  [ -d "$DIR" ] && { chmod 700 "$DIR"; build_index; ok "$(t su_ready "$(wc -l < "$IDX" | tr -d ' ')")"; }
   return 0
 }
 update(){
   if is_windows; then
-    git -C "$(native_path "$(dirname "$SELF")")" pull -q --ff-only || { err "Không tải được bản cập nhật hostbook"; return 1; }
+    git -C "$(native_path "$(dirname "$SELF")")" pull -q --ff-only || { err "$(t up_fail_dl)"; return 1; }
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$(dirname "$SELF")/install.ps1")"
     return $?
   fi
   local d; d=$(dirname "$SELF")
-  if [ -d "$d/.git" ]; then git -C "$d" pull -q --ff-only && ok "Đã cập nhật hostbook lên $("$SELF" --version)" || err "Không cập nhật được, thử: curl -fsSL $REPO_URL/raw/main/install.sh | bash"
-  else dim "Bản này không cài bằng git. Cập nhật bằng: curl -fsSL $REPO_URL/raw/main/install.sh | bash"; fi
+  if [ -d "$d/.git" ]; then git -C "$d" pull -q --ff-only && ok "$(t up_ok "$("$SELF" --version)")" || err "$(t up_fail "$REPO_URL")"
+  else dim "$(t up_nogit "$REPO_URL")"; fi
 }
 first_run(){ # ~/ssh-hosts does not exist yet
   local i m url n
@@ -3376,6 +3382,7 @@ first_run(){ # ~/ssh-hosts does not exist yet
 cfg_init
 apply_theme
 lang_load
+[ -z "${STATE_FAIL:-}" ] || { t err_state_dir >&2; echo >&2; exit 1; }
 
 # A killed run leaves $STATE/tmp/<pid>.* behind, and those can hold decrypted secrets: remove the ones whose pid is gone.
 sweep_tmp(){
@@ -3394,7 +3401,7 @@ case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
-             printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
+             printf '\n%s%s%s ' "$CD" "$L_pane_retry" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _explain) ensure_index; explain "$2" "$3" pane;;
   _askpass) cmd_askpass "${2:-}";;
   _run) ensure_index; h=$2; shift 2; prepare_login "$h" || exit 1; ssh_login "$h" ${HB_LOG:+-v -E "$HB_LOG"} -o ConnectTimeout=6 "$h" "$@" </dev/null;;
@@ -3405,7 +3412,7 @@ case ${1:-} in
   _secret_rename) ensure_index; apply_change "đổi tên secret" secret_rename_raw "$2" "$3";; _secret_delete) ensure_index; apply_change "xoá secret" secret_delete_raw "$2";;
   _load) agent_ready && load_secret "$2";; _secrets_for) ensure_index; secrets_for "$2";;
   unlock) cmd_unlock;; lock) cmd_lock "${2:-}";; secret|secrets) check_deps || exit 1; ensure_index; secret_manager;;
-  vault) case ${2:-} in init) vault_init;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) echo "hostbook vault init | passwd | recover | recovery-code";; esac;;
+  vault) case ${2:-} in init) vault_init;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) t vault_usage; echo;; esac;;
   _share_build) ensure_index; d=$2; ws=$3; shift 3; share_build "$d" "$ws" $(share_closure "$@");; _share_pack) ensure_index; pw=$2; shift 2; d=$(tmpd) || exit 1; d=$d/p; share_build "$d" 1 $(share_closure "$@") && share_pack "$d" "$pw";;
   _share_pw) share_password;; _share_words) printf '%s\n' $SHARE_WORDS;;
   _import_classify) x=$(pack_open "$2") && pack_classify "$x";;
@@ -3421,9 +3428,9 @@ case ${1:-} in
   _import_parse) import_parse;; _import_write) ensure_index; apply_change "nhập" import_write "$2" "${3:-}";;
   _split) split_config "$2" "$3" "$4";; _resolve) resolve_conflict "$2";; _kho_addr) kho_addr;; _block) shift; host_block "$@";; _validate) validate;;
   --version|-v|version) echo "hostbook $VERSION";;
-  add) check_deps || exit 1; [ -d "$DIR" ] || { err "Chưa có ~/ssh-hosts · chạy hostbook để thiết lập"; exit 1; }; add_host "${2:-}" "${3:-}";;
+  add) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; add_host "${2:-}" "${3:-}";;
   sync) "$SELF" _sync_now; "$SELF" _header | sed -n 1p;;
-  import) check_deps || exit 1; [ -d "$DIR" ] || { err "Chưa có ~/ssh-hosts · chạy hostbook để thiết lập"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || home;;
+  import) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || home;;
   doctor) doctor;; setup) setup;; update) update;; kho) check_deps || exit 1; connect_kho;; help|-h|--help) show_help;;
   *) check_deps || exit 1
      if [ ! -d "$DIR/.git" ]; then first_run || exit 1; fi
