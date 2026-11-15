@@ -102,9 +102,9 @@ box(){ # color line... · wrap lines wider than the screen within the box
   for l in "$@"; do v=$(printf '%s' "$l" | sed $'s/\033\\[[0-9;]*m//g'); [ ${#v} -gt $max ] && max=${#v}; done
   if [ $((max + 4)) -gt "$cols" ]; then gum style --border rounded --padding "0 1" --border-foreground "$c" --width $((cols - 2)) "$@"
   else gum style --border rounded --padding "0 1" --border-foreground "$c" "$@"; fi; }
-title(){ printf '\n%s‹%s %s%s%s\n\n' "$CD" "$C0" "$CU$CB" "$*" "$C0"; }
+title(){ at "$*" "$UI_HOST"; printf '%s\n%s\n\n' "$(ui_label)" "$CBORDER$(printf '%*s' "$(term_cols)" '' | tr ' ' '─')$C0"; }   # text screens: breadcrumb line, then a rule
 flash(){ printf '%s\t%s\n' "$(date +%s)" "$*" > "$FLASH"; }
-pause(){ printf '\n%s%s%s' "$CD" "${1:-enter để quay lại}" "$C0" >&2; read -r _ </dev/tty; }
+pause(){ printf '\n%s%s%s' "$CD" "${1:-$(t pause_back)}" "$C0" >&2; read -r _ </dev/tty; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 perm(){ stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 port_open(){ # host port [seconds]: check whether a TCP port is open; use Bash /dev/tcp on minimal Linux without nc
@@ -119,25 +119,137 @@ is_url(){ case $1 in *://*|*@*:*) return 0;; esac; return 1; }   # a git URL (ss
 valid_name(){ case $1 in ""|*[!A-Za-z0-9._-]*) return 1;; esac; }   # server names allow only letters, digits, . _ - (untrusted repository names must not execute as commands)
 ver_ge(){ [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$2" ]; }   # $1 >= $2
 
-# pick HEADER ITEM... → print the zero-based index of the selected item. Items use "Label|description".
-pick(){
-  local header=$1; shift; local items=() i=0 sel x room
-  room=$(( $(term_cols) - 4 ))
-  for x in "$@"; do if [ "$x" != "${x#*|}" ]; then items[i]="${x%%|*}  ·  ${x#*|}"; else items[i]=$x; fi
-    [ ${#items[i]} -gt $room ] && items[i]="${items[i]:0:$((room - 1))}…"   # narrow screen: truncate descriptions with "…" before gum clips them
-    i=$((i+1)); done
-  sel=$(gum choose --height $(( ${#items[@]} > 20 ? 20 : ${#items[@]} + 1 )) --header "$header" "${items[@]}") || return 1
-  i=0; for x in "${items[@]}"; do [ "$x" = "$sel" ] && { echo $i; return 0; }; i=$((i+1)); done
-  return 1
-}
+# Not yet migrated flows print text and then ask: their screens open inline below that text (UI_INLINE) instead of
+# covering it. Migrated screens call ui_* directly, pass their text as header lines, and get the full frame.
+pick(){ UI_INLINE=1 ui_menu "$@"; }   # HEADER ITEM… → zero-based index of the chosen item
 row(){ # label value [suggestion source] · align by character count, not bytes; indent the source on a separate line on narrow screens
   local cols; cols=$(term_cols)
   local src=${3:-} room=$(( cols - 6 - 19 - 2 ))
   [ ${#src} -gt $room ] && [ $room -gt 8 ] && src="${src:0:$((room - 1))}…"
   if [ -n "$src" ] && [ $(( 19 + ${#2} + 5 + ${#3} )) -gt $(( cols - 6 )) ]; then printf '%s%*s %s\n%19s%s← %s%s\n' "$1" $((18-${#1})) '' "$2" '' "$CD" "$src" "$C0"
   else printf '%s%*s %s%s\n' "$1" $((18-${#1})) '' "$2" "${3:+   ${CD}← $3${C0}}"; fi; }
-confirm(){ gum confirm --affirmative "Có" --negative "Không" "$@"; }   # Vietnamese buttons; explicit button options supplied by callers take precedence
-ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
+confirm(){ UI_INLINE=1 ui_confirm "$@"; }
+ask(){ # header [example] [value] → typed text; an example is shown as "e.g. …" under the field, never as a value
+  local rule=''; [ -n "${2:-}" ] && [ -z "${3:-}" ] && rule=$(t example "$2")
+  UI_INLINE=1 ui_field "$1" "${3:-}" any "$rule"; }
+
+# ---------- languages (docs/design/screens.md#language) ----------
+# UI text lives in lang/<code>.sh as L_<key>='…' (a printf format when the key takes arguments). vi.sh is the complete
+# base and other languages override it, so a missing translation shows Vietnamese rather than a key name.
+lang_load(){
+  local d=${HOSTBOOK_LANG_DIR:-${SELF%/*}/lang} l
+  [ -f "$d/vi.sh" ] && . "$d/vi.sh"
+  l=${HOSTBOOK_LANG:-}; [ -n "$l" ] || cfg lang "" l   # HOSTBOOK_LANG overrides the config (tests, one-off runs)
+  if [ -z "$l" ]; then case ${LC_ALL:-${LC_MESSAGES:-${LANG:-}}} in vi*) l=vi;; *) l=en;; esac; fi
+  UI_LANG=$l; if [ "$l" != vi ] && [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; fi
+}
+t(){ # key [args…] → text for key (printf format when arguments follow); an unknown key prints ‹L_key›
+  local _k=L_$1; shift
+  if [ $# -gt 0 ]; then printf -- "${!_k-‹$_k›}" "$@"; else printf '%s' "${!_k-‹$_k›}"; fi; }
+tv(){ local _o=$1 _k=L_$2; shift 2; if [ $# -gt 0 ]; then printf -v "$_o" -- "${!_k-‹$_k›}" "$@"; else printf -v "$_o" '%s' "${!_k-‹$_k›}"; fi; }
+
+# ---------- screens (docs/design/screens.md) ----------
+# Every screen besides the search list is one fzf frame: a header box (breadcrumb label + context card), an input or
+# list box, and a footer box with key hints. A flow calls "at" once; the screens it opens then share that context.
+UI_AT=""; UI_HOST=""; UI_TONE=""; UI_ENTER=""; UI_INLINE=""   # UI_TONE=danger: error-coloured frame; UI_ENTER: what enter does
+at(){ UI_AT=$1; UI_HOST=${2-}; }   # "part|part…" [server for the context card]
+ui_label(){ # breadcrumb for the header label; the last part is what the screen does
+  local rest=$UI_AT p o=" ${CP}${CB}hostbook${C0}"
+  while [ -n "$rest" ]; do p=${rest%%|*}; if [ "$p" = "$rest" ]; then rest=; else rest=${rest#*|}; fi
+    if [ -n "$rest" ]; then o="$o ${CD}›${C0} $p"; else o="$o ${CD}›${C0} ${CU}${CB}$p${C0}"; fi; done
+  printf '%s ' "$o"; }
+ui_keys(){ local k o=; for k in "$@"; do o="$o${o:+   }${CP}${k%%:*}${C0} ${CD}${k#*:}${C0}"; done; printf '%s' "$o"; }
+ui_card(){ # [server] → context card: name and PROD; user@ip · project · login; description · groups
+  local h=${1:-$UI_HOST}; [ -n "$h" ] && [ -f "$IDX" ] || return 0
+  awk -F'\t' -v n="$h" -v b="$CB" -v z="$C0" -v d="$CD" -v r="$CR" -v ip="$ICON_PROD" -v grp="$GRP" \
+    -v wp="$(t card_project)" -v wl="$(t card_login)" -v ws="$(t card_ssh_self)" -v wv="$(t card_via)" -v wg="$(t card_groups)" '
+    BEGIN { while ((getline l < grp) > 0) { split(l, g, "\t"); if (index(" " g[3] " ", " " n " ")) gs = gs (gs != "" ? ", " : "") g[1] } }
+    { sub(/\r$/, "") }
+    $1 == n { prod = (" " $8 " " ~ / prod /)
+      printf "%s%s%s%s\n", b, $1, z, (prod ? "  " r b ip " PROD" z : "")
+      printf "%s%s%s%s · %s %s · %s %s%s%s\n", d, ($4 != "" ? $4 "@" : ""), $3, ($5 != "" && $5 != "22" ? ":" $5 : ""), wp, $2, wl, ($12 != "" ? $12 : ws), ($6 != "" ? " · " wv " " $6 : ""), z
+      if ($9 != "" || gs != "") printf "%s%s%s%s%s\n", d, $9, ($9 != "" && gs != "" ? " · " : ""), (gs != "" ? wg " " gs : ""), z
+      exit }' "$IDX"
+}
+ui_fzf(){ # header-text fzf-args… (stdin: list) → the shared frame
+  local head=$1 border style; shift; cfg border rounded border
+  style=--style=full:$border; [ "$border" = none ] && style=--style=minimal
+  [ -n "$head" ] || head=' '   # an empty header hides the box that carries the breadcrumb
+  local color; color=$(fzf_colors); [ "$UI_TONE" = danger ] && [ -z "${NO_COLOR:-}" ] && color="$color,border:$TH_ERR,label:$TH_ERR"
+  fzf --ansi --layout=reverse --height="${UI_INLINE:+~}100%" "$style" --header-first --info=hidden --gutter=' ' --pointer="$ICON_PTR" \
+    --no-scrollbar --color="$color" --header-label="$(ui_label)" --header-label-pos=2 --header="$head" "$@"
+}
+ui_head(){ # [line…] → header text: the context card, a blank line, then the screen's own lines
+  local c l o=; c=$(ui_card)
+  for l in "$@"; do [ -n "$l" ] && o="${o:+$o$'\n'}$l"; done
+  if [ -n "$c" ] && [ -n "$o" ]; then printf '%s\n \n%s' "$c" "$o"; else printf '%s' "$c$o"; fi; }
+# ui_field LABEL VALUE CHECK [RULE] [PREVIEW] [INTRO] → the value on enter (status 1 on esc). CHECK runs in fzf's shell on
+# every key, builtins only: name:<file of taken names> | port | project | text | equals:<word> | any.
+# PREVIEW is shown in the list box; every %s in it becomes the typed value.
+ui_field(){
+  local label=$1 value=$2 check=$3 rule=${4:-} prev=${5:-} intro=${6:-} d f keys v out
+  d=$(tmpd) || return 1; f=$d/field.sh
+  keys=$(ui_keys "enter:${UI_ENTER:-$(t key_save)}" "esc:$(t key_cancel)")
+  case $check in
+    name:*) v='case $q in "") m=$HB_E_EMPTY;; *" "*) m=$HB_E_SPACE;; *[!A-Za-z0-9._-]*) m=$HB_E_CHARS;; *) m=; while IFS= read -r n; do [ "$n" = "$q" ] && m="${HB_E_TAKEN%%%s*}$q${HB_E_TAKEN#*%s}"; done < "$HB_ARG";; esac';;
+    port) v='case $q in ""|*[!0-9]*) m=$HB_E_PORT;; *) if [ "$q" -ge 1 ] && [ "$q" -le 65535 ]; then m=; else m=$HB_E_PORT; fi;; esac';;
+    project) v='case $q in ""|*[!a-z0-9-]*) m=$HB_E_PROJECT;; *) m=;; esac';;
+    text) v='if [ -n "$q" ]; then m=; else m=$HB_E_EMPTY; fi';;
+    equals:*) v='if [ "$q" = "$HB_ARG" ]; then m=; else m=; [ -n "$q" ] && m="${HB_E_EQUALS%%%s*}$HB_ARG${HB_E_EQUALS#*%s}"; [ -z "$q" ] && m=-; fi';;
+    *) v='m=';;
+  esac
+  { printf '%s\n' 'q=$FZF_QUERY' "$v"
+    cat <<'SH'
+case $1 in
+  prev) p=$HB_PREV; o=; while :; do case $p in *%s*) o=$o${p%%%s*}$q; p=${p#*%s};; *) break;; esac; done; printf '%s\n' "$o$p";;
+  enter) if [ -z "$m" ]; then echo accept; fi;;
+  *) [ -n "$HB_PREV" ] && printf 'reload(sh %s prev)+' "$HB_SELF"
+     if [ -n "$m" ] && [ "$m" != - ]; then printf 'change-footer:%s%s%s\n%s' "$HB_ERR" "$m" "$HB_C0" "$HB_KEYS"; else printf 'change-footer:%s' "$HB_FOOT"; fi;;
+esac
+SH
+  } > "$f"
+  out=$(export HB_SELF="$(printf %q "$f")" HB_PREV="$prev" HB_ARG="${check#*:}" HB_FOOT="${rule:+$CD$rule$C0$'\n'}$keys" HB_KEYS="$keys" \
+      HB_ERR="$CR$ICON_ERR " HB_C0="$C0" HB_E_EMPTY="$(t err_empty)" HB_E_SPACE="$(t err_name_space)" HB_E_CHARS="$(t err_name_chars)" \
+      HB_E_TAKEN="$(t err_name_taken)" HB_E_PORT="$(t err_port)" HB_E_PROJECT="$(t err_project)" HB_E_EQUALS="$(t err_equals)"
+    : | ui_fzf "$(ui_head "$intro")" --disabled --print-query --query="$value" --prompt='› ' \
+      --input-label=" $label " --list-label="${prev:+ $(t preview_label) }" --no-highlight-line --pointer=' ' \
+      --footer="${rule:+$CD$rule$C0$'\n'}$keys" --bind "start:transform:sh $(printf %q "$f") change" \
+      --bind "change:transform:sh $(printf %q "$f") change" --bind "enter:transform:sh $(printf %q "$f") enter" --bind 'esc:abort')
+  [ $? -eq 0 ] || return 1
+  printf '%s\n' "${out%%$'\n'*}"
+}
+# ui_menu HEADER ITEM… → zero-based index of the chosen item. Items: "Label|description"; "#Name" starts a section
+# (not an item); "!Label" marks a destructive item, shown in the error colour.
+ui_menu(){
+  local header=$1; shift; local x lab desc sec= cols lw=0 sw=0 i=0 pad spad line list= danger
+  cols=$(term_cols)
+  for x in "$@"; do case $x in \#*) continue;; esac; x=${x#!}; x=${x%%|*}; [ ${#x} -gt $lw ] && lw=${#x}; done
+  [ $lw -gt 34 ] && lw=34; for x in "$@"; do case $x in \#*) [ "$cols" -ge 70 ] && sw=12;; esac; done
+  for x in "$@"; do
+    case $x in \#*) sec=${x#\#}; continue;; esac
+    danger=; case $x in !*) danger=$CR; x=${x#!};; esac
+    lab=${x%%|*}; desc=; [ "$x" != "$lab" ] && desc=${x#*|}
+    printf -v spad '%*s' $(( sw > ${#sec} ? sw - ${#sec} : 1 )) ''; printf -v pad '%*s' $(( lw + 2 - ${#lab} > 1 ? lw + 2 - ${#lab} : 2 )) ''
+    line="$i"$'\t'; [ $sw -gt 0 ] && line="$line$CD$sec$C0$spad"
+    line="$line$danger$lab$C0${desc:+$pad$CD$desc$C0}"; list="$list$line"$'\n'
+    sec=; i=$((i+1))
+  done
+  printf '%s' "$list" | ui_fzf "$(ui_head "${header:+$CB$header$C0}")" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
+    --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" --highlight-line \
+    --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:$(t key_back)")" --bind 'esc:abort'
+}
+# ui_confirm [--default=false] [--affirmative X] [--negative Y] [--danger] QUESTION [DETAIL…] → status 0 for yes
+ui_confirm(){
+  local yes no def=1 danger= q
+  yes=$(t yes); no=$(t no)
+  while [ $# -gt 0 ]; do case $1 in --default=false) def=2;; --default=true) def=1;; --affirmative) yes=$2; shift;; --negative) no=$2; shift;;
+    --affirmative=*) yes=${1#*=};; --negative=*) no=${1#*=};; --danger) danger=1;; *) break;; esac; shift; done
+  q=$1; shift
+  [ -n "$danger" ] && yes="$CR$yes$C0"
+  [ "$(printf '1\t%s\n0\t%s\n' "$yes" "$no" | UI_TONE=${danger:+danger} ui_fzf "$(ui_head "$CB$q$C0" "$@")" --no-input --delimiter="$TAB" --with-nth=2 \
+    --accept-nth=1 --highlight-line --bind "load:pos($def)" --bind 'y:pos(1)+accept,n:pos(2)+accept,esc:abort' \
+    --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")")" = 1 ]
+}
 
 # ---------- machine-local configuration and theme ----------
 CONF=${XDG_CONFIG_HOME:-$HOME/.config}/hostbook; if is_windows; then CONF=$(unix_path "$CONF"); fi
@@ -167,7 +279,7 @@ duration(){ local d; case $1 in *h) d=$(( ${1%h} * 3600 ));; *m) d=$(( ${1%m} * 
   if [ -n "${2:-}" ]; then printf -v "$2" '%s' "$d"; else echo "$d"; fi; }
 valid_theme_name(){ case $1 in ''|*[!a-zA-Z0-9_-]*) return 1;; esac; }
 cfg_valid(){
-  case $1:$2 in list:cards|list:compact|list:minimal|border:rounded|border:sharp|border:bold|border:double|border:none|preview:right|preview:bottom|preview:hidden|separator:on|separator:off|icons:unicode|icons:ascii|icons:nerd) return 0;;
+  case $1:$2 in lang:vi|lang:en|list:cards|list:compact|list:minimal|border:rounded|border:sharp|border:bold|border:double|border:none|preview:right|preview:bottom|preview:hidden|separator:on|separator:off|icons:unicode|icons:ascii|icons:nerd) return 0;;
     theme:*) valid_theme_name "$2" && { theme_builtin "$2" >/dev/null || [ -f "$CONF/themes/$2.theme" ]; }; return;;
     key_ttl:*|connect_timeout:*) [[ $2 =~ ^[1-9][0-9]*[hm]?$ ]] || return 1
       [ "$1" = key_ttl ] || [[ $2 =~ ^[1-9][0-9]*$ ]] || return 1
@@ -186,7 +298,8 @@ cfg_set(){
   mv "$t" "$CFG" && cfg_load
 }
 cfg_mem(){ cfg_valid "$1" "$2" || return 1; [ "${CFG_SRC-}" = "$CFG" ] || cfg_load; CFG_MEM="$CFG_MEM$1=$2"$'\n'; }   # like cfg_set, in memory only
-cfg_init(){ [ -e "$CFG" ] || { [ ! -d "$DIR/.git" ] || cfg_set list compact; }; }
+cfg_init(){ [ -e "$CFG" ] || { [ ! -d "$DIR/.git" ] || cfg_set list compact; }
+  local l; [ ! -d "$DIR/.git" ] || cfg_raw lang l || cfg_set lang vi; }   # installs from before languages keep Vietnamese
 cfg_errors(){
   [ -f "$CFG" ] || return 0
   local line k v i=0
@@ -265,6 +378,7 @@ apply_theme(){
   export GUM_CHOOSE_CURSOR_FOREGROUND=$ga GUM_CHOOSE_HEADER_FOREGROUND=$gt GUM_CHOOSE_SELECTED_FOREGROUND=$ga \
     GUM_INPUT_HEADER_FOREGROUND=$gt GUM_INPUT_PROMPT_FOREGROUND=$ga GUM_INPUT_CURSOR_FOREGROUND=$ga \
     GUM_CONFIRM_SELECTED_BACKGROUND=$ga GUM_SPIN_SPINNER_FOREGROUND=$ga
+  export GUM_INPUT_SHOW_HELP=false GUM_CHOOSE_SHOW_HELP=false GUM_CONFIRM_SHOW_HELP=false GUM_FILE_SHOW_HELP=false GUM_FILTER_SHOW_HELP=false GUM_WRITE_SHOW_HELP=false   # English key help; screens print their own footer
   ICON_GROUP=▦; ICON_SESSION=↺; ICON_PROD=●; ICON_OK=✓; ICON_ERR=✗; ICON_WARN='!'; ICON_PTR=▌
   cfg icons unicode name
   case $name in
@@ -1668,18 +1782,33 @@ apply_change(){ # description command...
   if ! e=$(validate); then g checkout -q -- . 2>/dev/null; g clean -fdq -- '*.conf' secrets 2>/dev/null; build_index; err "Không đổi được vì config sẽ lỗi:"; dim "$e"; return 1; fi
   build_index; save_and_sync "$msg"
 }
+host_where(){ # server → "file.conf line N · groups g1, g2" for previews
+  local f l gs; f=$(host_field "$1" 10); l=$(host_field "$1" 11)
+  gs=$(awk -F'\t' -v n="$1" 'index(" " $3 " ", " " n " ") {printf "%s%s", (c++ ? ", " : ""), $1}' "$GRP" 2>/dev/null)
+  printf '%s' "$(t where_line "${f##*/}" "$l")${gs:+ · $(t card_groups) $gs}"; }
 delete_server(){
-  local n=$1 users; users=$(jump_users "$n")
-  confirm --default=false "Xoá $n?${users:+ Các server $users đang đi qua máy này sẽ không vào được nữa.} Có thể hoàn tác trong Công cụ." || return 1
-  apply_change "Đã xoá $n" delete_host_raw "$n"
+  local n=$1 users gs lines=() d
+  at "$n|$(t act_delete)" "$n"; users=$(jump_users "$n")
+  gs=$(awk -F'\t' -v n="$n" 'index(" " $3 " ", " " n " ") {printf "%s%s", (c++ ? ", " : ""), $1}' "$GRP" 2>/dev/null)
+  lines+=("$CB$(t delete_removes)$C0" "  • $(t delete_block "$(t where_line "$(basename "$(host_field "$n" 10)")" "$(host_field "$n" 11)")")")
+  [ -n "$gs" ] && lines+=("  • $(t delete_groups "$gs")")
+  [ -n "$users" ] && lines+=("  ${CR}• $(t delete_jump_users "$users")$C0")
+  lines+=("" "$CD$(t delete_undo)$C0")
+  if is_prod "$n"; then   # PROD: type the name, so enter alone can never delete it
+    UI_TONE=danger UI_ENTER=$(t key_delete) ui_field "$(t delete_type_label "$n")" "" "equals:$n" "$(t delete_type_rule "$n")" "" "$(printf '%s\n' "${lines[@]}")" >/dev/null || return 1
+  else
+    confirm --danger --default=false --affirmative "$(t delete_yes "$n")" --negative "$(t cancel)" "$(t delete_question "$n")" "${lines[@]}" || return 1
+  fi
+  apply_change "$(t done_deleted "$n")" delete_host_raw "$n"
 }
 rename_server(){
-  local n=$1 m
-  m=$(ask "Tên mới cho $n" "" "$n") || return 1
+  local n=$1 m d
+  at "$n|$(t act_rename)" "$n"
+  d=$(tmpd) || return 1; awk -F'\t' -v n="$n" '$1!=n {print $1}' "$IDX" > "$d/taken"
+  m=$(ui_field "$(t rename_label)" "$n" "name:$d/taken" "$(t rename_rule)" \
+      "$n ${CD}→$C0 $CP$CB%s$C0"$'\n'"$CD$(host_where "$n") · ssh %s$C0") || return 1
   [ "$m" = "$n" ] && return 0
-  valid_name "$m" || { err "Tên chỉ gồm chữ, số và . _ -"; pause; return 1; }
-  host_exists "$m" && { err "Đã có server tên $m"; pause; return 1; }
-  apply_change "Đã đổi tên $n → $m" rename_host_raw "$n" "$m"
+  apply_change "$(t done_renamed "$n" "$m")" rename_host_raw "$n" "$m"
 }
 move_server(){
   local n=$1 to
@@ -2309,28 +2438,31 @@ change_login(){
   apply_change "Đổi cách đăng nhập của $n" set_host_secret "$n" "$sc"
 }
 host_actions(){
-  local n=$1 ip p1 pport pname
+  local n=$1 ip p1 pport pname login tmx
   ip=$(host_field "$n" 3); p1=$(pf_presets "$n" | head -1); pport=${p1%%|*}; pname=$(printf '%s' "$p1" | cut -d'|' -f2)
-  title "$n$(is_prod "$n" && printf "  %s${ICON_PROD} PROD%s" "$CR" "$C0")"; dim "$(host_field "$n" 9)"; echo
-  local tmx="Mở trong tmux|giữ kết nối khi đóng terminal"; [ -n "${TMUX:-}" ] && tmx="Mở trong tab tmux mới"
-  case $(pick "" "SSH vào server|enter ở ô tìm" "$tmx" "Chuyển tiếp cổng $pname|localhost:$pport → $n:$pport" "Chuyển tiếp cổng khác…" \
-      "Gửi file lên server…" "Tải file về máy này…" "Copy IP|$ip" "Copy lệnh ssh|ssh $n" \
-      "Sửa|^e" "Đổi tên" "Chuyển sang dự án khác|đang ở $(host_field "$n" 2)" "Xoá server" "Đổi cách đăng nhập|đang là: $(host_field "$n" 12 | grep . || echo 'ssh tự lo')" "Kiểm tra kết nối" "Chia sẻ server này") in
+  login=$(host_field "$n" 12); [ -n "$login" ] || login=$(t card_ssh_self)
+  tmx="$(t act_tmux)|$(t act_tmux_hint)"; [ -n "${TMUX:-}" ] && tmx=$(t act_tmux_tab)
+  at "$n" "$n"
+  case $(pick "" "#$(t sec_connect)" "$(t act_ssh)|$(t act_ssh_hint)" "$tmx" "$(t act_forward "$pname")|localhost:$pport → $n:$pport" "$(t act_forward_other)" \
+      "#$(t sec_files)" "$(t act_send)" "$(t act_get)" \
+      "#$(t sec_edit)" "$(t act_edit)|^e" "$(t act_rename)" "$(t act_move)|$(t act_move_hint "$(host_field "$n" 2)")" "$(t act_login)|$(t act_login_hint "$login")" \
+      "#$(t sec_other)" "$(t act_copy_ip)|$ip" "$(t act_copy_ssh)|ssh $n" "$(t act_check)" "$(t act_share)" \
+      "#$(t sec_danger)" "!$(t act_delete)|$(t act_delete_hint)") in
     0) connect "$n";;
     1) open_many "" "$n";;
     2) port_forward "$n" "$pport";;
     3) port_forward "$n";;
     4) send_file "$n";;
     5) get_file "$n";;
-    6) printf '%s' "$ip" | copy && flash "${CG}${ICON_OK} Đã copy $ip${C0}";;
-    7) printf 'ssh %s' "$n" | copy && flash "${CG}${ICON_OK} Đã copy: ssh $n${C0}";;
-    8) edit_host "$n";;
-    9) rename_server "$n";;
-    10) move_server "$n";;
-    11) delete_server "$n";;
-    12) change_login "$n";;
-    13) check_hosts "$n";;
-    14) share_flow "$n";;
+    6) edit_host "$n";;
+    7) rename_server "$n";;
+    8) move_server "$n";;
+    9) change_login "$n";;
+    10) printf '%s' "$ip" | copy && flash "${CG}${ICON_OK} $(t done_copied "$ip")${C0}";;
+    11) printf 'ssh %s' "$n" | copy && flash "${CG}${ICON_OK} $(t done_copied "ssh $n")${C0}";;
+    12) check_hosts "$n";;
+    13) share_flow "$n";;
+    14) delete_server "$n";;
   esac
 }
 group_actions(){
@@ -2844,6 +2976,7 @@ first_run(){ # ~/ssh-hosts does not exist yet
 
 cfg_init
 apply_theme
+lang_load
 
 # A killed run leaves $STATE/tmp/<pid>.* behind, and those can hold decrypted secrets: remove the ones whose pid is gone.
 sweep_tmp(){

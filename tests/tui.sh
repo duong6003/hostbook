@@ -68,7 +68,7 @@ wait_for(){
 }
 start(){
   local cmd
-  printf -v cmd 'env HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash COLORFGBG=%q /bin/bash %q %s' \
+  printf -v cmd 'env HOSTBOOK_LANG=vi HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash COLORFGBG=%q /bin/bash %q %s' \
     "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
   tmux -L "$socket" new-session -d -x "$1" -y 36 -s ui "$cmd"
 }
@@ -233,7 +233,7 @@ for width in 60 100 200; do
  wait_for 'Bắt đầu thế nào?'
  tmux -L "$socket" send-keys -t ui Down Enter
  wait_for 'Kết nối kho ngay'
- tmux -L "$socket" send-keys -t ui Right Enter
+ tmux -L "$socket" send-keys -t ui n   # confirm screens: y/n or ↑↓ enter
  wait_for 'light · right'
  tmux -L "$socket" send-keys -t ui Enter
  wait_for 'enter để bắt đầu'
