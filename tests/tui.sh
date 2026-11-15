@@ -72,6 +72,16 @@ start(){
     "$HERE/../lib" "$HERE/../lang" "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
   tmux -L "$socket" new-session -d -x "$1" -y 36 -s ui "$cmd"
 }
+# An unknown underscore-prefixed argument remains an ordinary search query.
+printf '\nHost _web-a\n  HostName 192.0.2.1\nHost _web-b\n  HostName 192.0.2.2\n' >> "$HOSTBOOK_DIR/booking.conf"
+"$S" _index >/dev/null
+start 100 _web
+wait_for _web-a
+wait_for _web-b
+end_ui
+git -C "$HOSTBOOK_DIR" show HEAD:booking.conf > "$HOSTBOOK_DIR/booking.conf"
+"$S" _index >/dev/null
+echo 'ok    TUI tìm hai server với truy vấn bắt đầu bằng dấu gạch dưới'
 for width in 60 100 200; do
  for style in compact cards minimal; do
   printf 'list = %s\n' "$style" > "$XDG_CONFIG_HOME/hostbook/config"

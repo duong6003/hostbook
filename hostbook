@@ -2961,7 +2961,8 @@ case ${1:-} in
   sync) "$SELF" _sync_now; "$SELF" _header | sed -n 1p;;
   import) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || home;;
   doctor) doctor;; setup) setup;; update) update;; kho) check_deps || exit 1; connect_kho;; help|-h|--help) show_help;;
-  *) check_deps || exit 1
+  *) case ${1:-} in _*) . "$LIBDIR/import.sh" || exit 1;; esac
+     check_deps || exit 1
      if [ ! -d "$DIR/.git" ]; then first_run || exit 1; fi
      if [ -n "${1:-}" ]; then
        ensure_index

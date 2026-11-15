@@ -27,6 +27,8 @@ mkdir -p "$T/modules"; cp "$HERE/../lib/ui.sh" "$T/modules/ui.sh"
 printf 'return 1\n' > "$T/modules/import.sh"
 check 'unrelated callbacks do not load import' '(export HOSTBOOK_LIB_DIR="$T/modules"; for cmd in _header "_preview h:example" _footer _list _demo; do bash "$app/hostbook" $cmd >/dev/null || exit 1; done)'
 check 'import callbacks require import module' '(! HOSTBOOK_LIB_DIR="$T/modules" bash "$app/hostbook" _import_parse </dev/null >/dev/null 2>&1)'
+printf 'echo import-needed >&2; return 1\n' > "$T/modules/import.sh"
+check 'underscore searches load import for the home screen' '(! HOSTBOOK_LIB_DIR="$T/modules" bash "$app/hostbook" _web </dev/null >/dev/null 2>"$T/search-error" && grep -q import-needed "$T/search-error")'
 if command -v tmux >/dev/null 2>&1; then
   session_check(){ (
     export TMUX_TMPDIR="$T/tmux-socket"; unset TMUX; mkdir -p "$TMUX_TMPDIR"
