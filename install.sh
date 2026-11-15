@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install hostbook (macOS / Linux). Run again at any time to update.
-#   curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
+#   git clone git@github.com:duong6003/hostbook.git ~/.local/share/hostbook && bash ~/.local/share/hostbook/install.sh
+#   (the repository is private; the curl | bash one-liner works only while it is public)
 # No sudo required: everything goes into ~/.local. Download official fzf and gum releases (with checksum verification)
 # when missing or too old (Ubuntu apt only provides fzf 0.44 and has no gum package).
 set -eu
@@ -76,5 +77,5 @@ if [ -d "$APP/.git" ]; then git -C "$APP" pull -q --ff-only && say "Đã cập n
 else rm -rf "$APP"; mkdir -p "$(dirname "$APP")"; git clone -q --depth 1 "$REPO" "$APP" && say "Đã tải hostbook"; fi
 
 "$APP/hostbook" setup < /dev/null
-printf '\nXong. Mở terminal mới rồi gõ \033[1mhostbook\033[0m (hoặc \033[1ms\033[0m).\n'
+printf '\nXong. Mở terminal mới rồi gõ \033[1mhostbook\033[0m (hoặc \033[1mhb\033[0m).\n'
 command -v tmux >/dev/null 2>&1 || printf 'tmux chưa có: chỉ cần khi mở nhiều server cùng lúc, app sẽ nhắc lúc đó.\n'
