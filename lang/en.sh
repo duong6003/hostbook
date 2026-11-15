@@ -1123,3 +1123,6 @@ L_key_done='done'
 L_controls_selected='selected'
 L_controls_on='On'
 L_controls_off='Off'
+
+L_home_no_matches='No matches · Esc clears search'
+L_home_selection_kept='Selection kept'

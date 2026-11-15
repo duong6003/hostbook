@@ -54,6 +54,8 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 When a screen only reports that something finished, it does not stay open: it returns to the search screen and calls
 `flash` (shown in the header there).
 
+The home search distinguishes an empty host list from a query with no matches. An empty list points to Add and Tools/Import. A no-match message explains that Escape clears the query, keeps the normal shortcut footer visible, and says when selections remain. Escape clears query, then selection, then an imported-only view.
+
 ## Pieces
 
 | Piece | Function | Notes |

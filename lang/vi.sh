@@ -1123,3 +1123,6 @@ L_key_done='xong'
 L_controls_selected='đã chọn'
 L_controls_on='Bật'
 L_controls_off='Tắt'
+
+L_home_no_matches='Không có kết quả · Esc xoá tìm kiếm'
+L_home_selection_kept='Vẫn giữ lựa chọn'

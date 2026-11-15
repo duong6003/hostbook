@@ -33,3 +33,11 @@ Ruling: the installed minimum fzf 0.63 lacks `--gutter` and the `multi` event us
 - [x] Exercise missing/invalid/saved modes, cancel, group preference, single host and PROD rejection with isolated stubs.
 - [x] Use compact choice and precomputed diagrams; default to Split without changing valid saved modes.
 - [x] Verify local private TUI and related regressions. Linux/Windows verification and branch integration remain for final acceptance.
+
+## Home recovery (Task 5 subset)
+
+- [x] Preserve and test Escape's query → selection → imported-only view hierarchy; selected hosts remain actionable on zero matches.
+- [x] Distinguish a query with no matches from an empty host list. Show the existing Add and Tools/Import instructions for no data; keep shortcut footer visible and explain when selections remain during a no-match query.
+- [x] Real private-tmux tests cover rapid edits, long queries, recovery, Enter on selected hosts, empty data and 44/60/100×24 in vi/en and rounded/none with actual fzf 0.63.0. fzf 0.75 and regression results are recorded at integration.
+- [ ] Compare query response before/after in a quiet window; a builtins-only fzf result callback updates the footer, without starting the app per key.
+- [ ] File picker and other searchable lists, integration with import and form, independent review and platform coverage remain outside this slice.

@@ -2664,8 +2664,10 @@ home(){
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err "$(t err_ctl_key)"; return 1; }; export FZF_API_KEY
   clip_offer
   fd=$(tmpd) || return 1
+  export HB_HOME_NO_MATCH="$(t home_no_matches)" HB_HOME_SELECTION_KEPT="$(t home_selection_kept)"
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
-  foot="c=\${FZF_SELECT_COUNT:-0}
+  foot="if [ \"\${FZF_TOTAL_COUNT:-0}\" -gt 0 ] && [ \"\${FZF_MATCH_COUNT:-0}\" -eq 0 ] && [ -n \"\$FZF_QUERY\" ]; then printf '%s\\n' \"\$HB_HOME_NO_MATCH\"; [ \"\${FZF_SELECT_COUNT:-0}\" -eq 0 ] || printf '%s\\n' \"\$HB_HOME_SELECTION_KEPT\"; fi
+    c=\${FZF_SELECT_COUNT:-0}
     if [ \"\$c\" -gt 0 ]; then n=\${#c}; [ \$n -lt 4 ] || n=4; IFS= read -r f < $(printf %q "$fd")/f-m\$n; printf \"\$f\\n\" \"\$c\"
     else case \$t in [hgs]:*) n=\${t%%:*};; *) n=x;; esac; IFS= read -r f < $(printf %q "$fd")/f-\$n; printf '%s\n' \"\$f\"; fi"
   fwrite="t={1}; [ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$STATE/current"); "
@@ -2689,6 +2691,7 @@ home(){
       --bind "btab:toggle-up+transform-footer:$fwrite$foot" \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
       --bind "focus:transform-footer:$fwrite$foot" \
+      --bind "result:transform-footer:$fwrite$foot" \
       --bind "esc:transform~if [ -n \"\$FZF_QUERY\" ]; then echo clear-query; elif [ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ]; then echo clear-selection; else echo abort; fi~+transform-footer:$fwrite$foot" \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list
