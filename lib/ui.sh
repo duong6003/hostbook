@@ -138,7 +138,7 @@ ui_multiline(){
   cols=$(term_cols); rows=$(term_rows); header="$(ui_label)$NL$(ui_head "$label")$NL$keys"
   height=$((rows - 7)); [ "$height" -le 10 ] || height=10; [ "$height" -ge 1 ] || height=1
   gum_color "$TH_ACCENT" ga; gum_color "$TH_TITLE" gt
-  printf '%s' "$value" | GUM_WRITE_STRIP_ANSI=false GUM_WRITE_PROMPT_FOREGROUND=$ga GUM_WRITE_CURSOR_FOREGROUND=$ga GUM_WRITE_HEADER_FOREGROUND=$gt \
+  GUM_WRITE_VALUE="$value" GUM_WRITE_PROMPT_FOREGROUND=$ga GUM_WRITE_CURSOR_FOREGROUND=$ga GUM_WRITE_HEADER_FOREGROUND=$gt \
     gum write --width="$((cols > 4 ? cols - 4 : 1))" --height="$height" --char-limit=0 --header="$header" --placeholder=''
 }
 # ui_menu HEADER ITEM… → zero-based index of the chosen item. Items: "Label|description"; "#Name" starts a section

@@ -11,14 +11,3 @@ ctrl+j new line   enter continue   ctrl+c cancel
 ┃
 ┃
 ┃
-
-
-
-
-
-
-
-
-
-
-

@@ -107,6 +107,11 @@ end_ui
 start_multiline 'previous draft'; wait_text 'previous draft'; k Enter; wait_done
 [ "$(cat "$T/picked")" = 'previous draft' ] || { echo 'FAIL existing multiline draft'; exit 1; }
 end_ui
+draft=$'  leading and trailing  \n\nlast line  \n\n'
+printf '%s\n' "$draft" > "$T/expected-draft"
+start_multiline "$draft"; wait_text 'leading and trailing'; k Enter; wait_done
+[ "$(cat "$T/status")" = 0 ] && cmp -s "$T/expected-draft" "$T/picked" || { echo 'FAIL exact multiline draft'; exit 1; }
+end_ui
 start_multiline 'previous draft'; wait_text 'previous draft'; k C-c; wait_done
 [ "$(cat "$T/status")" != 0 ] || { echo 'FAIL multiline cancel'; exit 1; }
 end_ui
