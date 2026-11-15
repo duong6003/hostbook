@@ -18,6 +18,8 @@ When adding a host, `Đăng nhập bằng` selects an existing credential or cre
 Existing external agents and hardware-backed keys can use the option that lets SSH
 manage authentication without storing a new secret.
 
+During SSH-config import, an external private key is saved to the vault only after you confirm it. The original key file is left in place. A separately confirmed key save is committed independently and remains saved if you later cancel the host import. Imported sources with unsupported inherited credentials, executable Match rules, or Include directives are rejected before SSH examines them. Share bundles are validated before extraction and reject archive links.
+
 ## Unlocking and external SSH clients
 
 The vault identity is protected by a master password. A recovery code is shown when

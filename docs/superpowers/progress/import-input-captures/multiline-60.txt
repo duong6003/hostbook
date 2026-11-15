@@ -1,0 +1,3 @@
+ hostbook › Test
+Paste input
+ctrl+j new line   enter continue   ctrl+c cancel

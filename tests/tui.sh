@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Test the real fzf screen in an isolated tmux server, using only sample hosts and temporary configuration.
 set -eu
+unset SSH_AUTH_SOCK SSH_AGENT_PID
 command -v tmux >/dev/null || { echo 'Bỏ qua TUI: chưa có tmux'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
 T=$(mktemp -d); socket=hb-ui-$$
@@ -35,6 +36,7 @@ cleanup(){
 }
 trap cleanup EXIT
 export HOME=$T/home XDG_CONFIG_HOME=$T/config HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state HOSTBOOK_SSH_CONFIG=$T/ssh_config
+export HOSTBOOK_KEYCHAIN="file:$T/keychain/id"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 ARTIFACTS=${HOSTBOOK_TEST_ARTIFACTS:-$T/captures}; mkdir -p "$ARTIFACTS"
 unset FZF_DEFAULT_OPTS FZF_DEFAULT_COMMAND NO_COLOR
@@ -54,7 +56,9 @@ Host booking-web
   User deploy
 CONF
 printf 'booking-prod\tsplit\tbooking-api booking-web\n' > "$HOSTBOOK_DIR/groups.tsv"
+mkdir -p "$HOSTBOOK_DIR/secrets"; for f in vault.pub vault.key.age vault.recovery.age; do printf 'fixture\n' > "$HOSTBOOK_DIR/secrets/$f"; done
 git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
+fixture_commit=$(git -C "$HOSTBOOK_DIR" rev-parse HEAD)
 "$S" _index >/dev/null
 # Bounded wait for a real rendered state, rather than sleeping a fixed duration.
 wait_for(){
@@ -68,10 +72,33 @@ wait_for(){
 }
 start(){
   local cmd
-  printf -v cmd 'env HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=%q HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash COLORFGBG=%q /bin/bash %q %s' \
-    "$HERE/../lang" "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
+  printf -v cmd 'env HOSTBOOK_LIB_DIR=%q HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=%q HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash COLORFGBG=%q /bin/bash %q %s' \
+    "$HERE/../lib" "$HERE/../lang" "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
   tmux -L "$socket" new-session -d -x "$1" -y 36 -s ui "$cmd"
 }
+# Public import opens the package picker directly and can be canceled without an editor.
+printf '#!/bin/sh\nprintf called > "%s/editor-called"\nexit 1\n' "$T" > "$T/bin/editor"; chmod +x "$T/bin/editor"
+export EDITOR="$T/bin/editor" VISUAL="$T/bin/editor"
+start 100 import
+wait_for 'Chọn gói Hostbook'
+! grep -q 'Dán nội dung' "$T/screen"
+tmux -L "$socket" send-keys -t ui Escape
+end_ui
+[ ! -e "$T/editor-called" ] || { echo 'FAIL TUI: import opened an editor'; exit 1; }
+echo 'ok    TUI import mở thẳng bộ chọn gói, esc huỷ'
+# An unknown underscore-prefixed argument remains an ordinary search query.
+printf '\nHost _web-a\n  HostName 192.0.2.1\nHost _web-b\n  HostName 192.0.2.2\n' >> "$HOSTBOOK_DIR/booking.conf"
+"$S" _index >/dev/null
+start 100 _web
+wait_for _web-a
+wait_for _web-b
+end_ui
+# Search can commit external edits in the background; HEAD is not the fixture baseline.
+"$S" _sync_now >/dev/null
+git -C "$HOSTBOOK_DIR" show "$fixture_commit:booking.conf" > "$HOSTBOOK_DIR/booking.conf"
+! grep -q '^Host _web-' "$HOSTBOOK_DIR/booking.conf"
+"$S" _index >/dev/null
+echo 'ok    TUI tìm hai server với truy vấn bắt đầu bằng dấu gạch dưới'
 for width in 60 100 200; do
  for style in compact cards minimal; do
   printf 'list = %s\n' "$style" > "$XDG_CONFIG_HOME/hostbook/config"
@@ -123,8 +150,15 @@ Host dev-db
   HostName 192.0.2.11
   User ubuntu
 CONF
-start 100 "import $T/import.conf"
-wait_for 'Nhập?'
+mkdir -p "$T/package/conf"; cp "$T/import.conf" "$T/package/conf/dev.conf"
+printf 'version=1\nfrom=fixture\n' > "$T/package/manifest"; : > "$T/package/groups.tsv"
+{ printf '# hostbook-share v1\n'; tar -czf - -C "$T/package" . | AGE_PASSPHRASE=fixture age -e -j batchpass -a; } > "$T/import.hbshare"
+start 100 "import $T/import.hbshare"
+wait_for 'Mật khẩu của gói'
+tmux -L "$socket" send-keys -t ui fixture Enter
+wait_for 'Nhập thế nào?'
+tmux -L "$socket" send-keys -t ui Enter
+wait_for 'Xem lại trước khi nhập'
 tmux -L "$socket" send-keys -t ui Enter
 wait_for 'Tiếp theo'
 grep -q '2 mới' "$T/screen"
@@ -163,6 +197,7 @@ close_check 'Giao diện'
 export HOSTBOOK_DIR=$T/many/hosts HOSTBOOK_STATE="$T/many/it's state" HOSTBOOK_SSH_CONFIG=$T/many/ssh_config
 mkdir -p "$HOSTBOOK_DIR"; printf 'Include %s/*.conf\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
 for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20; do printf 'Host many%s\n  HostName 127.0.0.1\n' "$i"; done > "$HOSTBOOK_DIR/many.conf"
+mkdir -p "$HOSTBOOK_DIR/secrets"; for f in vault.pub vault.key.age vault.recovery.age; do printf 'fixture\n' > "$HOSTBOOK_DIR/secrets/$f"; done
 git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
 "$S" _index >/dev/null
 printf 'list = compact\n' > "$XDG_CONFIG_HOME/hostbook/config"
@@ -232,14 +267,23 @@ for width in 60 100 200; do
  start "$width"
  wait_for 'Choose a language'   # the first screen picks the language; Tiếng Việt is preselected from HOSTBOOK_LANG
  tmux -L "$socket" send-keys -t ui Enter
- wait_for 'Bắt đầu thế nào?'
+ wait_for 'Máy này sẽ làm nhiệm vụ gì?'
+ tmux -L "$socket" send-keys -t ui Enter
+ wait_for 'Bạn đã có dữ liệu Hostbook chưa?'
  grep -qx 'lang = vi' "$XDG_CONFIG_HOME/hostbook/config"
- tmux -L "$socket" send-keys -t ui Down Enter
- wait_for 'Kết nối kho ngay'
+ ! grep -q 'Lọc' "$T/screen" || { echo 'FAIL first-run choice must not show a filter'; exit 1; }
+ tmux -L "$socket" send-keys -t ui Enter
+ wait_for 'Mật khẩu bảo vệ vault'
+ tmux -L "$socket" send-keys -t ui 'synthetic-password' Enter
+ wait_for 'Nhập lại'
+ tmux -L "$socket" send-keys -t ui 'synthetic-password' Enter
+ wait_for 'Mã khôi phục'
+ tmux -L "$socket" send-keys -t ui Enter
+ wait_for 'Kết nối kho đồng bộ ngay'
  tmux -L "$socket" send-keys -t ui n   # confirm screens: y/n or ↑↓ enter
  wait_for 'light · right'
  tmux -L "$socket" send-keys -t ui Enter
- wait_for 'enter để bắt đầu'
+ wait_for 'enter để mở danh sách server'
  grep -qx 'theme = light' "$XDG_CONFIG_HOME/hostbook/config"
  grep -qx 'list = cards' "$XDG_CONFIG_HOME/hostbook/config"
  tmux -L "$socket" send-keys -t ui Enter

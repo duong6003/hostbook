@@ -1,14 +1,27 @@
 name: test
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Install macOS terminal test dependency
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install tmux
       - name: Install using install.sh from this checkout
         env:
           HOSTBOOK_REPO: ${{ github.workspace }}
@@ -18,13 +31,29 @@ jobs:
           git config --global user.email ci@example.com
           git config --global init.defaultBranch main
           bash install.sh
+      - name: Verify isolated Unix install and update
+        run: bash tests/install.sh
       - name: Run tests
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          for tool in tmux fzf gum; do command -v "$tool" >/dev/null || exit 1; done
           bash tests/test.sh
           bash tests/platform.sh
+          bash tests/hosts-module.sh
+          bash tests/settings-module.sh
           bash tests/ui.sh
+          bash tests/file-input.sh
+          bash tests/menu-empty.sh
+          bash tests/controls.sh
+          bash tests/open-mode.sh
+          bash tests/home-recovery.sh
           bash tests/import.sh
+          bash tests/import-keys.sh
+          bash tests/import-input.sh
+          bash tests/import-package.sh
+          bash tests/import-review.sh
+          bash tests/import-tui.sh
+          bash tests/onboarding.sh
           bash tests/tui.sh
           bash tests/screens.sh
       - name: Test against a real SSH server (Docker, Ubuntu only)
@@ -38,6 +67,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Restore verified archive downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hostbook-downloads
+          key: windows-x64-downloads-${{ hashFiles('install.ps1') }}
       - name: Install managed runtime, test launcher and native boundaries, real SSH, update and uninstall
         shell: powershell
+        env:
+          HOSTBOOK_DOWNLOAD_CACHE: ${{ runner.temp }}/hostbook-downloads
         run: .\tests\windows.ps1

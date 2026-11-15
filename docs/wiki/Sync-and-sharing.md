@@ -47,7 +47,9 @@ require connectivity between the sender and recipient.
 hostbook import workspace.hbshare
 ```
 
-The import flow previews the bundle, compares hosts and credential fingerprints,
+Export always saves a `.hbshare` file in Downloads, or Home if Downloads is absent. A clipboard copy is optional; importing uses the saved file.
+
+Only Hostbook share packages are accepted by Import. Enter the package password to decrypt it. The import flow previews the bundle, compares hosts and credential fingerprints,
 and lets you keep, update, or rename conflicting entries. After import, connection
 checks are offered explicitly; they do not run automatically.
 

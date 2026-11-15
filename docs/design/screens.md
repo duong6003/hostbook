@@ -6,7 +6,7 @@ The interactive prototype that this page was approved from lives outside the rep
 
 ## Layout: the full-screen frame
 
-A screen is one fzf window (`ui_fzf`), drawn in the same boxes as the search screen:
+A screen is one fzf window (`ui_fzf`), drawn in the same boxes as the search screen. Compact choices, toggles and checklists use the same frame at a height capped by the terminal:
 
 ```
 ╭ hostbook › shop-api › Rename ────────────────────────────╮   header box: breadcrumb label (S1)
@@ -38,18 +38,36 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Type | Helper | Use for | Must have |
 | --- | --- | --- | --- |
 | Action menu | `ui_menu` | → on a server or group, Tools, Secrets | sections (`#Name`), descriptions, destructive items last (`!Label`) |
+| Compact choice | `ui_choice` | short choices and opening modes | no filter, visible current choice and explicit apply/cancel |
+| Toggle | `ui_toggle` | binary settings | horizontal on/off, current value and explicit apply/cancel |
+| Checklist | `ui_checklist` | tags | Space toggles, selected count and empty selection accepted |
 | Single field | `ui_field` | rename, port, path, group name, secret name | rule shown before typing, inline error, preview of the change |
+| Multiline input | `ui_multiline` | paste or edit multiline text | native gum editor, breadcrumb and localized key hints; Ctrl-C cancels (Escape also cancels on gum 2) |
 | Multi-step | `ui_field` per step | add server, connect sync hub, vault setup | `step n/m` in the breadcrumb, finished steps as `✓` lines |
-| Review | `ui_menu` with header lines | last step of add/import | label → value table, `← source` for every suggestion |
+| Review | `ui_menu` for add; `ui_fzf` for import | last step of add/import | import review scrolls through saved directives, counts, skipped reasons and key actions; absent fields say SSH config, whose active settings can override saved values; Enter accepts, Escape cancels |
 | Confirm | `ui_confirm` | move project, undo, group open mode | the object's name, what changes, a primary button that names the action |
 | Danger | `ui_confirm --danger` or `UI_TONE=danger ui_field … equals:<name>` | delete server/group/secret, replace key | error-coloured frame, what is removed and what is kept, how to undo; PROD needs the name typed |
 | Progress | `title` + lines | check connections, find the sync hub, sync | elapsed / limit, a way to cancel |
-| Result | `ui_menu` | after check, share, import (only when there is a next step) | one summary line first, one line per object |
+| Result | `ui_menu` | after check, share, import (only when there is a next step) | import bounds its host summary to keep actions visible; View opens the complete imported list and Undo is available only for the current import commit |
 | Report | `title` + lines | doctor, help | grouped sections, `→ fix` on every problem line |
 | File picker | `ui_menu` per directory | send a file, key from file | starts in `~`, folders first, dot files hidden, sizes right-aligned |
 
+Multiline input is a native `gum write` screen: gum does not expose a live outer-border or footer option. It uses the same breadcrumb, theme roles and key-hint words, with the hints above the editor. Ctrl-J inserts a newline and Enter submits in the supported gum versions.
+
+Searchable menus with choices show the live match count and a persistent localized Ctrl-U clear-search hint. Ctrl-U clears the entire query; empty file-picker directories retain their distinct empty-folder message.
+
+Public import opens a package picker directly, with format instructions, folders and `.hbshare` files. It starts in Downloads when available; literal paths remain available via Ctrl-L. Filename filtering is guidance only: package contents and version must validate before review/apply. No paste/clipboard source menu or automatic clipboard offer is shown. First-run SSH migration is a separate internal flow. Export always saves an encrypted package file, even when clipboard copying succeeds.
+
+Secrets opens directly on saved vault entries and an inline “Add to vault…” action, with a compact submenu for file/paste/generate/password sources. Existing migration and vault maintenance actions remain available. Canceling a source returns to the vault list; successful storage is confirmed.
+
+Server login selection opens directly on credentials saved in the vault, with an inline “Add to vault…” action. A vault with no matching credentials explains the empty state. File import, clipboard import, key generation and password creation belong to the compact add submenu; key-only import flows exclude passwords and external SSH login. Canceling the submenu or file picker returns to the vault list. Successful creation/import selects the returned vault secret name, including fingerprint deduplication; it never returns the source file path as a managed credential. External SSH remains an explicit separate option for hardware keys and independently managed agents.
+
+First-run setup asks the machine's role before data setup. Each compact choice has at most two actions and explains their purpose above the options: connect/manage servers versus host a sync repository, then create a new server list versus retrieve existing synced data. Do not mix roles and data sources in one menu. Vault setup explicitly distinguishes its encryption password from server login credentials. Language and appearance keep their compact controls, passwords keep their input forms, and optional actions keep their confirmations. Machine destinations use compact choices for up to five options and search for larger lists; hub setup actions are also compact. There is no overall wizard progress indicator. Compact-choice height includes wrapped context lines so the explanation does not hide actions.
+
 When a screen only reports that something finished, it does not stay open: it returns to the search screen and calls
 `flash` (shown in the header there).
+
+The home search distinguishes an empty host list from a query with no matches. An empty list points to Add and Tools/Import. A no-match message explains that Escape clears the query, keeps the normal shortcut footer visible, and says when selections remain. Escape clears query, then selection, then an imported-only view.
 
 ## Pieces
 
@@ -62,8 +80,9 @@ When a screen only reports that something finished, it does not stay open: it re
 | Field checks | `ui_field LABEL VALUE CHECK [RULE] [PREVIEW] [INTRO]` | CHECK: `name:<taken-file>`, `port`, `project`, `text`, `equals:<word>`, `any`; runs inside fzf's shell with builtins only, so typing never boots hostbook |
 | Tone | `UI_TONE=danger`, `UI_ENTER=<verb>` | prefix a single call; never set globally |
 | Menu options | `UI_HEAD`, `UI_POS`, `UI_EXPECT`, `UI_FOOT` | prefix a `ui_menu`/`ui_confirm` call: lines above the question (finished steps), row to start on, extra ending keys (`←` `→` in the file picker), replacement key hints |
+| Compact controls | `ui_choice`, `ui_toggle`, `ui_checklist` | no search input; `UI_POS`, `UI_HEAD`, `UI_FOOT` and preview options carry context |
 | Step line | `ui_done label value [source]` | `✓ Label  value  ← source` for a finished step of a multi-step flow |
-| File picker | `file_pick start-dir header [enter-label]` | `ui_menu` per directory; used by send file and key from file |
+| File picker | `file_pick start-dir header [enter-label] [dotfiles] [session-dir] [file-pattern]` | `ui_menu` per directory; Ctrl-L enters a literal path, optional session stores folder and query; an optional filename pattern filters files, preserving directories |
 
 ## Colour roles
 

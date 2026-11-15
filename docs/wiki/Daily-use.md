@@ -45,24 +45,17 @@ production hosts requires confirmation and defaults to No.
 
 ## Import hosts
 
-Use `Ctrl-O` -> `Nhập nhiều server`, paste an OpenSSH configuration, or run:
+Use **Tools → Import Hostbook package** to choose an encrypted `.hbshare` file exported by Hostbook. The picker starts in Downloads when available and shows folders and `.hbshare` files. Ctrl-L enters a literal file or directory path; Escape cancels. A file with another extension can be entered by path, but its contents must still be a valid Hostbook package.
 
 ```bash
-hostbook import hosts.txt
+hostbook import workspace.hbshare
 ```
 
-A text list can use one host per line:
+Enter the package password, review the server and credential changes, resolve conflicts, and confirm. Existing matching entries are skipped; changed entries offer keep/update/rename choices. Keys and passwords are encrypted into the receiving vault. Invalid packages and wrong passwords cannot reach the apply step. Canceling review leaves hosts and credentials unchanged.
 
-```text
-web1 ubuntu@10.0.1.11 #prod #web
-api1 deploy@10.0.1.12:2222 #staging #api
-```
+After import, the result shows added, updated and skipped counts with host names and addresses. Choose **View imported servers** to show that subset; Escape returns to all hosts. Connection checks are explicit. The result can undo the import while its commit remains the latest change.
 
-After import, the result shows how many hosts were added, updated, or skipped,
-with names, addresses, and projects. Choose **Xem các server vừa nhập** to open
-the list filtered to that import; press Escape to return to all hosts. Existing
-aliases are skipped when importing a text list or SSH config. Use a share bundle
-when you need to review and update conflicting hosts.
+Plain lists, pasted data, clipboard import and arbitrary SSH config files are not public import formats. Initial setup can still offer a separate migration of this machine's existing SSH config. Importing an individual private key into Secrets remains separate from importing a host package.
 
 ## File transfer and forwarding
 

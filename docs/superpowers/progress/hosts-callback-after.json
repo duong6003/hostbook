@@ -1,0 +1,90 @@
+{
+  "app": "/private/tmp/hostbook-host-perf-after/hostbook",
+  "revision": "6d3400d",
+  "machine": "macOS-27.2-arm64-arm-64bit",
+  "columns": 100,
+  "lines": 24,
+  "samples": 5,
+  "fixtures": [
+    {
+      "hosts": 20,
+      "cold_index_ms": 162.456,
+      "warm": {
+        "version": {
+          "median_ms": 5.163,
+          "min_ms": 4.915,
+          "max_ms": 5.338,
+          "samples_ms": [
+            4.993,
+            5.163,
+            4.915,
+            5.338,
+            5.252
+          ]
+        },
+        "preview": {
+          "median_ms": 21.923,
+          "min_ms": 21.42,
+          "max_ms": 24.551,
+          "samples_ms": [
+            24.551,
+            21.923,
+            21.43,
+            21.42,
+            21.948
+          ]
+        },
+        "header": {
+          "median_ms": 34.334,
+          "min_ms": 32.542,
+          "max_ms": 56.899,
+          "samples_ms": [
+            34.155,
+            56.899,
+            35.974,
+            34.334,
+            32.542
+          ]
+        },
+        "footer": {
+          "median_ms": 18.829,
+          "min_ms": 17.926,
+          "max_ms": 19.906,
+          "samples_ms": [
+            18.296,
+            18.829,
+            19.906,
+            19.112,
+            17.926
+          ]
+        },
+        "list": {
+          "median_ms": 32.645,
+          "min_ms": 32.439,
+          "max_ms": 36.741,
+          "samples_ms": [
+            32.645,
+            32.439,
+            32.518,
+            34.014,
+            36.741
+          ]
+        },
+        "demo": {
+          "median_ms": 49.509,
+          "min_ms": 49.026,
+          "max_ms": 52.265,
+          "samples_ms": [
+            52.265,
+            49.509,
+            49.251,
+            50.66,
+            49.026
+          ]
+        }
+      },
+      "cold_list_ms": 148.63
+    }
+  ],
+  "method_note": "git archive snapshot; 20 synthetic hosts; five warm samples; sequential revision order. App paths are temporary."
+}

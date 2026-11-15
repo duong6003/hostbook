@@ -1,0 +1,920 @@
+{
+  "method": "Real application in a private tmux server. Each sample sends one Down, then captures the pane immediately and after 5 ms sleeps until the visible \u258c selection changes. Up resets selection outside the interval; 80 ms settling between samples. Time starts before tmux send-keys and ends after the detecting capture returns; includes command delivery, capture subprocesses and polling overhead. Compact list, preview right, rounded border, Vietnamese, 100x24; index built before launch. No pure render-time claim.",
+  "fixtures": [
+    {
+      "revision": "ef847ee",
+      "hosts": 20,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.139,
+          "send_ms": 5.949,
+          "capture_ms": [
+            6.136
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.664,
+          "send_ms": 6.302,
+          "capture_ms": [
+            6.309
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.769,
+          "send_ms": 7.208,
+          "capture_ms": [
+            6.501
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.336,
+          "send_ms": 6.225,
+          "capture_ms": [
+            6.057
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.528,
+          "send_ms": 6.333,
+          "capture_ms": [
+            6.145
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.021,
+          "send_ms": 6.626,
+          "capture_ms": [
+            6.344
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.704,
+          "send_ms": 6.481,
+          "capture_ms": [
+            6.168
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.927,
+          "send_ms": 6.552,
+          "capture_ms": [
+            6.306
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.088,
+          "send_ms": 7.414,
+          "capture_ms": [
+            6.616
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.075,
+          "send_ms": 6.423,
+          "capture_ms": [
+            6.6
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 11.956,
+          "send_ms": 5.921,
+          "capture_ms": [
+            5.983
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.159,
+          "send_ms": 6.639,
+          "capture_ms": [
+            6.458
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 12.816,
+        "p95_ms": 14.088,
+        "min_ms": 11.956,
+        "max_ms": 14.088
+      },
+      "send_summary": {
+        "median_ms": 6.452,
+        "p95_ms": 7.414,
+        "min_ms": 5.921,
+        "max_ms": 7.414
+      },
+      "owned_process_survivors": []
+    },
+    {
+      "revision": "c3b1d67",
+      "hosts": 20,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 38.328,
+          "send_ms": 25.712,
+          "capture_ms": [
+            12.524
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 11.95,
+          "send_ms": 5.99,
+          "capture_ms": [
+            5.906
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.029,
+          "send_ms": 6.497,
+          "capture_ms": [
+            6.474
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.573,
+          "send_ms": 6.297,
+          "capture_ms": [
+            6.219
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.604,
+          "send_ms": 6.321,
+          "capture_ms": [
+            6.224
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.732,
+          "send_ms": 6.403,
+          "capture_ms": [
+            6.289
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.35,
+          "send_ms": 6.169,
+          "capture_ms": [
+            6.141
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.055,
+          "send_ms": 6.722,
+          "capture_ms": [
+            6.295
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.843,
+          "send_ms": 6.551,
+          "capture_ms": [
+            6.252
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.584,
+          "send_ms": 6.625,
+          "capture_ms": [
+            5.92
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.999,
+          "send_ms": 6.567,
+          "capture_ms": [
+            6.389
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.558,
+          "send_ms": 6.424,
+          "capture_ms": [
+            6.094
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 12.668,
+        "p95_ms": 38.328,
+        "min_ms": 11.95,
+        "max_ms": 38.328
+      },
+      "send_summary": {
+        "median_ms": 6.46,
+        "p95_ms": 25.712,
+        "min_ms": 5.99,
+        "max_ms": 25.712
+      },
+      "owned_process_survivors": []
+    },
+    {
+      "revision": "ef847ee",
+      "hosts": 500,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 26.411,
+          "send_ms": 15.156,
+          "capture_ms": [
+            11.185
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.716,
+          "send_ms": 6.519,
+          "capture_ms": [
+            6.149
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.663,
+          "send_ms": 6.433,
+          "capture_ms": [
+            6.187
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.711,
+          "send_ms": 6.414,
+          "capture_ms": [
+            6.25
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.764,
+          "send_ms": 6.475,
+          "capture_ms": [
+            6.249
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.593,
+          "send_ms": 6.535,
+          "capture_ms": [
+            6.017
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.919,
+          "send_ms": 6.206,
+          "capture_ms": [
+            6.673
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.538,
+          "send_ms": 6.549,
+          "capture_ms": [
+            5.952
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.8,
+          "send_ms": 6.348,
+          "capture_ms": [
+            6.414
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.81,
+          "send_ms": 6.413,
+          "capture_ms": [
+            6.352
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.592,
+          "send_ms": 6.406,
+          "capture_ms": [
+            6.147
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.321,
+          "send_ms": 6.249,
+          "capture_ms": [
+            6.028
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 12.713,
+        "p95_ms": 26.411,
+        "min_ms": 12.321,
+        "max_ms": 26.411
+      },
+      "send_summary": {
+        "median_ms": 6.423,
+        "p95_ms": 15.156,
+        "min_ms": 6.206,
+        "max_ms": 15.156
+      },
+      "owned_process_survivors": []
+    },
+    {
+      "revision": "c3b1d67",
+      "hosts": 500,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 28.351,
+          "send_ms": 16.641,
+          "capture_ms": [
+            11.64
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.219,
+          "send_ms": 6.124,
+          "capture_ms": [
+            6.055
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.557,
+          "send_ms": 6.429,
+          "capture_ms": [
+            6.084
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.86,
+          "send_ms": 6.704,
+          "capture_ms": [
+            6.115
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.603,
+          "send_ms": 6.374,
+          "capture_ms": [
+            6.189
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.637,
+          "send_ms": 6.605,
+          "capture_ms": [
+            5.992
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.997,
+          "send_ms": 6.547,
+          "capture_ms": [
+            6.411
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.185,
+          "send_ms": 6.248,
+          "capture_ms": [
+            5.9
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.729,
+          "send_ms": 6.324,
+          "capture_ms": [
+            6.365
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.249,
+          "send_ms": 6.341,
+          "capture_ms": [
+            5.864
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.083,
+          "send_ms": 6.738,
+          "capture_ms": [
+            6.306
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.032,
+          "send_ms": 6.709,
+          "capture_ms": [
+            6.286
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 12.683,
+        "p95_ms": 28.351,
+        "min_ms": 12.185,
+        "max_ms": 28.351
+      },
+      "send_summary": {
+        "median_ms": 6.488,
+        "p95_ms": 16.641,
+        "min_ms": 6.124,
+        "max_ms": 16.641
+      },
+      "owned_process_survivors": []
+    }
+  ],
+  "metadata": {
+    "machine": "macOS-27.2-arm64-arm-64bit",
+    "revisions": {
+      "ef847ee": "ef847eee8b728d151f27083e82c08b30f91035a1",
+      "c3b1d67": "c3b1d676a20f56f154eb1c145740f1fb25073f47"
+    },
+    "tools": {
+      "tmux": "tmux 3.8",
+      "fzf": "0.75.0 (Homebrew)",
+      "bash": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin26)"
+    }
+  },
+  "warmups": 0,
+  "provenance": "Measured with the original isolated scratch harness; the same measurement loop is now tests/pointer-performance.py. No new benchmark run was performed while packaging the harness.",
+  "reproduction_command": "python3 tests/pointer-performance.py --repo . --revisions ef847ee c3b1d67 --samples 12 --warmups 0 --output pointer-first-input.json"
+}

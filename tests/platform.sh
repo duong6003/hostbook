@@ -3,7 +3,7 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-export HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR="$HERE/../lang"   # the library is sourced from a temporary copy: tell it where the texts are
+export HOSTBOOK_LIB_DIR="$HERE/../lib" HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR="$HERE/../lang"   # the library is sourced from a temporary copy: tell it where the texts are
 export HOME="$T/home" HOSTBOOK_STATE="$T/state" HOSTBOOK_DIR="$T/hosts" XDG_CONFIG_HOME="$T/config"
 mkdir -p "$HOME"
 sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
@@ -13,6 +13,52 @@ trap 'cleanup; rm -rf "$T"' EXIT
 : > "$IDX"
 pass=0; fail=0
 check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
+# Exercise actual installed-style paths from an unrelated working directory.
+app="$T/app space's ü"; mkdir -p "$app" "$T/elsewhere"
+cp "$HERE/../hostbook" "$app/hostbook"
+[ ! -d "$HERE/../lib" ] || cp -R "$HERE/../lib" "$app/lib"
+cp -R "$HERE/../lang" "$app/lang"
+probe="$app/hostbook"
+if ! is_windows; then ln -s "$app/hostbook" "$T/hostbook-link"; probe="$T/hostbook-link"; fi
+check 'installed modules resolve through symlinks outside the app directory' '(cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && bash "$probe" _header >/dev/null && bash "$probe" _preview h:example >/dev/null && printf "one 127.0.0.1\n" | bash "$probe" _import_parse >/dev/null && bash "$probe" _demo >/dev/null)'
+check 'missing required module fails with its path while version still works' '(mv "$app/lib/import.sh" "$app/import.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && ! bash "$probe" _import_parse </dev/null 2>"$T/missing" && grep -F "$app/lib/import.sh" "$T/missing" >/dev/null; result=$?; mv "$app/import.saved" "$app/lib/import.sh"; exit "$result")'
+check 'missing host UI fails human flows and unknown-underscore search, not callbacks or version' '(mv "$app/lib/hosts.sh" "$app/hosts.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && bash "$probe" _header >/dev/null && bash "$probe" _demo >/dev/null && ! bash "$probe" settings </dev/null 2>"$T/missing-hosts" && grep -F "$app/lib/hosts.sh" "$T/missing-hosts" >/dev/null && ! bash "$probe" _web </dev/null 2>"$T/missing-search-hosts" && grep -F "$app/lib/hosts.sh" "$T/missing-search-hosts" >/dev/null; result=$?; mv "$app/hosts.saved" "$app/lib/hosts.sh"; exit "$result")'
+# Unrelated internal callbacks must not parse the import feature.
+mkdir -p "$T/modules"; cp "$HERE/../lib/ui.sh" "$T/modules/ui.sh"
+printf 'return 1\n' > "$T/modules/import.sh"
+check 'unrelated callbacks do not load import' '(export HOSTBOOK_LIB_DIR="$T/modules"; for cmd in _header "_preview h:example" _footer _list _demo; do bash "$app/hostbook" $cmd >/dev/null || exit 1; done)'
+check 'import callbacks require import module' '(! HOSTBOOK_LIB_DIR="$T/modules" bash "$app/hostbook" _import_parse </dev/null >/dev/null 2>&1)'
+printf 'echo import-needed >&2; return 1\n' > "$T/modules/import.sh"
+check 'underscore searches load import for the home screen' '(! HOSTBOOK_LIB_DIR="$T/modules" bash "$app/hostbook" _web </dev/null >/dev/null 2>"$T/search-error" && grep -q import-needed "$T/search-error")'
+if command -v tmux >/dev/null 2>&1; then
+  session_check(){ (
+    export TMUX_TMPDIR="$T/tmux-socket"; unset TMUX; mkdir -p "$TMUX_TMPDIR"
+    tmux new-session -d -s hb-fixture "sleep 60" || exit 1
+    tmux split-window -t hb-fixture "sleep 60" || exit 1
+    tmux new-session -d -s hb-second "sleep 60" || exit 1
+    tmux new-session -d -s unrelated "sleep 60" || exit 1
+    tmux set-option -g remain-on-exit on
+    tmux new-window -t hb-fixture "exit 0" || exit 1
+    i=0; while ! tmux list-panes -a -F '#{pane_dead}' | grep -qx 1; do
+      i=$((i+1)); [ "$i" -lt 40 ] || { tmux kill-server; exit 1; }; sleep .05
+    done
+    list_data > "$T/sessions"
+    tmux kill-server
+    awk -F '\t' '$1 == "s:hb-fixture" && index($0, "2") {found=1} $1 == "s:hb-second" {second=1} $1 == "s:unrelated" {bad=1} END {exit !(found && second && !bad)}' "$T/sessions"
+  ); }
+  check 'list sessions counts live panes and excludes unrelated sessions' 'session_check'
+fi
+# Simulate MSYS option parsing even when this suite runs on Unix.
+check 'Windows path conversion protects option-like names and preserves drive paths' '(
+  is_windows(){ return 0; }
+  cygpath(){ [ "$#" = 3 ] && [ "$1" = -u ] && [ "$2" = -- ] || return 2; case "$3" in --help) printf "%s\n" --help;; "C:/Users/fixture name/key") printf "%s\n" "/c/Users/fixture name/key";; *) return 1;; esac; }
+  [ "$(unix_path --help)" = --help ] && [ "$(unix_path "C:/Users/fixture name/key")" = "/c/Users/fixture name/key" ]
+)'
+if is_windows; then
+  check 'native cygpath accepts option-like names and drive paths' '(
+    [ "$(unix_path --help)" = "$(cygpath -u -- --help)" ] && [ "$(unix_path "C:/Users/fixture name/key")" = "$(cygpath -u -- "C:/Users/fixture name/key")" ]
+  )'
+fi
 # Replacing this with raw single quotes breaks callbacks under a path containing apostrophes.
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"
@@ -54,7 +100,7 @@ check 'cloned Windows repositories can commit without global Git identity' '(
 )'
 check 'home Ctrl-Y callback quotes an apostrophe in the state directory' '(
   STATE="$T/state space$(printf "\047")s"; mkdir -p "$STATE"; unset HOSTBOOK_ONLY
-  clip_offer(){ :; }; cmd_list(){ :; }; cmd_header(){ :; }; cmd_footer(){ :; }
+  cmd_list(){ :; }; cmd_header(){ :; }; cmd_footer(){ :; }
   fzf(){ local arg command; for arg in "$@"; do
     case $arg in ctrl-y:*) command=${arg#*execute-silent(}; command=${command%%)+transform:*}; bash -c "$command" || :;; esac
     done; return 130; }

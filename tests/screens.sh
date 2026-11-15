@@ -3,6 +3,7 @@
 # 60, 100 and 200 columns in vi, and again in en, in private tmux servers with isolated data. Each language x width pair
 # is a worker with its own sandbox, run in parallel, so the whole suite takes about as long as one worker.
 set -u
+unset SSH_AUTH_SOCK SSH_AGENT_PID
 command -v tmux >/dev/null || { echo 'Bỏ qua screens: chưa có tmux'; exit 0; }
 command -v python3 >/dev/null || { echo 'Bỏ qua screens: chưa có python3'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook; LANGD=$HERE/../lang
@@ -41,7 +42,7 @@ trap cleanup EXIT
 
 # --- the theme's error colour, as the app computes it (S6)
 sed '/^# ---------- entry point ----------/,$d' "$S" > "$T/lib"
-CR=$(HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=$LANGD HOME=$T XDG_CONFIG_HOME=$T/none HOSTBOOK_STATE=$T/lib-state bash -c ". '$T/lib'; SELF='$S'; apply_theme; printf '%s' \"\$CR\"")
+CR=$(HOSTBOOK_LIB_DIR="$HERE/../lib" HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=$LANGD HOME=$T XDG_CONFIG_HOME=$T/none HOSTBOOK_STATE=$T/lib-state bash -c ". '$T/lib'; SELF='$S'; apply_theme; printf '%s' \"\$CR\"")
 [ -n "$CR" ] || { echo 'FAIL screens: không lấy được màu lỗi của theme'; exit 1; }
 
 # S11, part 1: both language files define the same keys
@@ -64,6 +65,7 @@ worker(){
   export PATH=$W/bin:$PATH
   printf 'Include %s/*.conf\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
   printf '# tags: prod api\n# desc: API payments\nHost shop-api\n  HostName 10.20.1.11\n  User deploy\n# tags: web\nHost shop-web\n  HostName 10.20.1.12\n  User deploy\nHost dead-box\n  HostName 10.255.255.1\n  User deploy\n' > "$HOSTBOOK_DIR/shop.conf"
+  mkdir -p "$HOSTBOOK_DIR/secrets"; for c in vault.pub vault.key.age vault.recovery.age; do printf 'fixture\n' > "$HOSTBOOK_DIR/secrets/$c"; done
   git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" config user.name test; git -C "$HOSTBOOK_DIR" config user.email test@example.com
   git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
   "$S" _index >/dev/null
@@ -134,7 +136,7 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   tmux -L "$socket" capture-pane -e -p -t ui > "$W/menu-e"
   grep -qF -- "${CR}$L_act_delete" "$W/menu-e" || die "S6: '$L_act_delete' không có màu lỗi của theme"
   snap; last=$(grep -nF "$L_act_delete" "$cap" | tail -1 | cut -d: -f1)
-  after=$(sed -n "$((last+1)),\$p" "$cap" | sed '/^╰/,$d' | grep -v '^│ *│$' | grep -vF 'esc ' | grep -vE '^(─)*$' | grep -c '[^ ]' || :)   # border=none has no ╰ line: the footer follows the list
+  after=$(sed -n "$((last+1)),\$p" "$cap" | sed '/^╰/,$d' | grep -v '^│ *│$' | grep -vF 'esc ' | grep -vF "$L_menu_search_recovery" | grep -vE '^(─)*$' | grep -c '[^ ]' || :)   # border=none has no ╰ line: the footer follows the list
   [ "$after" = 0 ] || die "S6: sau '$L_act_delete' còn $after dòng khác trong menu"
   # ---- danger, normal server (same menu)
   menu_pick "$L_act_delete"; wait_for "$(fmt "$L_delete_yes" shop-web)"; check danger-normal; fin
@@ -184,7 +186,7 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   summary 'báo cáo kiểm tra máy, esc quay lại (S1 S2 S3 S7 S10)'
 
   # ---- password prompt (gum input) and the tag picker (fzf multi): no English gum help, esc offered
-  start; wait_for shop-api; k C-o; wait_for "$L_tools_title"; menu_pick "$L_act_secrets"; sleep .5; menu_pick "$L_act_pw_new"
+  start; wait_for shop-api; k C-o; wait_for "$L_tools_title"; menu_pick "$L_act_secrets"; wait_for "$L_login_add_vault"; menu_pick "$L_login_add_vault"; wait_for "$L_act_key_file"; k Down Down Down Enter
   wait_for "esc $L_key_cancel"; check password-prompt; fin
   start; wait_for shop-api; k C-a; wait_for "$L_add_addr_label"; typ 'deploy@10.0.9.9'; k Enter; wait_for "$(fmt "$L_add_step" 2 4)"; typ newbox; k Enter; wait_for "$(fmt "$L_add_step" 3 4)"; k Enter; wait_for "$(fmt "$L_add_step" 4 4)"
   wait_for "$L_act_no_login"; menu_pick "$L_act_no_login"; wait_for "$L_act_add_edit"; menu_pick "$L_act_add_edit"; wait_for "$L_f_tags"; menu_pick "$L_f_tags"

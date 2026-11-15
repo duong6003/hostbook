@@ -45,14 +45,23 @@ see [Secrets and security](Secrets-and-security).
 
 ## First launch
 
-Choose the path that matches your setup:
+Setup asks one question at a time. Use the arrow keys and Enter; Escape cancels.
 
-- **First machine** (`Đây là máy đầu tiên`): create a host list and optionally import existing `~/.ssh/config` entries.
-- **Use a remote repository** (`Dùng kho ở máy khác`): clone your existing host list onto this machine.
-- **Host a repository here** (`Tạo kho trên máy này`): create a Git hub on an always-on machine.
+1. Choose the machine's role: **Connect to and manage servers** for your personal machine, or **Host a shared sync repository** for a machine other devices will sync with.
+2. For a personal machine, choose **Create a new server list** or **Get data from a sync repository**. New users can start with an empty list; sync can wait.
+3. Create the secure vault when no vault exists, then save its recovery code. The vault protection password is separate from server login passwords. It needs at least ten characters; server passwords retain their existing value and only need to be nonempty.
+4. Optionally import existing SSH entries, connect sync, and choose an appearance preset.
+
+The secure vault encrypts SSH keys and passwords and is required before entering the app. A sync repository is optional and can be connected later. First launch initializes the vault before the optional SSH import. If you decline or cancel that import, your original SSH config remains in place. An accepted import preserves a backup without overwriting an existing backup. Includes, executable Match rules, inherited identity settings, and some ordering that cannot be preserved are rejected; adjust the source before retrying.
 
 The first-run flow also lets you choose an appearance preset. You can change it later
-with `hostbook settings`.
+in **Tools → Appearance**. Press Escape during the first-run appearance selection to choose it later.
+
+## Choose login credentials
+
+The login form shows saved vault credentials immediately. Choose one, or choose **Add to vault…** to import a private key file, paste a private key, generate an Ed25519 key, or save a server password. After import, Hostbook selects the saved credential for the server. Imported files remain unchanged; managed connections use the encrypted vault copy rather than depending on the original file path. Canceling the source picker returns to the vault list.
+
+**No saved login** is available for independently managed SSH agents and hardware keys. Import flows that require a vault key omit this option and passwords.
 
 ## Add a host
 

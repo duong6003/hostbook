@@ -12,9 +12,9 @@ report actionable findings with evidence and state verification limits.
 
 ## Performance rules
 
-These rules come from the 2026-11-15 audit (tracking issue #9). Every fzf callback runs `bash hostbook _<cmd>`, which
-re-reads the whole script. One boot costs ~90 ms on macOS, where each fork costs ~2 ms. Most lag the user felt came
-from paying that cost on every key press.
+These rules come from the 2026-11-15 audit (tracking issue #9). Callbacks that invoke `bash hostbook _<cmd>` re-read
+the script. The audit measured ~90 ms per boot and ~2 ms per fork on macOS; these are historical measurements,
+not the current baseline. Repeated boots on key presses caused much of the observed lag.
 
 **Hot paths** are anything that runs per key press, cursor move, selection or resize. That includes `--preview`, the
 `focus`/`change`/`multi`/`resize`/`load` binds, `transform-*`, `reload`, `_list`, `_header`, `_footer` and `_demo`.
@@ -52,6 +52,26 @@ from paying that cost on every key press.
    | `_demo` | ≤ 80 ms |
 
    A change that touches a hot path must state the before/after numbers in its commit message or PR.
+
+### When extracting modules or changing callbacks
+
+- Shared `lib/ui.sh` loads eagerly; `lib/import.sh` loads for human flows, import callbacks and sourced fixtures. `lib/settings.sh` and `lib/hosts.sh` load for human flows and sourced fixtures; `_demo` rendering and shared host primitives stay in core. `HOSTBOOK_LIB_DIR` overrides the installed module directory for copied fixtures.
+- Keep unrelated feature modules out of hot callbacks; small shared helpers may load eagerly. Keep `--version` before feature loading and avoid
+  top-level scans, index rebuilds or dependency checks in sourced modules. Resolve module paths from the installed
+  app, not the working directory; verify internal callbacks from another directory after install/update.
+- Measure the base revision and changed revision on the same machine, terminal dimensions and isolated fixture.
+  Record revision IDs, host count, command and timings; distinguish first-use/index rebuild from warm navigation.
+  Include a larger fixture when changing per-host work. Functional tests alone do not establish responsiveness.
+- Use tracing to locate subprocess cost, then measure latency without tracing. Report repeated samples and their
+  spread; investigate a reproducible slowdown even if it remains below budget. Record existing budget violations;
+  address those in the changed flow or agree their limits before acceptance. Track unrelated debt separately.
+- When adding asynchronous UI work, prevent stale results from overwriting the latest selection/query and bound
+  concurrent work. Verify rapid navigation and closing the terminal while work is still running.
+- A new cache must define its invalidation inputs. Verify that host, configuration, theme or language changes
+  affecting the cached value appear without restarting the app; never use a stale cache to meet a latency budget.
+
+Before changing module loading or deferring a measured performance issue, read
+[module-loading.md](docs/design/module-loading.md) for the rationale, proposal status and debt-record requirements.
 
 ## How to measure
 
