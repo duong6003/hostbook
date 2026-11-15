@@ -84,6 +84,10 @@ Run-Check 'Native clipboard, vault and first-machine setup' {
     & $bash --noprofile --norc (Join-Path $source 'tests\windows.sh')
     Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, private temps and vault checks'
 }
+Run-Check 'Isolated vault onboarding' {
+    & $bash --noprofile --norc (Join-Path $source 'tests\onboarding.sh')
+    Assert ($LASTEXITCODE -eq 0) 'vault onboarding and canceled imports preserve fixture data'
+}
 Run-Check 'Update' {
     $updateTime = [Diagnostics.Stopwatch]::StartNew()
     & $launcher update

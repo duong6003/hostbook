@@ -34,6 +34,7 @@ jobs:
           bash tests/platform.sh
           bash tests/ui.sh
           bash tests/import.sh
+          bash tests/onboarding.sh
           bash tests/tui.sh
           bash tests/screens.sh
       - name: Test against a real SSH server (Docker, Ubuntu only)
