@@ -27,6 +27,18 @@ mkdir -p "$T/modules"; cp "$HERE/../lib/ui.sh" "$T/modules/ui.sh"
 printf 'return 1\n' > "$T/modules/import.sh"
 check 'unrelated callbacks do not load import' '(export HOSTBOOK_LIB_DIR="$T/modules"; for cmd in _header "_preview h:example" _footer _list _demo; do bash "$app/hostbook" $cmd >/dev/null || exit 1; done)'
 check 'import callbacks require import module' '(! HOSTBOOK_LIB_DIR="$T/modules" bash "$app/hostbook" _import_parse </dev/null >/dev/null 2>&1)'
+if command -v tmux >/dev/null 2>&1; then
+  session_check(){ (
+    export TMUX_TMPDIR="$T/tmux-socket"; unset TMUX; mkdir -p "$TMUX_TMPDIR"
+    tmux new-session -d -s hb-fixture "sleep 60" || exit 1
+    tmux split-window -t hb-fixture "sleep 60" || exit 1
+    tmux new-session -d -s unrelated "sleep 60" || exit 1
+    list_data > "$T/sessions"
+    tmux kill-server
+    awk -F '\t' '$1 == "s:hb-fixture" && index($0, "2") {found=1} $1 == "s:unrelated" {bad=1} END {exit !(found && !bad)}' "$T/sessions"
+  ); }
+  check 'list sessions counts live panes and excludes unrelated sessions' 'session_check'
+fi
 # Replacing this with raw single quotes breaks callbacks under a path containing apostrophes.
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"

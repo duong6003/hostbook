@@ -406,11 +406,9 @@ list_data(){ # key, name, project, IP, user, tags, description, secret, last use
     awk -F'\t' 'NR==FNR {w[$1]=1; next} ($1 in w)' "$only" "$IDX" > "$STATE/index.only"; IDX=$STATE/index.only; GRP=/dev/null
   fi
   if have tmux && [ -z "$only" ]; then
-    for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep '^hb-'); do
-      alive=$(tmux list-panes -s -t "$s" -F '#{pane_dead}' 2>/dev/null | grep -c 0)
-      [ "$alive" != 0 ] || continue
+    while IFS="$TAB" read -r s alive; do
       printf "s:%s\t%s\t\t\t\t\t$f_sess\t\t%s\n" "$s" "${s#hb-}" "$alive" "$f_sess_h"
-    done
+    done < <(tmux list-panes -a -F '#{session_name}	#{pane_dead}' 2>/dev/null | awk -F '\t' '$1 ~ /^hb-/ && $2 == 0 {if (!($1 in count)) order[++n]=$1; count[$1]++} END {for (i=1; i<=n; i++) print order[i] "\t" count[order[i]]}')
   fi
   if [ -f "$GRP" ]; then while IFS= read -r line; do
     [ -n "$line" ] || continue; group_line "$line"; set -- $GH
