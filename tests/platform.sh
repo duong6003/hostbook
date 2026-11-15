@@ -100,7 +100,7 @@ check 'cloned Windows repositories can commit without global Git identity' '(
 )'
 check 'home Ctrl-Y callback quotes an apostrophe in the state directory' '(
   STATE="$T/state space$(printf "\047")s"; mkdir -p "$STATE"; unset HOSTBOOK_ONLY
-  clip_offer(){ :; }; cmd_list(){ :; }; cmd_header(){ :; }; cmd_footer(){ :; }
+  cmd_list(){ :; }; cmd_header(){ :; }; cmd_footer(){ :; }
   fzf(){ local arg command; for arg in "$@"; do
     case $arg in ctrl-y:*) command=${arg#*execute-silent(}; command=${command%%)+transform:*}; bash -c "$command" || :;; esac
     done; return 130; }

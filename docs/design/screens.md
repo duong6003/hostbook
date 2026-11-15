@@ -56,6 +56,10 @@ Multiline input is a native `gum write` screen: gum does not expose a live outer
 
 Searchable menus with choices show the live match count and a persistent localized Ctrl-U clear-search hint. Ctrl-U clears the entire query; empty file-picker directories retain their distinct empty-folder message.
 
+Public import opens a package picker directly, with format instructions, folders and `.hbshare` files. It starts in Downloads when available; literal paths remain available via Ctrl-L. Filename filtering is guidance only: package contents and version must validate before review/apply. No paste/clipboard source menu or automatic clipboard offer is shown. First-run SSH migration is a separate internal flow. Export always saves an encrypted package file, even when clipboard copying succeeds.
+
+Secrets opens directly on saved vault entries and an inline “Add to vault…” action, with a compact submenu for file/paste/generate/password sources. Existing migration and vault maintenance actions remain available. Canceling a source returns to the vault list; successful storage is confirmed.
+
 Server login selection opens directly on credentials saved in the vault, with an inline “Add to vault…” action. A vault with no matching credentials explains the empty state. File import, clipboard import, key generation and password creation belong to the compact add submenu; key-only import flows exclude passwords and external SSH login. Canceling the submenu or file picker returns to the vault list. Successful creation/import selects the returned vault secret name, including fingerprint deduplication; it never returns the source file path as a managed credential. External SSH remains an explicit separate option for hardware keys and independently managed agents.
 
 First-run setup asks the machine's role before data setup. Each compact choice has at most two actions and explains their purpose above the options: connect/manage servers versus host a sync repository, then create a new server list versus retrieve existing synced data. Do not mix roles and data sources in one menu. Vault setup explicitly distinguishes its encryption password from server login credentials. Language and appearance keep their compact controls, passwords keep their input forms, and optional actions keep their confirmations. Machine destinations use compact choices for up to five options and search for larger lists; hub setup actions are also compact. There is no overall wizard progress indicator. Compact-choice height includes wrapped context lines so the explanation does not hide actions.
@@ -78,7 +82,7 @@ The home search distinguishes an empty host list from a query with no matches. A
 | Menu options | `UI_HEAD`, `UI_POS`, `UI_EXPECT`, `UI_FOOT` | prefix a `ui_menu`/`ui_confirm` call: lines above the question (finished steps), row to start on, extra ending keys (`←` `→` in the file picker), replacement key hints |
 | Compact controls | `ui_choice`, `ui_toggle`, `ui_checklist` | no search input; `UI_POS`, `UI_HEAD`, `UI_FOOT` and preview options carry context |
 | Step line | `ui_done label value [source]` | `✓ Label  value  ← source` for a finished step of a multi-step flow |
-| File picker | `file_pick start-dir header [enter-label] [dotfiles] [session-dir]` | `ui_menu` per directory; Ctrl-L enters a literal path, optional session stores folder and query |
+| File picker | `file_pick start-dir header [enter-label] [dotfiles] [session-dir] [file-pattern]` | `ui_menu` per directory; Ctrl-L enters a literal path, optional session stores folder and query; an optional filename pattern filters files, preserving directories |
 
 ## Colour roles
 

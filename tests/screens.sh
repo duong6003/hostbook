@@ -186,7 +186,7 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   summary 'báo cáo kiểm tra máy, esc quay lại (S1 S2 S3 S7 S10)'
 
   # ---- password prompt (gum input) and the tag picker (fzf multi): no English gum help, esc offered
-  start; wait_for shop-api; k C-o; wait_for "$L_tools_title"; menu_pick "$L_act_secrets"; sleep .5; menu_pick "$L_act_pw_new"
+  start; wait_for shop-api; k C-o; wait_for "$L_tools_title"; menu_pick "$L_act_secrets"; wait_for "$L_login_add_vault"; menu_pick "$L_login_add_vault"; wait_for "$L_act_key_file"; k Down Down Down Enter
   wait_for "esc $L_key_cancel"; check password-prompt; fin
   start; wait_for shop-api; k C-a; wait_for "$L_add_addr_label"; typ 'deploy@10.0.9.9'; k Enter; wait_for "$(fmt "$L_add_step" 2 4)"; typ newbox; k Enter; wait_for "$(fmt "$L_add_step" 3 4)"; k Enter; wait_for "$(fmt "$L_add_step" 4 4)"
   wait_for "$L_act_no_login"; menu_pick "$L_act_no_login"; wait_for "$L_act_add_edit"; menu_pick "$L_act_add_edit"; wait_for "$L_f_tags"; menu_pick "$L_f_tags"

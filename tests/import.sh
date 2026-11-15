@@ -225,7 +225,7 @@ package_both_remaps_jump(){ (
 ); }
 check 'package both remaps imported ProxyJump and group members' 'package_both_remaps_jump'
 check 'package rejects unrelated target edits after preview' 'package_both_names_do_not_collide stale'
-import_flow "$T/incoming.conf" > "$T/result" 2>&1
+import_config_file "$T/incoming.conf" > "$T/result" 2>&1
 check 'SSH config result lists imported names, addresses and project' 'grep -q dev-api "$T/result" && grep -q 192.0.2.10 "$T/result" && grep -q dev-db "$T/result"'
 check 'SSH config result counts this import, excluding existing and repeated names' 'grep -q "2 mới · 0 cập nhật · 2 bỏ qua" "$T/result"'
 check 'SSH config import records only accepted hosts' '[ -f "$STATE/last-import" ] && [ "$(cat "$STATE/last-import")" = "$(printf "dev-api\ndev-db")" ]'
@@ -234,22 +234,22 @@ check 'existing hosts remain untouched and repeated input does not append duplic
 check 'import retains tags, descriptions and explicit SSH options' '[ "$(host_field dev-api 8)" = "dev api" ] && [ "$(host_field dev-api 9)" = "Imported API" ] && grep -q "# secret: fixture" "$DIR/dev.conf" && [ -s "$SEC/fixture.age" ] && [ -s "$HOME/.ssh/fixture" ]'
 unset ONLY_NEXT
 before=$(g rev-parse HEAD)
-import_flow "$T/incoming.conf" > "$T/repeat" 2>&1
+import_config_file "$T/incoming.conf" > "$T/repeat" 2>&1
 check 'reimport reports zero new hosts and leaves repository unchanged' 'grep -q "0 mới · 0 cập nhật · 4 bỏ qua" "$T/repeat" && [ "$(g rev-parse HEAD)" = "$before" ] && [ -z "$(g status --porcelain)" ] && [ ! -s "$STATE/last-import" ] && [ -z "${ONLY_NEXT:-}" ]'
 printf 'dev-cache ubuntu@192.0.2.12 #dev\nexisting ubuntu@192.0.2.99\ndev-cache ubuntu@192.0.2.100\n' > "$T/list"
-import_flow "$T/list" > "$T/list-result" 2>&1
+import_config_file "$T/list" > "$T/list-result" 2>&1
 check 'plain-list import reports only the new host and accurate skipped count' 'grep -q "1 mới · 0 cập nhật · 2 bỏ qua" "$T/list-result" && grep -q dev-cache "$T/list-result" && [ "$(cat "$STATE/last-import")" = dev-cache ] && [ "${ONLY_NEXT:-}" = "$STATE/last-import" ]'
 printf '# tags: dev first\n# desc: First entry\nHost dev-first\n  HostName 192.0.2.13\n' > "$T/first.conf"
-import_flow "$T/first.conf" > "$T/first-result" 2>&1
+import_config_file "$T/first.conf" > "$T/first-result" 2>&1
 check 'metadata before the first SSH Host survives import' '[ "$(host_field dev-first 8)" = "dev first" ] && [ "$(host_field dev-first 9)" = "First entry" ]'
 printf 'Host=z-first a-shared\n  HostName 192.0.2.21\nHost a-shared\n  HostName 192.0.2.99\n' > "$T/order.conf"
-import_flow "$T/order.conf" > "$T/order-result" 2>&1
+import_config_file "$T/order.conf" > "$T/order-result" 2>&1
 check 'Host equals and first shared alias preserve source order' '[ "$(host_field z-first 3)" = 192.0.2.21 ] && [ "$(host_field a-shared 3)" = 192.0.2.21 ] && grep -q "2 mới · 0 cập nhật · 1 bỏ qua" "$T/order-result"'
 printf 'Host dev-invalid\n  Port invalid\n' > "$T/invalid.conf"
 before=$(g rev-parse HEAD)
-check 'invalid config rolls back without showing a success result' '! import_flow "$T/invalid.conf" > "$T/invalid-result" 2>&1 && ! grep -q "Đã nhập:" "$T/invalid-result" && [ "$(g rev-parse HEAD)" = "$before" ] && [ -z "$(g status --porcelain)" ]'
+check 'invalid config rolls back without showing a success result' '! import_config_file "$T/invalid.conf" > "$T/invalid-result" 2>&1 && ! grep -q "Đã nhập:" "$T/invalid-result" && [ "$(g rev-parse HEAD)" = "$before" ] && [ -z "$(g status --porcelain)" ]'
 printf 'Host existing dev-shared dev-shared\n  HostName 192.0.2.14\n  User shared\n' > "$T/shared.conf"
-import_flow "$T/shared.conf" > "$T/shared-result" 2>&1
+import_config_file "$T/shared.conf" > "$T/shared-result" 2>&1
 check 'shared Host blocks retain fresh aliases without reimporting existing aliases' '[ "$(host_field dev-shared 3)" = 192.0.2.14 ] && [ "$(host_field existing 3)" = 192.0.2.1 ] && [ "$(cat "$STATE/last-import")" = dev-shared ] && grep -q "1 mới · 0 cập nhật · 2 bỏ qua" "$T/shared-result"'
 # import_done's other next steps: "check connections" (1) and "undo" (3) run the matching action
 check_hosts(){ echo "$*" > "$T/chk"; }; undo_last(){ : > "$T/undone"; }

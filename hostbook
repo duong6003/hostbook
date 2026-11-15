@@ -1297,20 +1297,28 @@ secret_manager(){
       c=$(secret_users "$n" | grep -c .); if [ "$c" = 0 ]; then d=$(t sc_unused); else d=$(t sc_users "$c"); fi
       d="$(secret_label "$n") · $d"; [ "$(secret_meta "$n" type)" = key ] && d="$d · $(secret_meta "$n" fp | cut -c1-17)…"
       items+=("$n|$d"); keys+=("s:$n"); done
-    items+=("#$(t sec_add)"); lk=$(legacy_keys | grep -c .)
+    c=${#keys[@]}
+    items+=("$(t login_add_vault)"); keys+=(add)
+    lk=$(legacy_keys | grep -c .)
     [ "$lk" -gt 0 ] && { items+=("$(t act_migrate)|$(t act_migrate_hint "$lk")"); keys+=(migrate); }
-    items+=("$(t act_key_paste)" "$(t act_key_file)" "$(t act_key_new)" "$(t act_pw_new)"); keys+=(clip file gen pass)
     vault_exists && { items+=("#$(t sec_vault)" "$(t act_vault)|$(t act_vault_hint)"); keys+=(vault); }
     if vault_exists; then if kc_get >/dev/null 2>&1; then hdr=$(t vault_open "$(kc_label)"); else hdr=$(t vault_locked); fi; else hdr=$(t vault_none); fi
+    [ "$c" -gt 0 ] || hdr="$hdr$NL$(t secrets_empty)"
     i=$(ui_menu "$hdr" "${items[@]}") || return 0
+    if [ "${keys[$i]}" = add ]; then
+      at "$(t secrets_title)|$(t login_add_vault)"
+      vs=$(UI_HEAD="$(t secrets_add_intro)" ui_choice "$(t login_add_vault)" "$(t act_key_file)" "$(t act_key_paste)|$(t act_key_paste_hint)" "$(t act_key_new)|ed25519" "$(t act_pw_new)") || continue
+      case $vs in 0) keys[$i]=file;; 1) keys[$i]=clip;; 2) keys[$i]=gen;; 3) keys[$i]=pass;; *) continue;; esac
+    fi
     case ${keys[$i]} in
       s:*) secret_actions "${keys[$i]#s:}" && return 0;;
       migrate) clear; title "$(t secrets_title)|$(t act_migrate)"; migrate_keys; pause;;
-      clip) clear; title "$(t secrets_title)|$(t act_key_paste)"; secret_add_key clip >/dev/null; pause;;
-      file) at "$(t secrets_title)|$(t act_key_file)"; n=$(pick_key_file) && { shown; secret_add_key "$n" >/dev/null; }; pause;;
+      clip) clear; title "$(t secrets_title)|$(t act_key_paste)"; n=$(secret_add_key clip) && ok "$(t secrets_saved "$n")"; pause;;
+      file) at "$(t secrets_title)|$(t act_key_file)"; n=$(pick_key_file) || continue
+            shown; n=$(secret_add_key "$n") && ok "$(t secrets_saved "$n")"; pause;;
       gen) at "$(t secrets_title)|$(t act_key_new)"
            vault_init && n=$(ask_secret_name "") && secret_add_key gen "$n" >/dev/null && { shown; ok "$(t sc_pub_of "$n")"; cat "$SEC/$n.pub"; pause; };;
-      pass) at "$(t secrets_title)|$(t act_pw_new)"; secret_add_password >/dev/null;;
+      pass) at "$(t secrets_title)|$(t act_pw_new)"; n=$(secret_add_password) && ok "$(t secrets_saved "$n")"; pause;;
       vault) at "$(t secrets_title)|$(t act_vault)"
              vs=$(ui_menu "" "$(t vault_passwd)" "$(t vault_recovery)|$(t vault_recovery_hint)" "$(t vault_lock)|$(t vault_lock_hint)" "$(t vault_unlock)|$(t vault_unlock_hint)") || continue
              shown
@@ -1907,7 +1915,7 @@ share_build(){ # directory include-secrets(0|1) name…
 }
 share_pack(){ # directory password → print the package
   printf '# hostbook-share v1 · %s server · từ %s\n' "$(sed -n 's/^hosts=//p' "$1/manifest")" "$(sed -n 's/^from=//p' "$1/manifest")"
-  tar -czf - -C "$1" . | age_pw_enc "$2"
+  (set -o pipefail; tar -czf - -C "$1" . | age_pw_enc "$2")
 }
 share_flow(){ # name…
   local all extra d ws=1 pw pack f np ns i h head res note
@@ -1923,12 +1931,13 @@ share_flow(){ # name…
   if [ -n "$ns" ]; then case $(UI_HEAD=$head ui_menu "$(t share_how)" "$(t act_share_with)|$(t act_share_with_hint)" "$(t act_share_without)|$(t act_share_without_hint)") in 0) ws=1;; 1) ws=0;; *) return 1;; esac
   else ws=0; UI_HEAD=$head ui_confirm --affirmative "$(t share_yes)" --negative "$(t cancel)" "$(t share_q)" || return 1; fi
   d=$(tmpd) || return 1; d=$d/pack; share_build "$d" "$ws" "$@" || { flash "${CR}${ICON_ERR} $(t err_share_vault)${C0}"; return 1; }
-  pw=$(share_password); pack=$(share_pack "$d" "$pw"); rm -rf "${d:?}"
-  res=; if printf '%s\n' "$pack" | copy 2>/dev/null; then res="$CG$ICON_OK$C0 $(t share_copied "$(( ${#pack} / 1024 + 1 ))")"; else f=1; fi
-  if [ -n "${f:-}" ] || [ ${#pack} -gt 4000 ]; then   # the path goes on its own line so it is never folded in the middle
-    f="$( [ -d "$HOME/Downloads" ] && echo "$HOME/Downloads" || pwd)/hostbook-$(date +%Y%m%d-%H%M).hbshare"; printf '%s\n' "$pack" > "$f"
-    res="${res:+$res$NL}$CG$ICON_OK$C0 $(t share_saved)$NL  ${f/#$HOME/~}"; fi
-  [ -n "$res" ] || res="$CY$ICON_WARN$C0 $(t share_copy_fail)"
+  pw=$(share_password) && pack=$(share_pack "$d" "$pw") || { rm -rf "${d:?}"; err "$(t err_pack_bad)"; return 1; }; rm -rf "${d:?}"
+  f=$(mktemp "$( [ -d "$HOME/Downloads" ] && echo "$HOME/Downloads" || echo "$HOME")/hostbook-$(date +%Y%m%d-%H%M)-XXXXXX") || return 1
+  if ! (set -o noclobber; printf '%s\n' "$pack" > "$f.hbshare"); then rm -f "$f"; err "$(t err_share_write)"; return 1; fi
+  rm -f "$f"; f=$f.hbshare
+  chmod 600 "$f"
+  res="$CG$ICON_OK$C0 $(t share_saved)$NL  ${f/#$HOME/~}"
+  if printf '%s\n' "$pack" | copy 2>/dev/null; then res="$res$NL$CG$ICON_OK$C0 $(t share_copied "$(( ${#pack} / 1024 + 1 ))")"; fi
   # the password sits alone on an indented line, so selecting it copies nothing else
   head="$res$NL $NL$CB$(t share_pw_label)$C0$NL  $CG$CB$pw$C0$NL$CD$(t share_pw_note)$C0$NL$CD$(t share_recipient)$C0"; note=
   while :; do
@@ -2490,7 +2499,6 @@ home(){
   local q=${1:-} out rc key sel first t n hosts opt opts=() fd foot ft
   # fzf control-port token: only child processes of this invocation may send commands
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err "$(t err_ctl_key)"; return 1; }; export FZF_API_KEY
-  clip_offer
   fd=$(tmpd) || return 1
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
   foot="if [ \"\${FZF_TOTAL_COUNT:-0}\" -gt 0 ] && [ \"\${FZF_MATCH_COUNT:-0}\" -eq 0 ] && [ -n \"\$FZF_QUERY\" ]; then printf '%s\\n' \"\$HB_HOME_NO_MATCH\"; [ \"\${FZF_SELECT_COUNT:-0}\" -eq 0 ] || printf '%s\\n' \"\$HB_HOME_SELECTION_KEPT\"; elif [ \"\${FZF_TOTAL_COUNT:-0}\" -eq 0 ] && [ -n \"\${HOSTBOOK_ONLY:-}\" ]; then printf '%s\\n' \"\$HB_HOME_EMPTY_VIEW\"; fi
@@ -2677,7 +2685,7 @@ first_run(){ # ~/ssh-hosts does not exist yet
     ssh -F "$initial/validate" -G hostbook-validate-probe >/dev/null 2>&1 || return 1
     newcfg=$(mktemp "$HOME/.ssh/.hostbook-config.XXXXXX") || return 1
     { cat "$initial/header"; printf 'Include ~/ssh-hosts/*.conf\n'; cat "$initial/global"; } > "$newcfg" && chmod 600 "$newcfg" || { rm -f "$newcfg"; return 1; }
-    IMPORT_KEEP_GLOBAL=1 IMPORT_HEADER="$initial/header" IMPORT_TAIL="$initial/global" import_flow "$initial/import" || { rm -f "$newcfg"; return 1; }
+    IMPORT_KEEP_GLOBAL=1 IMPORT_HEADER="$initial/header" IMPORT_TAIL="$initial/global" import_config_file "$initial/import" || { rm -f "$newcfg"; return 1; }
     cmp -s "$initial/original" "$HOME/.ssh/config" || { rm -f "$newcfg"; return 1; }
     backup=$(mktemp "$HOME/.ssh/config.bak.XXXXXX") || { rm -f "$newcfg"; return 1; }
     cp -p "$initial/original" "$backup" && mv "$newcfg" "$HOME/.ssh/config" || { rm -f "$newcfg"; return 1; }

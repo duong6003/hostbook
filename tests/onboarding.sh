@@ -70,7 +70,7 @@ canceled_first_import(){ (
   case_setup import_cancel
   printf 'Include ~/ssh-hosts/*.conf\nHost original\n  HostName 192.0.2.1\n  IdentityFile ~/.ssh/original\n' > "$HOME/.ssh/config"
   cp "$HOME/.ssh/config" "$T/original-config"; printf 'older backup\n' > "$HOME/.ssh/config.bak"
-  ui_confirm(){ return 0; }; import_flow(){ ! grep -q '^Include' "$1" && return 1; return 2; }
+  ui_confirm(){ return 0; }; import_config_file(){ ! grep -q '^Include' "$1" && return 1; return 2; }
   ! first_run > "$T/import-cancel-result" 2>&1 && cmp "$T/original-config" "$HOME/.ssh/config" && [ "$(cat "$HOME/.ssh/config.bak")" = 'older backup' ] && ! ls "$DIR"/*.conf >/dev/null 2>&1
 ); }
 accepted_first_import(){ (
@@ -78,7 +78,7 @@ accepted_first_import(){ (
   printf 'Include ~/ssh-hosts/*.conf\nHost original\n  HostName 192.0.2.1\n  IdentityFile ~/.ssh/original\nHost *\n  ServerAliveInterval 30\n' > "$HOME/.ssh/config"
   cp "$HOME/.ssh/config" "$T/accepted-original"; printf 'older backup\n' > "$HOME/.ssh/config.bak"
   ui_confirm(){ case "$*" in *"$(t first_import_q)"*) return 0;; *) return 1;; esac; }
-  import_flow(){ ! grep -q '^Include' "$1" || return 1; printf 'original\n' > "$STATE/last-import"; }
+  import_config_file(){ ! grep -q '^Include' "$1" || return 1; printf 'original\n' > "$STATE/last-import"; }
   first_run > "$T/import-accept-result" 2>&1 && [ "$(cat "$HOME/.ssh/config.bak")" = 'older backup' ] && cmp "$T/accepted-original" "$HOME/.ssh/"config.bak.* && grep -q '^Host \*' "$HOME/.ssh/config" && ! grep -q '^Host original' "$HOME/.ssh/config"
 ); }
 real_first_import_with_key(){ (
@@ -276,6 +276,23 @@ vault_key_import_choices(){ (
   secret_add_key(){ [ "$1" = clip ] && echo stored-key; }
   [ "$(pick_login '' '' key)" = stored-key ]
 ); }
+secrets_manager_vault_first(){ (
+  case_setup manager
+  secret_names(){ echo saved-key; }; secret_users(){ :; }; secret_meta(){ echo key; }; secret_label(){ echo ed25519; }; legacy_keys(){ :; }
+  ui_menu(){ printf '%s\n' "$@" > "$T/manager-menu"; echo 0; }
+  secret_actions(){ [ "$1" = saved-key ]; }
+  secret_manager >/dev/null 2>&1 || exit 1
+  grep -Fq "$(t login_add_vault)" "$T/manager-menu" && ! grep -Fq "$(t act_key_file)" "$T/manager-menu" || exit 1
+  rm -f "$T/manager-add"
+  ui_menu(){ if [ -e "$T/manager-add" ]; then echo 0; else touch "$T/manager-add"; echo 1; fi; }
+  ui_choice(){ printf '%s\n' "$@" > "$T/manager-sources"; return 1; }
+  secret_manager >/dev/null 2>&1 && grep -Fq "$(t act_key_file)" "$T/manager-sources" || exit 1
+  rm -f "$T/manager-add"
+  ui_choice(){ echo 0; }; pick_key_file(){ return 1; }
+  pause(){ touch "$T/manager-unexpected-pause"; }
+  secret_manager >/dev/null 2>&1 && [ ! -e "$T/manager-unexpected-pause" ]
+); }
+check secrets_manager_vault_first
 check vault_login_cancel_returns_to_list
 check vault_key_import_choices
 check vault_login_sources

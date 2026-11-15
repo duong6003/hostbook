@@ -40,11 +40,15 @@ run_case(){
     printf '# tags: staging api\n# desc: very-long-unbroken-description-abcdefghijklmnopqrstuvwxyz-0123456789\nHost very-long-server-name-%02d\n  HostName 192.0.2.%s\n  User fixture\n' "$i" "$i" >> "$root/input.conf"
     i=$((i+1))
   done
+  mkdir -p "$root/package/conf"; cp "$root/input.conf" "$root/package/conf/test.conf"
+  printf 'version=1\nfrom=fixture\n' > "$root/package/manifest"; : > "$root/package/groups.tsv"
+  { printf '# hostbook-share v1\n'; tar -czf - -C "$root/package" . | AGE_PASSPHRASE=fixture age -e -j batchpass -a; } > "$root/input.hbshare"
   . "$HERE/../lang/$lang.sh"
-  printf -v cmd 'env HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q HOSTBOOK_KEYCHAIN=%q HOSTBOOK_LANG=%q PATH=%q SHELL=/bin/bash /bin/bash %q import %q' \
-    "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$HOSTBOOK_KEYCHAIN" "$lang" "$PATH" "$S" "$root/input.conf"
+  printf -v cmd 'env HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q HOSTBOOK_KEYCHAIN=%q HOSTBOOK_LANG=%q PATH=%q SHELL=/bin/bash HB_PACK_PW=fixture /bin/bash %q import %q' \
+    "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$HOSTBOOK_KEYCHAIN" "$lang" "$PATH" "$S" "$root/input.hbshare"
   if [ "$lang" = vi ] && [ "$width" = 44 ] && [ "$border" = rounded ] && [ "$count" = 30 ]; then printf 'previous-result\n' > "$HOSTBOOK_STATE/last-import"; fi
   tmux -L "$socket" new-session -d -x "$width" -y 24 -s ui "$cmd"
+  wait_for "$L_imp_head"; tmux -L "$socket" send-keys -t ui Enter
   wait_for "$L_import_review_title"
   wait_for 'very-long-server-name-01'
   if [ "$count" = 30 ]; then
@@ -59,6 +63,7 @@ run_case(){
     end_ui
     [ "$(cat "$HOSTBOOK_STATE/last-import")" = previous-result ] && ! ls "$HOSTBOOK_DIR"/*.conf >/dev/null 2>&1 && [ -z "$(ls -A "$HOSTBOOK_STATE/tmp" 2>/dev/null)" ] || { echo 'FAIL import TUI: canceled review wrote data or left temporary files'; return 1; }
     tmux -L "$socket" new-session -d -x "$width" -y 24 -s ui "$cmd"
+    wait_for "$L_imp_head"; tmux -L "$socket" send-keys -t ui Enter
     wait_for "$L_import_review_title"; wait_for 'very-long-server-name-01'
   fi
   tmux -L "$socket" send-keys -t ui Enter

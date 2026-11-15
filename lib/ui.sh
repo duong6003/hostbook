@@ -244,8 +244,8 @@ hsize(){ local b=$1; if [ "$b" -lt 1024 ]; then printf '%s B' "$b"; elif [ "$b" 
   elif [ "$b" -lt 1073741824 ]; then printf '%s.%s M' $((b/1048576)) $((b%1048576*10/1048576)); else printf '%s.%s G' $((b/1073741824)) $((b%1073741824*10/1073741824)); fi; }
 # File picker: one ui_menu per directory. Folders first, dot files hidden, sizes right-aligned; → opens a folder, ← goes up,
 # enter opens a folder or picks a file. Prints the file (as ~/… under the home directory); esc → status 1.
-file_pick(){ # start-dir header [enter-label] [dotfiles] [session-dir]
-  local dir=${1:-$HOME} head=$2 enter=${3:-$(t key_pick)} dots=${4:-} session=${5:-} base=$UI_AT H=${HOME%/}
+file_pick(){ # start-dir header [enter-label] [dotfiles] [session-dir] [file-pattern]
+  local dir=${1:-$HOME} head=$2 enter=${3:-$(t key_pick)} dots=${4:-} session=${5:-} base=$UI_AT H=${HOME%/} pattern=${6:-*}
   local lines kind size name items names isdir out rc key i lab shown h2 ls_flags query= path parent error= UI_AT=$UI_AT
   if [ -n "$session" ] && [ -f "$session/dir" ]; then IFS= read -r dir < "$session/dir" || :; fi
   if [ -n "$session" ] && [ -f "$session/query" ]; then IFS= read -r query < "$session/query" || :; fi
@@ -259,6 +259,7 @@ file_pick(){ # start-dir header [enter-label] [dotfiles] [session-dir]
     lines=$(LC_ALL=C ls $ls_flags "$dir/" 2>/dev/null | awk '{ k = substr($1, 1, 1); if (k != "d" && k != "-") next; n = $0; for (i = 1; i <= 8; i++) sub(/^[ \t]*[^ \t]+/, "", n); sub(/^ /, "", n); printf "%s\t%s\t%s\n", k, $5, n }' | sort -t "$TAB" -k1,1r -k3,3f)
     while IFS="$TAB" read -r kind size name; do
       [ -n "$name" ] || continue
+      if [ "$kind" != d ]; then case $name in $pattern) ;; *) continue;; esac; fi
       lab=$(printf '%s' "$name" | LC_ALL=C tr -d '\000-\037\177'); lab=${lab//|/¦}; case $lab in \#*|\!*) lab=" $lab";; esac
       if [ "$kind" = d ]; then items+=("$lab/"); isdir+=(1); else items+=("$lab|$(printf '%8s' "$(hsize "${size:-0}")")"); isdir+=(0); fi
       names+=("$name")

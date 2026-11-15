@@ -30,6 +30,14 @@ file_pick "$HOME" pick '' '' "$T/session" >/dev/null && { echo 'FAIL escape'; ex
 printf 0 > "$T/step"; printf 'saved filter\nctrl-l\n\n' > "$T/menu0"
 out=$(file_pick "$HOME" pick '' '' "$T/session")
 [ "$(tail -1 "$T/queries")" = 'saved filter' ] || { echo 'FAIL restored query'; exit 1; }
+# Package filtering preserves folders and offers only matching files.
+mkdir -p "$HOME/folder"
+printf package > "$HOME/bundle.hbshare"; printf unrelated > "$HOME/readme.txt"
+(
+  ui_menu(){ printf '%s\n' "$@" > "$T/filtered-menu"; printf '\nesc\n\n'; }
+  ! file_pick "$HOME" Pick '' '' '' '*.hbshare' >/dev/null
+  grep -q '^folder/' "$T/filtered-menu" && grep -q '^bundle.hbshare' "$T/filtered-menu" && ! grep -q '^readme.txt' "$T/filtered-menu"
+) || { echo 'FAIL package file filter'; exit 1; }
 # Gum is replaced here only to check its version-specific contract and cancellation.
 mkdir -p "$T/bin"
 cat > "$T/bin/gum" <<'SH'

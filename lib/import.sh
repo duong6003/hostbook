@@ -78,43 +78,42 @@ first_import_order_guard(){
 }
 # All transient input and decrypted package files belong to this import flow.
 import_tmpd(){ if [ -n "${IMPORT_WORK:-}" ]; then mktemp -d "$IMPORT_WORK/item.XXXXXX"; else tmpd; fi; }
-remember_package_offer(){
-  local c; c=$(head -c 200000 "$1") || return 1
-  printf '%s' "$c" | sha256 > "$STATE/last-offer"
-}
-import_flow(){ # [file]
+import_flow(){ # [package-file]
   local IMPORT_WORK rc
   IMPORT_WORK=$(tmpd) || return 1
   import_source "$@"; rc=$?
   rm -rf "$IMPORT_WORK"
   return "$rc"
 }
-import_source(){ # [file]
-  local src=${1:-} choice draft= value label input=$IMPORT_WORK/input rc session=$IMPORT_WORK/picker
+import_source(){ # [package-file]; validate content even when the picker filters names
+  local src=${1:-} label input=$IMPORT_WORK/input rc session=$IMPORT_WORK/picker start=$HOME
   mkdir -p "$session" || return 1
-  if [ -n "$src" ]; then
-    case $src in '~') src=$HOME;; '~/'*) src=$HOME/${src#\~/};; esac
-    src=$(unix_path "$src") || return 1
-    [ -f "$src" ] && [ -r "$src" ] && cp -- "$src" "$input" || { err "$(t err_import_read)" >&2; return 1; }
-    import_content "$input" "$src"; return $?
-  fi
+  [ ! -d "$HOME/Downloads" ] || start=$HOME/Downloads
   while :; do
     at "$(t import_title)"
-    choice=$(ui_choice "$(t import_source_title)" "$(t import_source_file)" "$(t import_source_paste)" "$(t import_source_clipboard)" "$(t cancel)") || return 1
-    case $choice in
-      0) src=$(file_pick "$HOME" "$(t import_source_file)" "" "" "$session") || continue
-         label=$src; case $src in '~') src=$HOME;; '~/'*) src=$HOME/${src#\~/};; esac
-         src=$(unix_path "$src") || continue
-         if ! { [ -f "$src" ] && [ -r "$src" ] && cp -- "$src" "$input"; }; then err "$(t err_import_read)" >&2; pause; continue; fi;;
-      1) value=$(ui_multiline "$(t import_source_paste)" "$draft") || continue
-         label=$(t import_source_paste); draft=$value; printf '%s\n' "$draft" > "$input" || return 1;;
-      2) label=$(t import_source_clipboard); if ! clip_get > "$input" 2>/dev/null || [ ! -s "$input" ]; then err "$(t err_import_clipboard)" >&2; pause; continue; fi;;
-      *) return 1;;
-    esac
-    import_content "$input" "$label"; rc=$?
+    if [ -z "$src" ]; then
+      src=$(UI_HEAD="$(t import_package_intro)" file_pick "$start" "$(t import_package_pick)" "" "" "$session" '*.hbshare') || return 1
+    fi
+    label=$src; case $src in '~') src=$HOME;; '~/'*) src=$HOME/${src#\~/};; esac
+    src=$(unix_path "$src") || return 1
+    if ! { [ -f "$src" ] && [ -r "$src" ] && cp -- "$src" "$input"; }; then
+      err "$(t err_import_read)" >&2; rc=1
+    elif ! is_pack "$input"; then
+      err "$(t err_import_package_only)" >&2; rc=2
+    else
+      import_pack "$input" "$label"; rc=$?
+    fi
     [ "$rc" -ne 0 ] || return 0
-    [ "$rc" -ne 2 ] || pause
+    [ -z "${1:-}" ] || return "$rc"
+    pause; src=
   done
+}
+import_config_file(){ # internal first-run migration; not a public import format
+  local IMPORT_WORK rc
+  IMPORT_WORK=$(tmpd) || return 1
+  cp -- "$1" "$IMPORT_WORK/input" && import_content "$IMPORT_WORK/input" "$1"; rc=$?
+  rm -rf "$IMPORT_WORK"
+  return "$rc"
 }
 import_content(){ # private input file, after choosing a source
   local src=$1 label=${2:-$(t import_title)} raw list errs n to cnt to_dir tmp stage f invalid
@@ -123,7 +122,7 @@ import_content(){ # private input file, after choosing a source
   LC_ALL=C tr -d '\011\012\015\040-\176\200-\377' < "$src" > "$IMPORT_WORK/control-bytes" || return 1
   [ ! -s "$IMPORT_WORK/control-bytes" ] || { err "$(t err_import_binary)" >&2; return 2; }
   if grep -qiE 'BEGIN [A-Z0-9 ]*PRIVATE KEY' "$src"; then err "$(t err_import_private)" >&2; return 2; fi
-  if is_pack "$src"; then remember_package_offer "$src" || return 1; import_pack "$src" "$label"; return $?; fi
+  if is_pack "$src"; then import_pack "$src" "$label"; return $?; fi
   if grep -qiE '^#[[:space:]]*hostbook-share|BEGIN AGE ENCRYPTED FILE' "$src"; then err "$(t err_pack_bad)" >&2; return 2; fi
   raw=$(cat "$src") || return 1
   [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || { err "$(t err_import_empty)" >&2; return 1; }
@@ -855,17 +854,4 @@ import_done(){ # new-count updated-count skipped-count
       *) return 0;;
     esac
   done
-}
-clip_offer(){ # offer to import a share package from the clipboard (only once per package)
-  local c h f line cnt from d rc
-  c=$(clip_get 2>/dev/null | head -c 200000) || return 0
-  printf '%s' "$c" | head -c 300 | grep -qE '^# hostbook-share v1([[:space:]]|$)' || return 0
-  h=$(printf '%s' "$c" | sha256); [ "$h" = "$(cat "$STATE/last-offer" 2>/dev/null)" ] && return 0
-  echo "$h" > "$STATE/last-offer"
-  line=$(printf '%s' "$c" | head -1)   # "# hostbook-share v1 · N server · từ <machine>": the file format, not screen text
-  cnt=$(printf '%s' "$line" | sed -n 's/^# hostbook-share v1 · \([0-9]*\) server.*/\1/p'); from=$(printf '%s' "$line" | sed -n 's/.* từ //p')
-  at "$(t import_title)"
-  ui_confirm --affirmative "$(t clip_yes)" --negative "$(t clip_no)" "$(t clip_q)" ${from:+"$(t clip_from "$from")"} ${cnt:+"$(t clip_count "$cnt")"} "$CD$(t clip_note)$C0" || return 0
-  d=$(tmpd) || return 1; f=$d/clip.hbshare; printf '%s\n' "$c" > "$f"
-  import_flow "$f"; rc=$?; rm -rf "$d"; return "$rc"
 }

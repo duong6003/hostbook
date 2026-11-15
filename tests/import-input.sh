@@ -17,112 +17,68 @@ trap 'cleanup; rm -rf "$T"' EXIT
 git -C "$DIR" init -q; git -C "$DIR" commit --allow-empty -qm fixture
 build_index full
 clear(){ :; }; pause(){ :; }
-ui_menu(){
-  printf '%s\n' "$@" >> "$T/menu-log"
-  local n; n=$(cat "$T/pick-number" 2>/dev/null || echo 0); echo $((n+1)) > "$T/pick-number"
-  sed -n "$((n+1))p" "$T/picks"
-}
-ui_choice(){ : > "$T/source-compact"; ui_menu "$@"; }
-file_pick(){ [ "${PICK_CANCEL:-}" != 1 ] || return 1; printf '%s\n' "$INPUT_FILE"; }
-ui_multiline(){ [ "${PASTE_CANCEL:-}" != 1 ] || return 1; printf '%s\n' "${PASTE_VALUE:-}"; }
-clip_get(){ [ "${CLIP_FAIL:-}" != 1 ] || return 1; cat "$T/clipboard"; }
-confirm(){ : > "$T/confirmed"; return 1; }
-import_review(){ : > "$T/confirmed"; return 1; }
-pick(){ echo 0; }
-apply_import_config(){ : > "$T/applied"; return 1; }
-import_done(){ : > "$T/result"; return 0; }
+clear(){ :; }; pause(){ :; }; flash(){ :; }
 pass=0; fail=0
-check(){ if "$@"; then pass=$((pass+1)); echo "ok    $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
-reset_menu(){ : > "$T/menu-log"; echo 0 > "$T/pick-number"; rm -f "$T/applied" "$T/confirmed"; }
-source_menu_offers_choices(){
-  reset_menu; printf '3\n' > "$T/picks"
-  ! import_flow > "$T/output" 2>&1 && [ -e "$T/source-compact" ] && grep -Fq "$(t import_source_file)" "$T/menu-log" && grep -Fq "$(t import_source_paste)" "$T/menu-log" && grep -Fq "$(t import_source_clipboard)" "$T/menu-log" && [ ! -e "$T/editor-called" ]
+check(){ if ( "$@" ); then pass=$((pass+1)); echo "ok    $1"; else fail=$((fail+1)); echo "FAIL  $1"; fi; }
+import_review(){ return 1; }
+file_pick(){ printf '%s\n' "$@" > "$T/picker-args"; return 1; }
+package_picker_is_direct(){
+  ui_choice(){ echo unexpected > "$T/unexpected-menu"; return 1; }
+  ! import_flow > "$T/output" 2>&1 && [ -s "$T/picker-args" ] && grep -Fq '*.hbshare' "$T/picker-args" && [ ! -e "$T/unexpected-menu" ]
 }
-file_cancel_returns_to_source(){
-  reset_menu; printf '0\n3\n' > "$T/picks"
-  (PICK_CANCEL=1; ! import_flow > "$T/output" 2>&1) && [ "$(cat "$T/pick-number")" = 2 ] && [ ! -e "$T/editor-called" ]
-}
-paste_cancel_returns_to_source(){
-  reset_menu; printf '1\n3\n' > "$T/picks"
-  (PASTE_CANCEL=1; ! import_flow > "$T/output" 2>&1) && [ "$(cat "$T/pick-number")" = 2 ] && [ ! -e "$T/editor-called" ]
-}
-clipboard_unavailable_returns_to_source(){
-  reset_menu; printf '2\n3\n' > "$T/picks"
-  (CLIP_FAIL=1; ! import_flow > "$T/output" 2>&1) && [ "$(cat "$T/pick-number")" = 2 ] && [ ! -e "$T/editor-called" ]
-}
-private_key_rejected(){
-  reset_menu; printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'sensitive' > "$T/private"
-  ! import_flow "$T/private" > "$T/output" 2>&1 && [ ! -s "$T/menu-log" ] && ! grep -q sensitive "$T/output" && [ ! -e "$T/applied" ] && [ ! -e "$T/editor-called" ]
-}
-binary_rejected(){
-  reset_menu; printf 'Host safe\000unsafe\n' > "$T/binary"
-  ! import_flow "$T/binary" > "$T/output" 2>&1 && [ ! -s "$T/menu-log" ] && [ ! -e "$T/confirmed" ] && [ ! -e "$T/applied" ] && [ ! -e "$T/editor-called" ]
-}
-malformed_package_rejected(){
-  reset_menu; rm -f "$T/package-attempted"
-  for version in v9 v10 v1broken; do
-    printf '# hostbook-share %s\nHost unsafe\n' "$version" > "$T/malformed"
-    (import_pack(){ : > "$T/package-attempted"; return 1; }; ! import_flow "$T/malformed" > "$T/output" 2>&1) || return 1
-    [ ! -e "$T/package-attempted" ] || return 1
+plain_content_is_rejected(){
+  local data
+  for data in 'Host wrong' 'test 192.0.2.1 ubuntu' '-----BEGIN OPENSSH PRIVATE KEY-----'; do
+    printf '%s\n' "$data" > "$T/not-a-package.hbshare"
+    ! import_flow "$T/not-a-package.hbshare" > "$T/output" 2>&1 || return 1
+    grep -Fq "$(t err_import_package_only)" "$T/output" || return 1
   done
-  [ ! -s "$T/menu-log" ] && [ ! -e "$T/editor-called" ]
 }
-invalid_package_versions_not_offered(){ (
+malformed_versions_are_rejected(){
   local version
-  for version in v10 v1broken; do
-    printf '# hostbook-share %s\n' "$version" > "$T/clipboard"
-    rm -f "$T/unexpected-offer"
-    ui_confirm(){ : > "$T/unexpected-offer"; return 1; }
-    clip_offer || exit 1
-    [ ! -e "$T/unexpected-offer" ] || exit 1
+  import_pack(){ touch "$T/unexpected-package"; return 1; }
+  for version in v9 v10 v1broken; do
+    printf '# hostbook-share %s\n' "$version" > "$T/malformed"
+    ! import_flow "$T/malformed" > "$T/output" 2>&1 || return 1
   done
-); }
-quoted_path_bypasses_menu(){
-  reset_menu; INPUT_FILE="$T/a space's ü.conf"
-  printf 'Host test-host\n  HostName 192.0.2.1\n' > "$INPUT_FILE"
-  rm -f "$T/confirmed"
-  ! import_flow "$INPUT_FILE" > "$T/output" 2>&1 && [ -e "$T/confirmed" ] && [ ! -s "$T/menu-log" ] && [ ! -e "$T/editor-called" ]
+  [ ! -e "$T/unexpected-package" ]
 }
-literal_relative_paths_and_tilde(){ (
-  mkdir -p "$T/route-cwd"
-  for name in --help '~literal.conf'; do printf 'Host literal\n  HostName 192.0.2.2\n' > "$T/route-cwd/$name"; done
-  printf 'Host literal\n  HostName 192.0.2.2\n' > "$HOME/tilde.conf"
-  cd "$T/route-cwd" || exit 1
-  for name in --help '~literal.conf' '~/tilde.conf'; do
-    rm -f "$T/confirmed"
-    ! import_flow "$name" > "$T/output" 2>&1 && [ -e "$T/confirmed" ] || exit 1
-  done
-); }
-paste_keeps_last_submitted_draft(){
-  reset_menu; printf '1\n1\n3\n' > "$T/picks"; echo 0 > "$T/paste-number"
-  (ui_multiline(){
-    local n; n=$(cat "$T/paste-number"); echo $((n+1)) > "$T/paste-number"
-    if [ "$n" = 0 ]; then printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'draft-secret'; return 0; fi
-    printf '%s' "$2" > "$T/last-draft"; return 1
-  }; ! import_flow > "$T/output" 2>&1) && grep -q 'draft-secret' "$T/last-draft" && ! grep -q 'draft-secret' "$T/output" && [ ! -e "$T/editor-called" ]
+make_package(){
+  mkdir -p "$T/share/conf"
+  printf 'version=1\nfrom=fixture\n' > "$T/share/manifest"; : > "$T/share/groups.tsv"
+  printf 'Host package-host\n  HostName 192.0.2.70\n' > "$T/share/conf/test.conf"
+  share_pack "$T/share" fixture > "$T/share.hbshare"
 }
-real_package_cleanup_and_offer_suppression(){
-  local p="$T/share" hash
-  mkdir -p "$p/conf"; printf 'version=1\nfrom=fixture\n' > "$p/manifest"; : > "$p/groups.tsv"
-  printf 'Host private-stage-marker\n  HostName 192.0.2.70\n' > "$p/conf/test.conf"
-  { printf '# hostbook-share v1 · 1 server\n'; tar -czf - -C "$p" . | AGE_PASSPHRASE=fixture age -e -j batchpass -a; } > "$T/share.hbshare" || return 1
-  (import_pack(){ local opened; opened=$(HB_PACK_PW=fixture pack_open "$1") || return 1; grep -q private-stage-marker "$opened/conf/test.conf"; }; import_flow "$T/share.hbshare" > "$T/output" 2>&1) || return 1
-  hash=$(c=$(head -c 200000 "$T/share.hbshare"); printf '%s' "$c" | sha256)
-  [ "$(cat "$STATE/last-offer")" = "$hash" ] || return 1
-  (clip_get(){ cat "$T/share.hbshare"; }; ui_confirm(){ : > "$T/offered-again"; return 1; }; clip_offer) || return 1
-  [ ! -e "$T/offered-again" ] && ! rg -q private-stage-marker "$STATE/tmp" 2>/dev/null
+literal_paths_and_content_detection(){
+  make_package || return 1
+  mkdir -p "$T/cwd"; cp "$T/share.hbshare" "$T/cwd/--help"; cp "$T/share.hbshare" "$T/cwd/~literal"; cp "$T/share.hbshare" "$HOME/tilde"
+  cp "$T/share.hbshare" "$T/a space's ü.data"
+  import_pack(){ local opened; opened=$(HB_PACK_PW=fixture pack_open "$1") || return 1; grep -q package-host "$opened/conf/test.conf"; }
+  cd "$T/cwd" || return 1
+  local name
+  for name in --help '~literal' '~/tilde' "$T/a space's ü.data"; do import_flow "$name" > "$T/output" 2>&1 || return 1; done
+  ! rg -q package-host "$STATE/tmp" 2>/dev/null
 }
-check source_menu_offers_choices
-check file_cancel_returns_to_source
-check paste_cancel_returns_to_source
-check clipboard_unavailable_returns_to_source
-check private_key_rejected
-check binary_rejected
-check malformed_package_rejected
-check invalid_package_versions_not_offered
-check quoted_path_bypasses_menu
-check literal_relative_paths_and_tilde
-check paste_keeps_last_submitted_draft
-check real_package_cleanup_and_offer_suppression
+wrong_password_and_damage_do_not_write(){
+  make_package || return 1
+  local before; before=$(g rev-parse HEAD)
+  HB_PACK_PW=wrong import_flow "$T/share.hbshare" > "$T/output" 2>&1 && return 1
+  printf '# hostbook-share v1\nnot encrypted\n' > "$T/broken.hbshare"
+  HB_PACK_PW=fixture import_flow "$T/broken.hbshare" > "$T/output" 2>&1 && return 1
+  [ "$(g rev-parse HEAD)" = "$before" ] && [ -z "$(g status --porcelain)" ]
+}
+invalid_file_can_be_retried(){
+  printf 'not a package\n' > "$T/invalid.hbshare"; make_package || return 1
+  rm -f "$T/picker-once"
+  file_pick(){ if [ -e "$T/picker-once" ]; then echo "$T/share.hbshare"; else touch "$T/picker-once"; echo "$T/invalid.hbshare"; fi; }
+  import_pack(){ HB_PACK_PW=fixture pack_open "$1" >/dev/null; }
+  import_flow > "$T/output" 2>&1 && grep -Fq "$(t err_import_package_only)" "$T/output"
+}
+check package_picker_is_direct
+check plain_content_is_rejected
+check malformed_versions_are_rejected
+check literal_paths_and_content_detection
+check wrong_password_and_damage_do_not_write
+check invalid_file_can_be_retried
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

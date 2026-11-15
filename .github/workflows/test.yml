@@ -50,6 +50,7 @@ jobs:
           bash tests/import.sh
           bash tests/import-keys.sh
           bash tests/import-input.sh
+          bash tests/import-package.sh
           bash tests/import-review.sh
           bash tests/import-tui.sh
           bash tests/onboarding.sh
