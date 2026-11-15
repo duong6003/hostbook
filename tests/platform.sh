@@ -34,10 +34,16 @@ if command -v tmux >/dev/null 2>&1; then
     export TMUX_TMPDIR="$T/tmux-socket"; unset TMUX; mkdir -p "$TMUX_TMPDIR"
     tmux new-session -d -s hb-fixture "sleep 60" || exit 1
     tmux split-window -t hb-fixture "sleep 60" || exit 1
+    tmux new-session -d -s hb-second "sleep 60" || exit 1
     tmux new-session -d -s unrelated "sleep 60" || exit 1
+    tmux set-option -g remain-on-exit on
+    tmux new-window -t hb-fixture "exit 0" || exit 1
+    i=0; while ! tmux list-panes -a -F '#{pane_dead}' | grep -qx 1; do
+      i=$((i+1)); [ "$i" -lt 40 ] || { tmux kill-server; exit 1; }; sleep .05
+    done
     list_data > "$T/sessions"
     tmux kill-server
-    awk -F '\t' '$1 == "s:hb-fixture" && index($0, "2") {found=1} $1 == "s:unrelated" {bad=1} END {exit !(found && !bad)}' "$T/sessions"
+    awk -F '\t' '$1 == "s:hb-fixture" && index($0, "2") {found=1} $1 == "s:hb-second" {second=1} $1 == "s:unrelated" {bad=1} END {exit !(found && second && !bad)}' "$T/sessions"
   ); }
   check 'list sessions counts live panes and excludes unrelated sessions' 'session_check'
 fi
