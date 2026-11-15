@@ -43,3 +43,9 @@ Ruling: the installed minimum fzf 0.63 lacks `--gutter` and the `multi` event us
 - [ ] File picker and other searchable lists, integration with import and form, independent review and platform coverage remain outside this slice.
 
 Query latency: macOS arm64, 100×24, rounded/compact, vi, private 20/500-host fixtures, fzf 0.75; 9 samples after 3 warmups, revisions `9598b22` → `309f356`. A single `z` produces no matches. Baseline waits for the 0/N count; changed revision waits for the recovery message, so timings include tmux send/capture and polling rather than only application time. At 20 hosts the median was 15.831 → 15.637 ms (range 15.197–16.904 → 15.170–16.329); at 500 hosts it was 15.754 → 15.683 ms (15.179–17.886 → 15.255–16.364). Raw samples are in `home-query-performance.json`; the isolated measurement script was `/tmp/hostbook-home-query-perf.py` and reused `tests/pointer-performance.py` from the companion worktree.
+
+## Host UI extraction
+
+The named host interaction functions moved verbatim to `lib/hosts.sh`; suggestion, parsing, rendering and raw mutations remain in core. Human flows, unknown underscore searches and sourced fixtures load it explicitly; `_connect`/`_explain` use pane-mode error handling and do not reach Edit. The loader regression checks human and unknown-search paths with an intentionally failing module and confirms unrelated callbacks and `--version` skip it. Unix install/update module assertions include `settings` and `hosts`; Windows module assertions remain for integration.
+
+Verification before the extraction commit: Bash 3.2 syntax checks; function text comparison against the previous revision; hosts-module; core (150), UI (111), platform (22), import (13), TUI and screens passed. The first UI run under concurrent suites exceeded its 200 ms demo test limit (261 ms); it passed when rerun alone (58 ms). Unix install/update and isolated before/after performance remain pending.

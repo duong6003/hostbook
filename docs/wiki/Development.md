@@ -14,6 +14,7 @@ Core files:
 | `lib/ui.sh` | Shared UI helpers, loaded eagerly. |
 | `lib/import.sh` | Bulk and share-package import, loaded for human flows and import callbacks. |
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
+| `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads. |
 | `install.ps1`, `windows/` | Managed Windows runtime, native launcher, and OS boundaries. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and Git identity regressions. |
