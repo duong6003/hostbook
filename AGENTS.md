@@ -4,6 +4,12 @@ For the codebase layout, test commands and isolation variables, see [docs/wiki/D
 Never test against the real `~/ssh-hosts`, ssh-agent, Keychain, `~/.ssh` or `~/.config`. Copy data into a temporary
 directory and point `HOSTBOOK_DIR`, `HOSTBOOK_STATE`, `HOSTBOOK_SSH_CONFIG` and `XDG_CONFIG_HOME` at it.
 
+## Review guidelines
+
+Before reviewing code or validating a fix, read and follow
+[Review guidelines](docs/REVIEW_GUIDELINES.md). Prioritize credential safety and data integrity;
+report actionable findings with evidence and state verification limits.
+
 ## Performance rules
 
 These rules come from the 2026-11-15 audit (tracking issue #9). Every fzf callback runs `bash hostbook _<cmd>`, which
