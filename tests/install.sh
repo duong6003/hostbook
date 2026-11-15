@@ -5,6 +5,7 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 export HOME="$T/home" HOSTBOOK_DIR="$T/hosts" HOSTBOOK_STATE="$T/state"
+export HOSTBOOK_HOME="$HOME/.local/share/hostbook"
 export HOSTBOOK_SSH_CONFIG="$T/ssh_config" XDG_CONFIG_HOME="$T/config"
 export HOSTBOOK_KEYCHAIN="file:$T/keychain/id" SHELL=/bin/bash
 unset SSH_AUTH_SOCK SSH_AGENT_PID
@@ -12,6 +13,7 @@ export GIT_AUTHOR_NAME=ci GIT_AUTHOR_EMAIL=ci@example.com GIT_COMMITTER_NAME=ci 
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
 printf 'keep host data\n' > "$HOSTBOOK_DIR/sentinel"
 git clone -q "$HERE" "$T/source"
+git -C "$T/source" checkout -q -b ci-install
 export HOSTBOOK_REPO="$T/source"
 bash "$HERE/install.sh" </dev/null
 app="$HOME/.local/share/hostbook"
