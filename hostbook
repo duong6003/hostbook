@@ -1566,16 +1566,25 @@ pick_project(){ # suggestions-file → print the project name (call with UI_HEAD
   else echo "${keys[$i]}"; fi
 }
 pick_tags(){ # project current-tags → print new tags
-  local g=$1 cur=$2 all sel other; other=$(t tags_other)
+  local g=$1 cur=$2 all sel other extra idx t i=0 action on= more
+  local items=()
+  other=$(t tags_other)
   all=$( { printf '%s\n' $cur; awk -F'\t' -v g="$g" '$2==g{print $8}' "$IDX" | tr ' ' '\n'; } | grep . | awk '!s[$0]++')
-  local items=() on= t i=0 idx
   while IFS= read -r t; do [ -n "$t" ] || continue; items+=("$t"); i=$((i+1)); case " $cur " in *" $t "*) on="$on $i";; esac; done <<< "$all"
-  items+=("$other")
-  idx=$(UI_MULTI=1 UI_SELECT=$on UI_FOOT=$(ui_keys "↑↓:$(t key_move)" "tab:$(t key_mark)" "enter:$(t key_done)" "esc:$(t key_cancel)") ui_menu "$(t tags_head)" "${items[@]}") || return 1
-  sel=; for i in $idx; do sel="$sel${items[$i]}"$'\n'; done
-  if printf '%s\n' "$sel" | grep -qxF "$other"; then
-    sel=$(printf '%s\n' "$sel" | grep -vxF "$other"; ui_field "$(t tags_add_label)" "" any "$(t tags_add_rule)"$'\n'"$(t example 'prod web')" | tr ' ' '\n'); fi
-  printf '%s\n' "$sel" | grep . | tr -cd 'A-Za-z0-9._\n-' | tr '\n' ' ' | sed 's/ $//'
+  action=$i; items+=("$other")
+  while :; do
+    idx=$(UI_SELECT="$on" UI_CHECK_ACTION=$action ui_checklist "$(t tags_head)" "${items[@]}") || return 1
+    sel=; on=; more=
+    for i in $idx; do
+      if [ "$i" -eq "$action" ]; then more=1
+      else sel="$sel${items[$i]}"$'\n'; on="$on $((i+1))"; fi
+    done
+    [ -n "$more" ] || break
+    extra=$(ui_field "$(t tags_add_label)" "" any "$(t tags_add_rule)"$'\n'"$(t example 'prod web')") || continue
+    sel="$sel"$(printf '%s' "$extra" | tr ' ' '\n')$'\n'
+    break
+  done
+  printf '%s\n' "$sel" | tr -cd 'A-Za-z0-9._\n-' | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//'
 }
 parse_addr(){ # "user@host:port" → print user, host, and port on three lines
   local s=$1 u="" p=""
@@ -2668,12 +2677,12 @@ home(){
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost="$(t home_ghost)" --marker='+' \
       --header "$(cmd_header)" --footer "$ft" \
-      --preview "$(self_cmd) _preview {1}" --gutter=' ' --ellipsis='' --no-hscroll \
+      --preview "$(self_cmd) _preview {1}" --ellipsis='' --no-hscroll \
       --bind "resize:$(relayout_actions "$fd")" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
-      --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
+      --bind "tab:transform~case {1} in h:*) echo toggle+down;; *) echo down;; esac~+transform-footer:$fwrite$foot" \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
-      --bind "focus:transform-footer:$fwrite$foot" --bind "multi:transform-footer:$fwrite$foot" \
+      --bind "focus:transform-footer:$fwrite$foot" \
       --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list

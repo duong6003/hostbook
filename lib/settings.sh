@@ -11,26 +11,34 @@ setting_options(){
     theme) theme_names; local f n; for f in "$CONF"/themes/*.theme; do [ -f "$f" ] || continue; n=$(basename "$f" .theme); valid_theme_name "$n" && { theme_builtin "$n" >/dev/null || echo "$n"; }; done;;
   esac
 }
-setting_pick(){ # key [heading] [row number to start on]; its own fzf because the preview is the live _demo
-  local key=$1 heading=${2:-} selected=${3:-} out
+setting_pick(){ # key [heading] [one-based initial row]; preview never writes config
+  local key=$1 heading=${2:-} selected=${3:-} out current value label i=0 arg preview='case {1} in ' entry
+  local values=() items=()
   [ -n "$heading" ] || heading=$(t "set_k_$key")
   at "$(t settings_title)|$(t "set_k_$key")"
-  if [ -z "$selected" ] && [ "$key" != preset ]; then
-    selected=$(setting_options "$key" | awk -F'\t' -v v="$(cfg_raw "$key")" '$1==v {print NR; exit}')
+  current=$(cfg_raw "$key")
+  while IFS="$TAB" read -r value label; do
+    [ -n "$value" ] || continue
+    values+=("$value"); [ -n "$label" ] || label=$value
+    [ "$value" != "$current" ] || { [ -n "$selected" ] || selected=$((i+1)); label="$label|$(t current)"; }
+    items+=("$label")
+    printf -v arg '%q' "$key=$value"
+    preview="$preview$i) exec $(self_cmd) _demo $arg;; "
+    i=$((i+1))
+  done < <(setting_options "$key")
+  preview="$preview"'esac'
+  if [ "$key" = separator ]; then
+    out=$(UI_PREVIEW="$preview" UI_PREVIEW_WINDOW='right,65%,wrap,<80(down,55%,wrap)' ui_toggle "$heading" "${current:-on}") || return 1
+  else
+    entry=$(UI_POS=${selected:-1} UI_PREVIEW="$preview" UI_PREVIEW_WINDOW='right,65%,wrap,<80(down,55%,wrap)' ui_choice "$heading" "${items[@]}") || return 1
+    out=${values[$entry]}
   fi
-  # The picker always uses single-line rows; --read0 is only for the server card list.
-  out=$(setting_options "$key" | awk -F'\t' '{if(NF==1) print $0 "\t" $0; else print}' |
-    ui_fzf "$(ui_head "$CB$heading$C0")" --delimiter="$TAB" --with-nth=2 --accept-nth=1 --highlight-line \
-      --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" \
-      --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_save)" "esc:$(t key_cancel)")" --bind 'esc:abort' \
-      --preview "$(self_cmd) _demo '$key='{1}" --preview-window='right,65%,wrap,<80(down,55%,wrap)' \
-      ${selected:+--bind="load:pos($selected)"}) || return 1
   if [ "$key" = preset ]; then apply_preset "$out"; else cfg_set "$key" "$out"; fi
   apply_theme
 }
 set_language(){ # [breadcrumb] Language / Ngôn ngữ: save lang, then reload the texts so the next screen is already in it
   local i l; at "${1:-$(t settings_title)|$(t set_language)}"
-  i=$(UI_POS=$([ "$UI_LANG" = vi ] && echo 1 || echo 2) ui_menu "$(t set_lang_head)" "$(t lang_vi)|$([ "$UI_LANG" = vi ] && t current)" "$(t lang_en)|$([ "$UI_LANG" = en ] && t current)") || return 1
+  i=$(UI_POS=$([ "$UI_LANG" = vi ] && echo 1 || echo 2) ui_choice "$(t set_lang_head)" "$(t lang_vi)|$([ "$UI_LANG" = vi ] && t current)" "$(t lang_en)|$([ "$UI_LANG" = en ] && t current)") || return 1
   case $i in 0) l=vi;; *) l=en;; esac
   cfg_set lang "$l" || return 1
   HOSTBOOK_LANG=; lang_load   # a one-run HOSTBOOK_LANG would hide the choice just made, here and in child processes

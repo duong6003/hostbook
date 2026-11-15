@@ -63,7 +63,7 @@ ui_fzf(){ # header-text fzf-args… (stdin: list) → the shared frame
   [ -n "$head" ] || head=' '   # an empty header hides the box that carries the breadcrumb
   [ "$border" != none ] || head="$(ui_label)$NL$head"   # minimal style draws no box labels: the breadcrumb becomes the first header line
   local color; color=$(fzf_colors); [ "$UI_TONE" = danger ] && [ -z "${NO_COLOR:-}" ] && color="$color,border:$TH_ERR,label:$TH_ERR"
-  fzf --ansi --layout=reverse --height="${UI_INLINE:+~}100%" "$style" --header-first --info=hidden --gutter=' ' --pointer="$ICON_PTR" \
+  fzf --ansi --layout=reverse --height="${UI_INLINE:+~}100%" "$style" --header-first --info=hidden --pointer="$ICON_PTR" \
     --no-scrollbar --color="$color" --header-label="$(ui_label)" --header-label-pos=2 --header="$head" "$@"
 }
 ui_head(){ # [line…] → header text: the context card, a blank line, then the screen's own lines
@@ -151,6 +151,49 @@ ui_menu(){
     ${UI_POS:+--bind "load:pos($UI_POS)"} ${UI_EXPECT:+--expect="$UI_EXPECT"} \
     ${UI_MULTI:+--multi --marker='✓' --bind 'tab:toggle+down' --bind 'enter:transform:[ "$FZF_SELECT_COUNT" = 0 ] && echo "become(true)" || echo accept'} \
     ${UI_SELECT:+--bind "load:$(local r=; for i in $UI_SELECT; do r="$r+pos($i)+select"; done; printf '%s' "${r#+}+first")"}
+}
+# Compact single-choice list. Values remain zero-based indices, like ui_menu.
+ui_choice(){
+  local header=$1 x i=0 list= height rows out; shift
+  for x in "$@"; do list="$list$i$TAB${x/|/  }$NL"; i=$((i+1)); done
+  rows=$(term_rows); height=$((i+9)); [ -z "${UI_PREVIEW:-}" ] || [ "$height" -ge 22 ] || height=22
+  [ "$height" -le "$rows" ] || height=$rows
+  out=$(printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --height="$height" --no-input \
+    --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --highlight-line \
+    --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_cancel)}")}" \
+    --bind 'esc:abort,tab:down,btab:up,left:up,right:down' ${UI_POS:+--bind "load:pos($UI_POS)"} \
+    ${UI_PREVIEW:+--preview="$UI_PREVIEW"} ${UI_PREVIEW_WINDOW:+--preview-window="$UI_PREVIEW_WINDOW"}) || return 1
+  printf '%s\n' "$out"
+}
+ui_toggle(){ # header current → on|off; the focused option is shown in a single horizontal row
+  local i pos=1 rows height on off base out
+  on=$(t controls_on); off=$(t controls_off); [ "$2" != off ] || pos=2
+  base=$(ui_head ${UI_HEAD:+"$UI_HEAD"} "$CB$1$C0" "$(t current): $([ "$2" = off ] && printf '%s' "$off" || printf '%s' "$on")")
+  rows=$(term_rows); height=13; [ -z "${UI_PREVIEW:-}" ] || height=22
+  [ "$height" -le "$rows" ] || height=$rows
+  export HB_TOGGLE_BASE="$base" HB_TOGGLE_ON="$on" HB_TOGGLE_OFF="$off"
+  out=$(printf '0\t \n1\t \n' | ui_fzf "$base" --height="$height" --no-input --pointer=' ' --no-highlight-line \
+    --delimiter="$TAB" --with-nth=2 --accept-nth=1 --bind "load:pos($pos)" \
+    --bind 'esc:abort,tab:down,btab:up,left:up,right:down' \
+    --bind 'focus:transform-header:case {1} in 0) printf "%s\n[%s]    %s" "$HB_TOGGLE_BASE" "$HB_TOGGLE_ON" "$HB_TOGGLE_OFF";; 1) printf "%s\n %s    [%s]" "$HB_TOGGLE_BASE" "$HB_TOGGLE_ON" "$HB_TOGGLE_OFF";; esac' \
+    --footer="${UI_FOOT:-$(ui_keys "←→:$(t key_move)" "enter:$(t key_save)" "esc:$(t key_cancel)")}" \
+    ${UI_PREVIEW:+--preview="$UI_PREVIEW"} ${UI_PREVIEW_WINDOW:+--preview-window="$UI_PREVIEW_WINDOW"}) || return 1
+  case $out in 0) printf 'on\n';; 1) printf 'off\n';; *) return 1;; esac
+}
+ui_checklist(){ # header items… → selected indices, possibly empty
+  local header=$1 x i=0 list= height rows sel= r out foot; shift
+  for x in "$@"; do list="$list$i$TAB$x$NL"; i=$((i+1)); done
+  rows=$(term_rows); height=$((i+10)); [ "$height" -le "$rows" ] || height=$rows
+  for r in ${UI_SELECT:-}; do sel="$sel+pos($r)+select"; done
+  export HB_CHECK_KEYS="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "space:$(t key_mark)" "enter:$(t key_done)" "esc:$(t key_cancel)")}" HB_CHECK_COUNT="$(t controls_selected)" HB_CHECK_ACTION="${UI_CHECK_ACTION:--1}"
+  foot='n=$FZF_SELECT_COUNT; if [ "$n" -gt 0 ]; then for x in {+1}; do [ "$x" != "$HB_CHECK_ACTION" ] || n=$((n-1)); done; fi; printf "%s %s\n%s" "$n" "$HB_CHECK_COUNT" "$HB_CHECK_KEYS"'
+  out=$(printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --height="$height" --no-input --multi --marker='✓' \
+    --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --highlight-line \
+    --footer="0 $HB_CHECK_COUNT$NL$HB_CHECK_KEYS" \
+    --bind "load:${sel#+}${sel:++}first+transform-footer:$foot" \
+    --bind 'esc:abort,tab:down,btab:up,enter:transform:[ "$FZF_SELECT_COUNT" = 0 ] && echo "become(true)" || echo accept' \
+    --bind "space:toggle+transform-footer:$foot") || return 1
+  [ -z "$out" ] || printf '%s\n' "$out"
 }
 # ui_confirm [--default=false] [--affirmative X] [--negative Y] [--danger] QUESTION [DETAIL…] → status 0 for yes, 1 for no,
 # 2 for esc. A danger confirm has no "y" shortcut, so a stray key can never delete.
