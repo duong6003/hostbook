@@ -153,9 +153,9 @@ CONF
 mkdir -p "$T/package/conf"; cp "$T/import.conf" "$T/package/conf/dev.conf"
 printf 'version=1\nfrom=fixture\n' > "$T/package/manifest"; : > "$T/package/groups.tsv"
 { printf '# hostbook-share v1\n'; tar -czf - -C "$T/package" . | AGE_PASSPHRASE=fixture age -e -j batchpass -a; } > "$T/import.hbshare"
+export HB_PACK_PW=fixture
 start 100 "import $T/import.hbshare"
-wait_for 'Mật khẩu của gói'
-tmux -L "$socket" send-keys -t ui fixture Enter
+unset HB_PACK_PW
 wait_for 'Nhập thế nào?'
 tmux -L "$socket" send-keys -t ui Enter
 wait_for 'Xem lại trước khi nhập'
