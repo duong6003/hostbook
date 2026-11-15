@@ -81,6 +81,11 @@ mkdir -p "$T/source-split"
 printf '# tags: one two\n# desc: retained\nHost existing fresh fresh\n  HostName 192.0.2.19\nHost fresh\n  HostName 192.0.2.20\n' > "$T/source-split/incoming.conf"
 printf 'prior-result\n' > "$STATE/last-import"
 check 'staging accepts each new alias once without writing live data' '(stage=$(prepare_import_config "$T/source-split") && [ "$(cat "$stage/added")" = fresh ] && [ "$(grep -c "^Host fresh$" "$stage/incoming.conf")" = 1 ] && grep -q "# desc: retained" "$stage/incoming.conf" && [ "$(cat "$STATE/last-import")" = prior-result ] && ! grep -q fresh "$DIR/old.conf")'
+mkdir -p "$T/case-split"
+printf 'Host existing Existing\n  HostName 192.0.2.50\n' > "$T/case-split/source.conf"
+check 'SSH staging preserves distinct case-sensitive aliases' '(stage=$(prepare_import_config "$T/case-split") && [ "$(cat "$stage/added")" = Existing ])'
+printf 'Existing\t-\t192.0.2.51\t-\t-\n' > "$T/case-list"
+check 'list staging preserves distinct case-sensitive aliases' '(stage=$(prepare_import_list "$T/case-list" imported) && [ "$(cat "$stage/added")" = Existing ])'
 # Failure after one write must preserve touched, staged, and unrelated local data.
 transaction_failure(){ (
   local mode=$1 tx=$T/transaction-$1
@@ -169,7 +174,7 @@ package_both_names_do_not_collide(){ (
   git -C "$DIR" init -q; git -C "$DIR" add .; git -C "$DIR" commit -qm fixture; build_index full; cp "$IDX" "$tx/pack/base-index"; pack_state_signature > "$tx/pack/base-state"
   printf 'same\tnew\t192.0.2.2\tfixture\t22\t\t\t\t\t\t\t\nsame-2\tnew\t192.0.2.3\tfixture\t22\t\t\t\t\t\t\t\n' > "$tx/pack/index"
   : > "$tx/pack/smap"; printf 'same\tboth\nsame-2\tadd\n' > "$tx/pack/decisions"
-  printf 'pack-group\tsplit\tSame same-2\n' > "$tx/pack/groups.tsv"
+  printf 'pack-group\tsplit\tsame same-2\n' > "$tx/pack/groups.tsv"
   pack_block(){ printf 'Host %s\n  HostName 192.0.2.2\n' "$3"; }
   if [ "$mode" = stale ]; then
     printf '# edited after preview\n' >> "$DIR/base.conf"; cp "$DIR/base.conf" "$tx/changed"
@@ -180,32 +185,41 @@ package_both_names_do_not_collide(){ (
   [ "$(sort "$STATE/last-import")" = "$(printf 'same-2\nsame-2-2\n')" ] && [ "$(grep -h '^Host ' "$DIR"/*.conf | sort -u | wc -l | tr -d ' ')" = 3 ] && [ "$(cut -f3 "$GRP")" = "same-2-2 same-2" ]
 ); }
 check 'package both avoids names reserved by other decisions' 'package_both_names_do_not_collide'
-package_alias_casefold(){ (
-  local mode=${1:-same} tx=$T/package-case-${1:-same}
+package_alias_case_sensitive(){ (
+  local tx=$T/package-case-sensitive
   DIR=$tx/hosts; STATE=$tx/state; SSHCFG=$tx/ssh; IDX=$STATE/index.tsv; IDXD=$STATE/idx2; HIST=$STATE/history; SEC=$DIR/secrets; GRP=$DIR/groups.tsv
   mkdir -p "$DIR" "$STATE" "$tx/pack/conf"; : > "$HIST"
   printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
   printf 'Host same\n  HostName 192.0.2.1\n  User fixture\n' > "$DIR/base.conf"
   git -C "$DIR" init -q; git -C "$DIR" add .; git -C "$DIR" commit -qm fixture; build_index full
-  if [ "$mode" = same ]; then addr=192.0.2.1; else addr=192.0.2.99; fi
-  printf 'Host Same\n  HostName %s\n  User fixture\n' "$addr" > "$tx/pack/conf/base.conf"
+  printf 'Host Same\n  HostName 192.0.2.99\n  User fixture\n' > "$tx/pack/conf/base.conf"
   printf 'version=1\nfrom=fixture\n' > "$tx/pack/manifest"; : > "$tx/pack/groups.tsv"
   pack_classify "$tx/pack" > "$tx/pack/classes" || exit 1
-  if [ "$mode" = same ]; then awk -F '\t' 'tolower($1)=="same" && $2=="same" {ok=1} END {exit !ok}' "$tx/pack/classes"; exit $?; fi
+  awk -F '\t' '$1=="Same" && $2=="new" {ok=1} END {exit !ok}' "$tx/pack/classes" || exit 1
   cp "$IDX" "$tx/pack/base-index"; pack_state_signature > "$tx/pack/base-state"
-  case $mode in update) pack_decide "$tx/pack" pack > "$tx/pack/decisions";; keep) pack_decide "$tx/pack" mine > "$tx/pack/decisions";; both) ui_menu(){ echo 2; }; pack_decide "$tx/pack" ask > "$tx/pack/decisions";; esac
-  apply_import_package "$tx/pack" "$tx/pack/decisions" > "$tx/log" 2>&1 || { cat "$tx/log"; exit 1; }
+  pack_decide "$tx/pack" pack > "$tx/pack/decisions"
+  apply_import_package "$tx/pack" "$tx/pack/decisions" >/dev/null 2>&1 || exit 1
   build_index full
-  case $mode in
-    update) [ "$(host_field same 3)" = 192.0.2.99 ] && [ "$(wc -l < "$IDX" | tr -d ' ')" = 1 ];;
-    keep) [ "$(host_field same 3)" = 192.0.2.1 ] && [ "$(wc -l < "$IDX" | tr -d ' ')" = 1 ];;
-    both) [ "$(host_field same 3)" = 192.0.2.1 ] && [ "$(host_field same-2 3)" = 192.0.2.99 ];;
-  esac
+  [ "$(host_field same 3)" = 192.0.2.1 ] && [ "$(host_field Same 3)" = 192.0.2.99 ] && [ "$(ssh -F "$SSHCFG" -G same 2>/dev/null | awk '$1=="hostname" {print $2}')" = 192.0.2.1 ] && [ "$(ssh -F "$SSHCFG" -G Same 2>/dev/null | awk '$1=="hostname" {print $2}')" = 192.0.2.99 ]
 ); }
-check 'package aliases compare case-insensitively' 'package_alias_casefold'
-check 'case-colliding package update keeps stored alias' 'package_alias_casefold update'
-check 'case-colliding package keep preserves stored alias' 'package_alias_casefold keep'
-check 'case-colliding package both creates a distinct alias' 'package_alias_casefold both'
+check 'package preserves distinct case-sensitive SSH aliases' 'package_alias_case_sensitive'
+package_both_remaps_jump(){ (
+  local tx=$T/package-jump
+  DIR=$tx/hosts; STATE=$tx/state; SSHCFG=$tx/ssh; IDX=$STATE/index.tsv; IDXD=$STATE/idx2; HIST=$STATE/history; SEC=$DIR/secrets; GRP=$DIR/groups.tsv
+  mkdir -p "$DIR" "$STATE" "$tx/pack/conf"; : > "$HIST"
+  printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  printf 'Host same\n  HostName 192.0.2.1\n' > "$DIR/base.conf"
+  git -C "$DIR" init -q; git -C "$DIR" add .; git -C "$DIR" commit -qm fixture; build_index full
+  printf 'Host same\n  HostName 192.0.2.2\nHost client\n  HostName 192.0.2.3\n  ProxyJump ops@same:2222,external\n' > "$tx/pack/conf/base.conf"
+  printf 'version=1\nfrom=fixture\n' > "$tx/pack/manifest"; printf 'team\tsplit\tsame client\n' > "$tx/pack/groups.tsv"
+  pack_classify "$tx/pack" > "$tx/pack/classes" || exit 1
+  cp "$IDX" "$tx/pack/base-index"; pack_state_signature > "$tx/pack/base-state"
+  printf 'same\tboth\nclient\tadd\n' > "$tx/pack/decisions"
+  apply_import_package "$tx/pack" "$tx/pack/decisions" >/dev/null 2>&1 || exit 1
+  build_index full
+  [ "$(host_field same 3)" = 192.0.2.1 ] && [ "$(host_field same-2 3)" = 192.0.2.2 ] && [ "$(host_field client 6)" = ops@same-2:2222,external ] && [ "$(ssh -F "$SSHCFG" -G client 2>/dev/null | awk '$1=="proxyjump" {print $2}')" = ops@same-2:2222,external ] && [ "$(cut -f3 "$GRP")" = 'same-2 client' ]
+); }
+check 'package both remaps imported ProxyJump and group members' 'package_both_remaps_jump'
 check 'package rejects unrelated target edits after preview' 'package_both_names_do_not_collide stale'
 import_flow "$T/incoming.conf" > "$T/result" 2>&1
 check 'SSH config result lists imported names, addresses and project' 'grep -q dev-api "$T/result" && grep -q 192.0.2.10 "$T/result" && grep -q dev-db "$T/result"'

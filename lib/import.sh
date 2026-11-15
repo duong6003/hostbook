@@ -23,7 +23,7 @@ prepare_import_list(){ # parsed TSV and optional project → private stage
   local list=$1 to=$2 d n u h pt tg blk
   local group src_group user src_user port tags src_tags jump src_jump secret src_secret
   d=$(tmpd) || return 1; : > "$d/added"; blk=$d/block
-  awk -F '\t' 'FILENAME==ARGV[1] {seen[tolower($1)]=1; next} !seen[tolower($1)]++' "$IDX" "$list" > "$d/accepted" || return 1
+  awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} !seen[$1]++' "$IDX" "$list" > "$d/accepted" || return 1
   while IFS="$TAB" read -r n u h pt tg; do
     [ "$u" = - ] && u=""; [ "$pt" = - ] && pt=""; [ "$tg" = - ] && tg=""
     valid_name "$n" && parse_addr "${u:+$u@}$h${pt:+:$pt}" >/dev/null || return 1
@@ -159,8 +159,8 @@ prepare_import_config(){ # split directory → private stage with accepted names
   for f in "$1"/*.conf; do [ -f "$f" ] || continue
     awk -v idx="$IDX" -v added="$d/added" '
       BEGIN {
-        while ((getline line < idx)>0) {split(line,a,"\t"); seen[tolower(a[1])]=1} close(idx)
-        while ((getline line < added)>0) seen[tolower(line)]=1; close(added)
+        while ((getline line < idx)>0) {split(line,a,"\t"); seen[a[1]]=1} close(idx)
+        while ((getline line < added)>0) seen[line]=1; close(added)
       }
       function emit(i) {
         if (!started || !nn) return
@@ -171,7 +171,7 @@ prepare_import_config(){ # split directory → private stage with accepted names
         if (key=="host") {
           emit(); rest=line; sub(/^[ \t]*[^ \t=]+[ \t=]+/, "", rest); count=split(rest,a,/[ \t]+/)
           nn=0; started=1
-          for(i=1;i<=count;i++) {n=a[i]; if(n ~ /^#/) break; if(n!="" && !(tolower(n) in seen)) {seen[tolower(n)]=1; names[++nn]=n}}
+          for(i=1;i<=count;i++) {n=a[i]; if(n ~ /^#/) break; if(n!="" && !(n in seen)) {seen[n]=1; names[++nn]=n}}
           prefix=pending; body=""; pending=""; next
         }
         if (line ~ /^[ \t]*#/) {pending=pending line "\n"; next}
@@ -289,7 +289,7 @@ apply_import_config(){ # staged config and names; restore only these destination
   validate >/dev/null || { unlock; return 1; }
   import_targets_unchanged "$stage" || { unlock; err "$(t err_import_changed)" >&2; return 1; }
   ensure_index
-  if ! awk -F '\t' 'FILENAME==ARGV[1] {seen[tolower($1)]=1; next} tolower($0) in seen {exit 1}' "$IDX" "$stage/added"; then unlock; return 1; fi
+  if ! awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} $0 in seen {exit 1}' "$IDX" "$stage/added"; then unlock; return 1; fi
   rollback=$(mktemp -d "$STATE/import-rollback.XXXXXX") || { unlock; return 1; }
   mkdir "$rollback/work" && : > "$rollback/touched" || { unlock; return 1; }
   idxfile=$(g rev-parse --git-path index) || { unlock; return 1; }
@@ -390,9 +390,9 @@ pack_validate_index(){ # validate package names, groups and references
   local x=$1
   awk ' /[\001-\010\013-\037\177]/ {bad=1} /^version=/ {versions++; if($0!="version=1") bad=1} /^from=/ {senders++; if($0=="from=") bad=1} END {exit (bad || versions!=1 || senders!=1)}' "$x/manifest" || return 1
   awk -F '\t' '
-    FILENAME==ARGV[1] {n=tolower($1); if($1 !~ /^[A-Za-z0-9._-]+$/ || n in hosts) bad=1; hosts[n]=1; host_count++; next}
+    FILENAME==ARGV[1] {n=$1; if($1 !~ /^[A-Za-z0-9._-]+$/ || n in hosts) bad=1; hosts[n]=1; host_count++; next}
     NF {if(NF!=3 || $1 !~ /^[A-Za-z0-9._-]+$/ || ($2!="" && $2!="tabs" && $2!="split" && $2!="sync") || ($1 in groups)) bad=1; groups[$1]=1
-        count=split($3,a,/ +/); for(i=1;i<=count;i++) if(a[i]!="" && !(tolower(a[i]) in hosts)) bad=1}
+        count=split($3,a,/ +/); for(i=1;i<=count;i++) if(a[i]!="" && !(a[i] in hosts)) bad=1}
     END {exit (bad || !host_count)}
   ' "$x/index" "$x/groups.tsv"
 }
@@ -426,7 +426,6 @@ pack_classify(){ # package-directory
   local x=$1
   pack_validate_secrets "$x" || { err "$(t err_pack_bad)" >&2; return 1; }
   ensure_index; pack_index "$x" > "$x/index" || return 1; pack_validate_index "$x" || { err "$(t err_pack_bad)" >&2; return 1; }
-  awk -F '\t' -v OFS='\t' 'FILENAME==ARGV[1] {names[tolower($1)]=$1; next} {key=tolower($1); if(key in names) $1=names[key]; print}' "$IDX" "$x/index" > "$x/index.canonical" && mv "$x/index.canonical" "$x/index" || return 1
   pack_secret_map "$x" > "$x/smap" || return 1
   awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} $12!="" && !($12 in seen) {bad=1} END {exit bad}' "$x/smap" "$x/index" || { err "$(t err_pack_bad)" >&2; return 1; }
   awk -F'\t' -v smap="$x/smap" -v wj="$(t imp_f_jump)" -v wn="$(t imp_f_none)" -v wt="$(t imp_f_tags)" -v wd="$(t imp_f_desc)" -v wl="$(t imp_f_login)" -v ws="$(t card_ssh_self)" '
@@ -445,11 +444,45 @@ pack_classify(){ # package-directory
       else if (($3 ":" $5) in ADDR) print n "\tipdup\t" ADDR[$3 ":" $5]
       else print n "\tnew\t" }' "$IDX" "$x/index"
 }
-pack_block(){ # package-directory name [new-name] → Host block to write locally (with mapped secrets)
-  local x=$1 n=$2 as=${3:-$2} r sc
-  r=$(awk -F'\t' -v n="$n" '$1==n' "$x/index"); sc=$(printf '%s' "$r" | cut -f12)
+pack_jump_map(){ # ProxyJump list and normalized package decisions
+  awk -F '\t' -v jumps="$1" '
+    $2 ~ /^both:/ {map[$1]=substr($2,6)}
+    END {
+      n=split(jumps,a,","); out=""
+      for(i=1;i<=n;i++) {
+        part=a[i]; prefix=""; suffix=""
+        if(index(part,"ssh://")==1) {prefix="ssh://"; part=substr(part,7)}
+        if(index(part,"@")) {at=index(part,"@"); prefix=prefix substr(part,1,at); part=substr(part,at+1)}
+        if(substr(part,1,1)!="[" && index(part,":")) {at=index(part,":"); suffix=substr(part,at); part=substr(part,1,at-1)}
+        if(part in map) part=map[part]
+        out=out (i>1?",":"") prefix part suffix
+      }
+      printf "%s", out
+    }' "$2"
+}
+pack_jump_map(){ # ProxyJump list and normalized package decisions
+  awk -F '\t' -v jumps="$1" '
+    $2 ~ /^both:/ {map[$1]=substr($2,6)}
+    END {
+      n=split(jumps,a,","); out=""
+      for(i=1;i<=n;i++) {
+        part=a[i]; prefix=""; suffix=""
+        if(index(part,"ssh://")==1) {prefix="ssh://"; part=substr(part,7)}
+        if(index(part,"@")) {at=index(part,"@"); prefix=prefix substr(part,1,at); part=substr(part,at+1)}
+        if(substr(part,1,1)!="[" && index(part,":")) {at=index(part,":"); suffix=substr(part,at); part=substr(part,1,at-1)}
+        if(part in map) part=map[part]
+        out=out (i>1?",":"") prefix part suffix
+      }
+      printf "%s", out
+    }' "$2"
+}
+pack_block(){ # package-directory name [new-name] [normalized decisions]
+  local x=$1 n=$2 as=${3:-$2} decisions=${4:-} r sc jump
+  r=$(awk -F'\t' -v n="$n" '$1==n{print $0; exit}' "$x/index"); sc=$(printf '%s' "$r" | cut -f12)
   [ -n "$sc" ] && sc=$(awk -F'\t' -v s="$sc" '$1==s{print $2}' "$x/smap")
-  host_block "$as" "$(printf '%s' "$r" | cut -f3)" "$(printf '%s' "$r" | cut -f4)" "$(printf '%s' "$r" | cut -f5)" "$(printf '%s' "$r" | cut -f6)" "$sc" "$(printf '%s' "$r" | cut -f8)" "$(printf '%s' "$r" | cut -f9)"
+  jump=$(printf '%s' "$r" | cut -f6)
+  [ -z "$decisions" ] || jump=$(pack_jump_map "$jump" "$decisions") || return 1
+  host_block "$as" "$(printf '%s' "$r" | cut -f3)" "$(printf '%s' "$r" | cut -f4)" "$(printf '%s' "$r" | cut -f5)" "$jump" "$sc" "$(printf '%s' "$r" | cut -f8)" "$(printf '%s' "$r" | cut -f9)"
   block_extras "$(printf '%s' "$r" | cut -f10)" "$(printf '%s' "$r" | cut -f11)"
 }
 pack_state_signature(){ # detect changes to files that influence package choices
@@ -522,7 +555,7 @@ apply_import_package(){ # package and decisions; preserve unrelated and staged f
   idxfile=$(g rev-parse --git-path index) || { unlock; return 1; }; case $idxfile in /*) ;; *) idxfile=$DIR/$idxfile;; esac
   [ ! -L "$idxfile" ] || { unlock; return 1; }
   [ ! -e "$idxfile" ] || cp -p "$idxfile" "$rollback/index" || { unlock; return 1; }
-  awk -F '\t' 'FILENAME==ARGV[1] {seen[tolower($1)]=1; next} {name[++n]=$1; act[n]=$2; if($2!="skip") seen[tolower($1)]=1} END {for(i=1;i<=n;i++) {a=act[i]; if(a=="both") {v=name[i] "-2"; while(tolower(v) in seen) v=v "-2"; seen[tolower(v)]=1; a="both:" v} print name[i] "\t" a}}' "$IDX" "$decisions" > "$rollback/decisions" || { unlock; return 1; }
+  awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} {name[++n]=$1; act[n]=$2; if($2!="skip") seen[$1]=1} END {for(i=1;i<=n;i++) {a=act[i]; if(a=="both") {v=name[i] "-2"; while(v in seen) v=v "-2"; seen[v]=1; a="both:" v} print name[i] "\t" a}}' "$IDX" "$decisions" > "$rollback/decisions" || { unlock; return 1; }
   while IFS="$TAB" read -r n act; do
     [ "$act" != skip ] || continue
     valid_name "$n" || { unlock; return 1; }
@@ -594,13 +627,13 @@ pack_apply_raw(){ # package-directory decisions-file
       replace:*) build_index && pack_delete_host "${act#replace:}" || return 1;;
       both:*) t=${act#both:};;
     esac
-    pack_block "$x" "$n" "$t" > "$blk" && pack_write_host "$p" "$blk" || return 1
+    pack_block "$x" "$n" "$t" "$dec" > "$blk" && pack_write_host "$p" "$blk" || return 1
     printf '%s\n' "$t" >> "$x/applied" || return 1
   done < "$dec"
   build_index || return 1
   [ ! -s "$x/groups.tsv" ] || while IFS= read -r line; do group_line "$line"
     new=$(for m in $GH; do
-      t=$(awk -F '\t' -v n="$m" 'tolower($1)==tolower(n) {if($2 ~ /^both:/) print substr($2,6); else print $1; exit}' "$dec")
+      t=$(awk -F '\t' -v n="$m" '$1==n {if($2 ~ /^both:/) print substr($2,6); else print $1; exit}' "$dec")
       [ -n "$t" ] && host_exists "$t" && printf '%s ' "$t"
     done)
     if [ -n "$(group_field "$GN" 1)" ]; then
