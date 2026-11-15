@@ -42,3 +42,11 @@ Prototype: /Users/duong.vv/works/hostbook-ui-prototype (v3, synthetic UI fixture
 - CI task1 acceptance complete:PR13 runs43697720583 and43698073522 allOSgreen. Windows cold/warm job208/170s, fresh install100.45/46.53s; see ci-hosted.md for exact limits and evidence. No main merge.
 - Sol module review found Windows ln-s copy semantics and normal underscore search incorrectly skipping imports; Terra fixing both with regressions.
 - UI task plan saved2026-11-15-ui.md. Independent Terra form_spike tests direct-edit feasibility only in/tmp/hostbook-form-spike.8ZW7de; no app writes until sequential integration phase.
+
+## Module integration and form gate
+
+- Independent review accepted module commits through c3b1d67; reviewed CI branch merged locally as 2346317. Main remains untouched.
+- Explicit installed module assertions and callbacks at both installation/update stages added in a07d017. `bash tests/install.sh` passed; native Windows run remains pending.
+- CI PR13 description now includes both hosted runs and observed cache times.
+- Import implementation started against the committed module boundary, with separate behavior commits and an independent review planned.
+- Direct-edit native Bash3.2 form spike failed Escape and signal cleanup. See form-feasibility.md; candidate stays scratch-only. User was asked whether to test modern Bash while preserving the approved interaction or retain Bash3.2 and adjust interaction to existing tools. No dependency change or failing form integration has been made.
