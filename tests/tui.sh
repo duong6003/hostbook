@@ -58,6 +58,7 @@ CONF
 printf 'booking-prod\tsplit\tbooking-api booking-web\n' > "$HOSTBOOK_DIR/groups.tsv"
 mkdir -p "$HOSTBOOK_DIR/secrets"; for f in vault.pub vault.key.age vault.recovery.age; do printf 'fixture\n' > "$HOSTBOOK_DIR/secrets/$f"; done
 git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
+fixture_commit=$(git -C "$HOSTBOOK_DIR" rev-parse HEAD)
 "$S" _index >/dev/null
 # Bounded wait for a real rendered state, rather than sleeping a fixed duration.
 wait_for(){
@@ -82,7 +83,10 @@ start 100 _web
 wait_for _web-a
 wait_for _web-b
 end_ui
-git -C "$HOSTBOOK_DIR" show HEAD:booking.conf > "$HOSTBOOK_DIR/booking.conf"
+# Search can commit external edits in the background; HEAD is not the fixture baseline.
+"$S" _sync_now >/dev/null
+git -C "$HOSTBOOK_DIR" show "$fixture_commit:booking.conf" > "$HOSTBOOK_DIR/booking.conf"
+! grep -q '^Host _web-' "$HOSTBOOK_DIR/booking.conf"
 "$S" _index >/dev/null
 echo 'ok    TUI tìm hai server với truy vấn bắt đầu bằng dấu gạch dưới'
 for width in 60 100 200; do
