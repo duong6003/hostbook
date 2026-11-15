@@ -1,8 +1,7 @@
 # Module loading and performance acceptance
 
 Date: 2026-11-15. Baseline: main ef847ee.
-Status: selective loading approach proposed for the planned module extraction;
-not implemented or benchmarked. Performance guardrails remain in AGENTS.md.
+Status: explicit selective import loading adopted after measurement. Shared UI loads eagerly; sourced fixtures and human commands load import, while unrelated internal callbacks skip it. Unknown underscore-prefixed searches load import at the default dispatch. Performance guardrails remain in AGENTS.md.
 
 ## Context
 
@@ -75,3 +74,11 @@ Link the issue from relevant guidance or a temporary workaround rather than
 duplicating a debt ledger. Use `shortcut:` only for an actual code workaround.
 Do not open debt for an unverified suspicion. Reporting "no regression" must not
 be presented as "within performance budget" when the baseline still exceeds it.
+
+## Measurements
+
+On macOS arm64, nine untraced samples at 100×24 with private data and a private tmux socket gave 500-host compact warm `_list` medians of 46.2 ms (baseline ef847ee), 46.6 ms (eager 9732cb9), and 46.0 ms (selective f60f033). Full samples, cold list/index timings and 20-host results are in `docs/superpowers/progress/performance-{baseline,eager,selective}-isolated.json`. Earlier reports included a real tmux session and are retained as historical evidence, not isolated baseline comparisons.
+
+With a private tmux server, 500 hosts and one session with two live panes, fifteen alternating samples showed compact `_list` median 51.91 → 45.87 ms, minimal 46.00 → 40.59 ms and cards 54.04 → 48.27 ms after collecting pane counts in one tmux query. Compact/card maximums were 47.96/50.47 ms; minimal had one 73.53 ms outlier. These are workload-specific measurements, not a guarantee for arbitrary host or session counts. The existing resize and preview-toggle binds synchronously reload `_list`; ordinary pointer moves use inline footer updates.
+
+The 500-host missing-index `_list` single samples were 2085 ms baseline, 1949 ms eager and 1922 ms selective; these include initial index rebuild and are not repeated warm callbacks. This existing cold-start cost needs separate investigation; one sample per revision is insufficient to establish its spread. At 20 hosts, three private-tmux 100×24 launch-to-visible samples with 5 ms polling gave baseline → current medians of 101.6 → 100.6 ms for settings and 113.4 → 113.9 ms for import confirmation. Those include terminal/process startup, not just module loading. TUI smoke sent ten down keys in 46 ms; it does not establish the per-key pointer budget.

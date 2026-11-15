@@ -11,7 +11,9 @@ Core files:
 
 | Path | Purpose |
 | --- | --- |
-| `hostbook` | Application, configuration, index, SSH flows, vault, sync, and UI. |
+| `hostbook` | Bootstrap, configuration, index, rendering, SSH flows, vault, sync, and dispatch. |
+| `lib/ui.sh` | Shared UI helpers, loaded eagerly. |
+| `lib/import.sh` | Bulk and share-package import, loaded for human flows and import callbacks. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads. |
 | `install.ps1`, `windows/` | Managed Windows runtime, native launcher, and OS boundaries. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and Git identity regressions. |
@@ -57,7 +59,7 @@ Tests use temporary host lists, state, credentials, and SSH configuration.
 
 `HOSTBOOK_DIR`, `HOSTBOOK_STATE`, `HOSTBOOK_SSH_CONFIG`, and `XDG_CONFIG_HOME` can
 isolate development data from your real SSH setup. Follow the test scripts for a
-complete fixture; do not point experiments at a production vault. Internal commands
+complete fixture; do not point experiments at a production vault. `HOSTBOOK_LIB_DIR` overrides the installed module directory for copied test scripts; export it to callbacks too. Internal commands
 prefixed with `_` are implementation/testing helpers, not a stable public API.
 
 ## Update documentation

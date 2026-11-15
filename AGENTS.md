@@ -49,6 +49,7 @@ not the current baseline. Repeated boots on key presses caused much of the obser
 
 ### When extracting modules or changing callbacks
 
+- Shared `lib/ui.sh` loads eagerly; `lib/import.sh` loads for human flows, import callbacks and sourced fixtures. `HOSTBOOK_LIB_DIR` overrides the installed module directory for copied fixtures.
 - Keep unrelated feature modules out of hot callbacks; small shared helpers may load eagerly. Keep `--version` before feature loading and avoid
   top-level scans, index rebuilds or dependency checks in sourced modules. Resolve module paths from the installed
   app, not the working directory; verify internal callbacks from another directory after install/update.
