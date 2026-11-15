@@ -65,3 +65,10 @@ To measure real UI latency, start the app in a private tmux server (`tmux -L per
 `tmux send-keys`, and poll `tmux capture-pane -p` every 5 ms until the pointer row (`▌`) or the expected text changes.
 `tests/tui.sh` shows how to start the app with isolated data. Kill that server when done, and never use the user's own
 tmux server.
+
+## Screens and language
+
+Every screen follows [docs/design/screens.md](docs/design/screens.md): pick one of its screen types, build it from the
+`ui_*` helpers, and put every user-facing string in `lang/vi.sh` and `lang/en.sh` (read through `t`). Do not print a
+screen by hand, do not call `gum choose/input/confirm` directly in new code, and do not add literal UI text to
+`hostbook`. Run `bash tests/screens.sh` after changing a screen.

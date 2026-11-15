@@ -19,6 +19,7 @@ Core files:
 | `tests/test.sh` | Core regression tests with isolated data. |
 | `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
 | `tests/tui.sh` | Real fzf interaction in isolated tmux sessions. |
+| `tests/screens.sh` | Screen-system rules S1-S11 on one screen of each type, at 60, 100 and 200 columns, in vi and en. |
 | `tests/e2e.sh` | Real SSH tests using a Docker fixture. |
 | `docs/wiki/` | Versioned source for this wiki. |
 | `docs/archive/` | Historical design and implementation notes; not current user instructions. |
@@ -32,11 +33,14 @@ bash tests/platform.sh
 bash tests/test.sh
 bash tests/ui.sh
 bash tests/tui.sh
+bash tests/screens.sh
 bash tests/e2e.sh
 ```
 
 Changes to anything that runs per key press (preview, fzf binds, list, header, footer) must follow the
 performance rules and budgets in [AGENTS.md](https://github.com/duong6003/hostbook/blob/main/AGENTS.md).
+Screens follow the screen system in [docs/design/screens.md](https://github.com/duong6003/hostbook/blob/main/docs/design/screens.md),
+and user-facing text lives in `lang/vi.sh` and `lang/en.sh`.
 
 TUI tests skip if tmux is missing; E2E tests skip if Docker is unavailable. A skipped
 check is not evidence of a pass. CI runs on macOS, Ubuntu, and Windows. Ubuntu runs

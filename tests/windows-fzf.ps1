@@ -46,6 +46,7 @@ out=$(cygpath -u "$HB_FZF_OUTPUT")
 callback=$(cygpath -u "$HB_FZF_CALLBACK")
 export HOME="$out/home" HOSTBOOK_DIR="$out/hosts" HOSTBOOK_STATE="$out/state" XDG_CONFIG_HOME="$out/config"
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
+export HOSTBOOK_LANG_DIR="$(dirname "$app")/lang"   # the copied lib cannot find lang/ next to itself
 sed '/^# ---------- entry point ----------/,$d' "$app" > "$out/lib"
 . "$out/lib"
 SELF=$app

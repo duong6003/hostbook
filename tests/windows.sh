@@ -11,6 +11,7 @@ export HOME=$T/home HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state XDG_CONFIG_HOM
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
 export HOSTBOOK_MASTER='windows-vault-fixture'
 S=$HERE/../hostbook
+export HOSTBOOK_LANG_DIR=$HERE/../lang   # the copied lib cannot find lang/ next to itself
 sed '/^# ---------- entry point ----------/,$d' "$S" > "$T/lib"
 . "$T/lib"; SELF=$S
 trap 'cleanup; rm -rf "$(dirname "$T")"' EXIT
@@ -41,7 +42,7 @@ echo 'ok    native fzf CLI filter'
 (
   unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-  pick(){ echo 1; }; confirm(){ return 1; }; setting_pick(){ return 1; }
+  set_language(){ :; }; ui_menu(){ echo 1; }; ui_confirm(){ return 1; }; setting_pick(){ return 1; }
   clear(){ :; }; box(){ :; }; title(){ :; }; pause(){ :; }
   # The app deliberately uses set -u without errexit; run this sourced flow with the same semantics.
   first_run || { echo 'FAIL first-machine setup'; exit 1; }

@@ -128,6 +128,9 @@ check "gợi ý tên nhóm từ tag chung" '[ "$("$S" _suggest a-web1 a-web2)" =
 printf 'prod-web\tsync\ta-web1 a-web2\n' > "$HOSTBOOK_DIR/groups.tsv"
 check "tránh trùng tên nhóm" '[ "$("$S" _suggest a-web1 a-web2)" = prod-web-2 ]'
 check "không có tag chung thì lấy tên" '[ "$("$S" _suggest b-api a-db)" = b-api ] || [ -n "$("$S" _suggest b-api a-db)" ]'
+printf 'Host shop-api\n  HostName 192.0.2.7\nHost shop-bastion\n  HostName 192.0.2.8\n' > "$HOSTBOOK_DIR/project-shop.conf"; "$S" _index >/dev/null
+check "không có tag chung: gợi ý phần đầu tên chung, không phải tên server" '[ "$("$S" _suggest shop-api shop-bastion)" = shop ]'
+rm -f "$HOSTBOOK_DIR/project-shop.conf"; "$S" _index >/dev/null
 check "nhóm hiện trong danh sách" '"$S" _list | strip | grep -q "^g:prod-web.*nhóm · 2 server · chạy đồng loạt"'
 
 # ---- repository sync (use a bare repository in a temporary directory) ----
@@ -185,6 +188,7 @@ printf 'Host bad;touch${IFS}/tmp/hb-pwn\n  HostName 10.0.0.1\n' > "$HOSTBOOK_DIR
 idx=$("$S" _index)
 check "tên server chứa ký tự shell bị bỏ qua và ghi lại" '! printf "%s\n" "$idx" | cut -f1 | grep -q ";" && grep -q "bad;touch" "$HOSTBOOK_STATE/skipped"'
 rm "$HOSTBOOK_DIR/evil.conf"; "$S" _index >/dev/null
+check "chữ có dấu (é) bị từ chối trong locale UTF-8: địa chỉ và tên server" '! LC_ALL=en_US.UTF-8 "$S" _parse "$(printf "caf\303\251")@1.2.3.4" >/dev/null 2>&1 && ! LC_ALL=en_US.UTF-8 "$S" _parse "1.2.3.$(printf "\303\251")" >/dev/null 2>&1 && ( sed "/^# ---------- entry point ----------/,\$d" "$S" > "$T/lib-ascii"; . "$T/lib-ascii"; export LC_ALL=en_US.UTF-8; ! valid_name "caf$(printf "\303\251")" && valid_name cafe-1 )'
 check "địa chỉ chứa ký tự shell bị từ chối" '! "$S" _parse "a;b@1.2.3.4" >/dev/null && ! "$S" _parse "1.2.3.4;id" >/dev/null'
 
 git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm "trước khi thử đồng thời"

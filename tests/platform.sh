@@ -3,6 +3,7 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+export HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR="$HERE/../lang"   # the library is sourced from a temporary copy: tell it where the texts are
 export HOME="$T/home" HOSTBOOK_STATE="$T/state" HOSTBOOK_DIR="$T/hosts" XDG_CONFIG_HOME="$T/config"
 mkdir -p "$HOME"
 sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
@@ -64,5 +65,10 @@ is_windows(){ return 0; }
 export HOSTBOOK_KEYCHAIN="file:$T/cache/identity"
 check 'Windows refuses plaintext file identity cache overrides' '[ "$(kc_backend)" = windows ]'
 check 'Windows multi-host says unsupported before probing tmux' '! (pause(){ :; }; need_tmux) > "$T/tmux" 2>&1 && grep -qi Windows "$T/tmux"'
+# run_progress must stop the whole process tree (a grandchild such as git's ssh), not only its direct child
+run_progress "x" 1 "$T/rp.out" bash -c 'sleep 4123 & sleep 4123' 2>/dev/null && rp=0 || rp=$?
+check 'run_progress: the time limit stops the job and its grandchild' '[ "$rp" = 124 ] && ! ps -ef | grep -q "[s]leep 4123"'
+{ bash -c 'sleep 4124 & sleep 4124' & rpid=$!; sleep 0.3; kill_tree $rpid; wait $rpid || :; } 2>/dev/null
+check 'kill_tree: no survivor among the descendants' '! ps -ef | grep -q "[s]leep 4124"'
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
