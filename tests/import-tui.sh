@@ -4,7 +4,7 @@ set -eu
 unset SSH_AUTH_SOCK SSH_AGENT_PID
 for tool in tmux fzf gum git ssh; do command -v "$tool" >/dev/null || { echo "SKIP import-tui: missing $tool"; exit 0; }; done
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
-T=$(mktemp -d); socket=hb-import-ui-$; cancellation_checked=0
+T=$(mktemp -d); socket=hb-import-ui-$$; cancellation_checked=0
 end_ui(){
   local p groups=''
   for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do
