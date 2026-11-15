@@ -40,7 +40,7 @@ $runtime = (Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | Con
 $bash = Join-Path $runtime 'bin\bash.exe'
 $env:PATH = "$root\bin;$runtime\usr\bin;$runtime\mingw64\bin;$runtime\cmd;$env:PATH"
 Assert ((& $launcher --version) -match '^hostbook ') 'native launcher supports version under spaced Unicode path'
-foreach ($module in @('ui', 'import')) {
+foreach ($module in @('ui', 'import', 'settings', 'hosts')) {
     Assert ((Get-Item -LiteralPath (Join-Path $root "app\lib\$module.sh")).Length -gt 0) "installed $module module is present"
 }
 Push-Location $testRoot
@@ -88,6 +88,12 @@ Run-Check 'Isolated vault onboarding' {
     & $bash --noprofile --norc (Join-Path $source 'tests\onboarding.sh')
     Assert ($LASTEXITCODE -eq 0) 'vault onboarding and canceled imports preserve fixture data'
 }
+Run-Check 'Import transactions and key handling' {
+    foreach ($suite in @('hosts-module', 'settings-module', 'import', 'import-keys')) {
+        & $bash --noprofile --norc (Join-Path $source "tests\$suite.sh")
+        Assert ($LASTEXITCODE -eq 0) "$suite isolated regressions"
+    }
+}
 Run-Check 'Update' {
     $updateTime = [Diagnostics.Stopwatch]::StartNew()
     & $launcher update
@@ -95,7 +101,7 @@ Run-Check 'Update' {
     Write-Host "Update (warm cache): $($updateTime.Elapsed.TotalSeconds) seconds"
     Assert ((Get-Item -LiteralPath $ageArchive).LastWriteTimeUtc -eq $ageWriteTime) 'update reuses the verified age archive'
     Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
-    foreach ($module in @('ui', 'import')) {
+    foreach ($module in @('ui', 'import', 'settings', 'hosts')) {
         Assert ((Get-Item -LiteralPath (Join-Path $root "app\lib\$module.sh")).Length -gt 0) "updated $module module is present"
     }
     Push-Location $testRoot
