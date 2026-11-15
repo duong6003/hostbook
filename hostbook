@@ -2663,7 +2663,6 @@ home(){
   # fzf control-port token: only child processes of this invocation may send commands
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err "$(t err_ctl_key)"; return 1; }; export FZF_API_KEY
   clip_offer
-  ui_gutter
   fd=$(tmpd) || return 1
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
   foot="c=\${FZF_SELECT_COUNT:-0}
@@ -2678,6 +2677,7 @@ home(){
     # write-back here could put a stale row there while focus moves, and → / ^e would open the wrong server.
     printf 'IFS= read -r t < %q 2>/dev/null || t=\n%s\n' "$STATE/current" "$foot" > "$fd/foot"; write_relayout "$fd"
     opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts "$fd")
+    ui_gutter
     out=$(cmd_list | fzf ${FZF_GUTTER[@]+"${FZF_GUTTER[@]}"} "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost="$(t home_ghost)" --marker='+' \

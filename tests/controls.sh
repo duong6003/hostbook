@@ -72,7 +72,7 @@ k Down; wait_text 'send to every pane'; k Escape; wait_done
 end_ui
 echo 'PASS mode diagram and cancellation'
 start 'setting_pick separator'
-wait_text '[On]'; wait_text 'booking-api'; k Right; wait_text '[Off]'; k Escape; wait_done
+wait_text '[On]'; wait_text 'booking-'; k Right; wait_text '[Off]'; k Escape; wait_done
 [ "$(cat "$T/status")" = 1 ] && ! grep -q 'separator = off' "$XDG_CONFIG_HOME/hostbook/config" 2>/dev/null || { echo 'FAIL setting cancelled'; exit 1; }
 end_ui
 start 'setting_pick separator'
@@ -80,3 +80,14 @@ wait_text '[On]'; k Right; wait_text '[Off]'; k Enter; wait_done
 [ "$(cat "$T/status")" = 0 ] && grep -q 'separator = off' "$XDG_CONFIG_HOME/hostbook/config" || { echo 'FAIL setting applied'; exit 1; }
 end_ui
 echo 'PASS binary setting cancel and apply'
+start 'set_language && printf "%s" "$UI_LANG"'
+wait_text 'Tiếng Việt'; k Up Enter; wait_done
+[ "$(cat "$T/status")" = 0 ] && [ "$(cat "$T/result")" = vi ] && grep -q 'lang = vi' "$XDG_CONFIG_HOME/hostbook/config" || { echo 'FAIL language reload'; exit 1; }
+end_ui
+echo 'PASS language applies immediately'
+start ': > "$IDX"; pick_tags demo "alpha"'
+wait_text '1 selected'; k Down Space Enter; wait_text 'Add tags'
+k -l 'beta alpha beta'; k Enter; wait_done
+[ "$(cat "$T/status")" = 0 ] && [ "$(cat "$T/result")" = 'alpha beta' ] || { echo 'FAIL custom tag normalization'; cat "$T/result"; exit 1; }
+end_ui
+echo 'PASS custom tags normalized and deduplicated'
