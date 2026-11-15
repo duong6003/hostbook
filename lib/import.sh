@@ -187,20 +187,18 @@ import_discard_secret(){
 }
 import_commit_secret(){ # commit only a newly confirmed import key, preserving unrelated staged changes
   local name=$1 rollback idxfile failed=0 restore=0
-  lock 10 || { err "$(t sync_busy)" >&2; return 1; }
-  validate >/dev/null || { unlock; return 1; }
-  rollback=$(mktemp -d "$STATE/import-key-rollback.XXXXXX") || { unlock; return 1; }
-  idxfile=$(g rev-parse --git-path index) || { unlock; return 1; }; case $idxfile in /*) ;; *) idxfile=$DIR/$idxfile;; esac
-  [ ! -L "$idxfile" ] || { unlock; return 1; }
-  [ ! -e "$idxfile" ] || cp -p "$idxfile" "$rollback/index" || { unlock; return 1; }
+  validate >/dev/null || return 1
+  rollback=$(mktemp -d "$STATE/import-key-rollback.XXXXXX") || return 1
+  idxfile=$(g rev-parse --git-path index) || return 1; case $idxfile in /*) ;; *) idxfile=$DIR/$idxfile;; esac
+  [ ! -L "$idxfile" ] || return 1
+  [ ! -e "$idxfile" ] || cp -p "$idxfile" "$rollback/index" || return 1
   g add -- "secrets/$name.meta" "secrets/$name.pub" "secrets/$name.age" && g commit -qm "$(t done_secret_added "$name")" --only -- "secrets/$name.meta" "secrets/$name.pub" "secrets/$name.age" || failed=1
   if [ "$failed" = 1 ]; then
     if [ -f "$rollback/index" ]; then cp -p "$rollback/index" "$idxfile" || restore=1; else rm -f "$idxfile" || restore=1; fi
-    unlock
     if [ "$restore" = 0 ]; then rm -rf "$rollback"; else err "$(t err_import_restore "$rollback")" >&2; fi
     return 1
   fi
-  : > "$ST.force"; rm -rf "$rollback"; unlock
+  : > "$ST.force"; rm -rf "$rollback"
 }
 import_config_keys(){ # staged config → encrypted key bindings before host writes
   local d=$1 f h effective k full nm choice path secret fp IMPORT_KEY_MODE=1
@@ -219,9 +217,11 @@ import_config_keys(){ # staged config → encrypted key bindings before host wri
   while IFS= read -r k; do [ -n "$k" ] || continue
     full=${k/#\~/$HOME}; nm=
     case $full in "$SEC/"*.pub)
-      nm=${full##*/}; nm=${nm%.pub}
-      fp=$(ssh-keygen -lf "$SEC/$nm.pub" 2>/dev/null | awk '{print $2}')
-      valid_secret_name "$nm" && [ "$(secret_meta "$nm" type)" = key ] && [ -s "$SEC/$nm.pub" ] && [ -s "$SEC/$nm.age" ] && [ -n "$fp" ] && [ "$(secret_meta "$nm" fp)" = "$fp" ] || { err "$(t err_import_managed "$nm")" >&2; return 1; };;
+      nm=${full#"$SEC/"}; case $nm in */*) nm=;; *) nm=${nm%.pub};; esac
+      if [ -n "$nm" ]; then
+        fp=$(ssh-keygen -lf "$SEC/$nm.pub" 2>/dev/null | awk '{print $2}')
+        valid_secret_name "$nm" && [ "$(secret_meta "$nm" type)" = key ] && [ -s "$SEC/$nm.pub" ] && [ -s "$SEC/$nm.age" ] && [ -n "$fp" ] && [ "$(secret_meta "$nm" fp)" = "$fp" ] || { err "$(t err_import_managed "$nm")" >&2; return 1; }
+      fi;;
     esac
     if [ -z "$nm" ]; then
       if [ -f "$full" ]; then
@@ -346,7 +346,7 @@ pack_open(){ # package-file → print the extracted directory (inside tmpd); pro
   rm -f "$d/pack.age" "$d/pack.tgz"; echo "$d/x"
 }
 pack_validate_secrets(){ # validate decrypted package credentials before they can affect a vault
-  local x=$1 f n kind expected private_fp public_fp
+  local x=$1 f n kind expected private_fp public_fp derived public
   for f in "$x"/secrets/*; do [ -e "$f" ] || continue
     case $f in *.meta|*.key|*.pub|*.pass) n=${f##*/}; n=${n%.*};; *) return 1;; esac
     [ -f "$x/secrets/$n.meta" ] || return 1
@@ -358,7 +358,12 @@ pack_validate_secrets(){ # validate decrypted package credentials before they ca
       password) [ -s "$x/secrets/$n.pass" ] && [ ! -e "$x/secrets/$n.key" ] && [ ! -e "$x/secrets/$n.pub" ] || return 1;;
       key)
         [ -s "$x/secrets/$n.key" ] && [ -s "$x/secrets/$n.pub" ] && [ ! -e "$x/secrets/$n.pass" ] || return 1
+        grep -qE '^-----BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY-----$' "$x/secrets/$n.key" || return 1
         chmod 600 "$x/secrets/$n.key" || return 1
+        derived=$(ssh-keygen -y -P "" -f "$x/secrets/$n.key" 2>/dev/null) || return 1
+        derived=$(printf '%s\n' "$derived" | awk 'NR==1 {print $1 " " $2}')
+        public=$(awk 'NR==1 {print $1 " " $2}' "$x/secrets/$n.pub")
+        [ -n "$derived" ] && [ "$derived" = "$public" ] || return 1
         private_fp=$(ssh-keygen -lf "$x/secrets/$n.key" 2>/dev/null | awk '{print $2}')
         public_fp=$(ssh-keygen -lf "$x/secrets/$n.pub" 2>/dev/null | awk '{print $2}')
         expected=$(awk -F= '$1=="fp" {n++; v=$2} END {if(n==1) print v}' "$f")
@@ -420,7 +425,9 @@ pack_secret_map(){ # package-directory
 pack_classify(){ # package-directory
   local x=$1
   pack_validate_secrets "$x" || { err "$(t err_pack_bad)" >&2; return 1; }
-  ensure_index; pack_index "$x" > "$x/index" || return 1; pack_validate_index "$x" || { err "$(t err_pack_bad)" >&2; return 1; }; pack_secret_map "$x" > "$x/smap" || return 1
+  ensure_index; pack_index "$x" > "$x/index" || return 1; pack_validate_index "$x" || { err "$(t err_pack_bad)" >&2; return 1; }
+  awk -F '\t' -v OFS='\t' 'FILENAME==ARGV[1] {names[tolower($1)]=$1; next} {key=tolower($1); if(key in names) $1=names[key]; print}' "$IDX" "$x/index" > "$x/index.canonical" && mv "$x/index.canonical" "$x/index" || return 1
+  pack_secret_map "$x" > "$x/smap" || return 1
   awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} $12!="" && !($12 in seen) {bad=1} END {exit bad}' "$x/smap" "$x/index" || { err "$(t err_pack_bad)" >&2; return 1; }
   awk -F'\t' -v smap="$x/smap" -v wj="$(t imp_f_jump)" -v wn="$(t imp_f_none)" -v wt="$(t imp_f_tags)" -v wd="$(t imp_f_desc)" -v wl="$(t imp_f_login)" -v ws="$(t card_ssh_self)" '
     BEGIN { while ((getline l < smap) > 0) { split(l,a,"\t"); M[a[1]]=a[2] } }
@@ -592,7 +599,10 @@ pack_apply_raw(){ # package-directory decisions-file
   done < "$dec"
   build_index || return 1
   [ ! -s "$x/groups.tsv" ] || while IFS= read -r line; do group_line "$line"
-    new=$(for m in $GH; do host_exists "$m" && printf '%s ' "$m"; done)
+    new=$(for m in $GH; do
+      t=$(awk -F '\t' -v n="$m" 'tolower($1)==tolower(n) {if($2 ~ /^both:/) print substr($2,6); else print $1; exit}' "$dec")
+      [ -n "$t" ] && host_exists "$t" && printf '%s ' "$t"
+    done)
     if [ -n "$(group_field "$GN" 1)" ]; then
       new=$(printf '%s\n' $(group_field "$GN" 3) $new | awk '!s[$0]++' | tr '\n' ' ')
       cp -p "$GRP" "$work/group" || return 1

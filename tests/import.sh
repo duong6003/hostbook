@@ -41,7 +41,7 @@ Host dev-api
   HostName 192.0.2.100
 CONF
 pass=0; fail=0
-check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
+check(){ local rc; if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else rc=$?; if [ "$rc" = 77 ]; then printf 'SKIP  %s (symlinks unavailable)\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; fi; }
 # Archive entry types are checked before extraction, including otherwise valid names.
 python3 - "$T" <<'PYTEST'
 import io, sys, tarfile
@@ -155,7 +155,8 @@ package_symlink_parent_rejected(){ (
   cp "$IDX" "$tx/pack/base-index"; pack_state_signature > "$tx/pack/base-state"
   printf 'new\tproject\t192.0.2.2\tfixture\t22\t\t\t\t\t\t\tcredential\n' > "$tx/pack/index"
   printf 'credential\tcredential\tnew\n' > "$tx/pack/smap"; printf 'new\tadd\n' > "$tx/pack/decisions"
-  rmdir "$SEC"; ln -s "$tx/outside" "$SEC"
+  rmdir "$SEC"; ln -s "$tx/outside" "$SEC" 2>/dev/null || exit 77
+  [ -L "$SEC" ] || exit 77
   ! apply_import_package "$tx/pack" "$tx/pack/decisions" >/dev/null 2>&1 && [ -z "$(ls -A "$tx/outside")" ] && [ ! -d "$STATE/sync.lock" ]
 ); }
 check 'package refuses a symlinked secrets directory' 'package_symlink_parent_rejected'
@@ -168,6 +169,7 @@ package_both_names_do_not_collide(){ (
   git -C "$DIR" init -q; git -C "$DIR" add .; git -C "$DIR" commit -qm fixture; build_index full; cp "$IDX" "$tx/pack/base-index"; pack_state_signature > "$tx/pack/base-state"
   printf 'same\tnew\t192.0.2.2\tfixture\t22\t\t\t\t\t\t\t\nsame-2\tnew\t192.0.2.3\tfixture\t22\t\t\t\t\t\t\t\n' > "$tx/pack/index"
   : > "$tx/pack/smap"; printf 'same\tboth\nsame-2\tadd\n' > "$tx/pack/decisions"
+  printf 'pack-group\tsplit\tSame same-2\n' > "$tx/pack/groups.tsv"
   pack_block(){ printf 'Host %s\n  HostName 192.0.2.2\n' "$3"; }
   if [ "$mode" = stale ]; then
     printf '# edited after preview\n' >> "$DIR/base.conf"; cp "$DIR/base.conf" "$tx/changed"
@@ -175,9 +177,35 @@ package_both_names_do_not_collide(){ (
     exit $?
   fi
   apply_import_package "$tx/pack" "$tx/pack/decisions" >/dev/null 2>&1 || exit 1
-  [ "$(sort "$STATE/last-import")" = "$(printf 'same-2\nsame-2-2\n')" ] && [ "$(grep -h '^Host ' "$DIR"/*.conf | sort -u | wc -l | tr -d ' ')" = 3 ]
+  [ "$(sort "$STATE/last-import")" = "$(printf 'same-2\nsame-2-2\n')" ] && [ "$(grep -h '^Host ' "$DIR"/*.conf | sort -u | wc -l | tr -d ' ')" = 3 ] && [ "$(cut -f3 "$GRP")" = "same-2-2 same-2" ]
 ); }
 check 'package both avoids names reserved by other decisions' 'package_both_names_do_not_collide'
+package_alias_casefold(){ (
+  local mode=${1:-same} tx=$T/package-case-${1:-same}
+  DIR=$tx/hosts; STATE=$tx/state; SSHCFG=$tx/ssh; IDX=$STATE/index.tsv; IDXD=$STATE/idx2; HIST=$STATE/history; SEC=$DIR/secrets; GRP=$DIR/groups.tsv
+  mkdir -p "$DIR" "$STATE" "$tx/pack/conf"; : > "$HIST"
+  printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  printf 'Host same\n  HostName 192.0.2.1\n  User fixture\n' > "$DIR/base.conf"
+  git -C "$DIR" init -q; git -C "$DIR" add .; git -C "$DIR" commit -qm fixture; build_index full
+  if [ "$mode" = same ]; then addr=192.0.2.1; else addr=192.0.2.99; fi
+  printf 'Host Same\n  HostName %s\n  User fixture\n' "$addr" > "$tx/pack/conf/base.conf"
+  printf 'version=1\nfrom=fixture\n' > "$tx/pack/manifest"; : > "$tx/pack/groups.tsv"
+  pack_classify "$tx/pack" > "$tx/pack/classes" || exit 1
+  if [ "$mode" = same ]; then awk -F '\t' 'tolower($1)=="same" && $2=="same" {ok=1} END {exit !ok}' "$tx/pack/classes"; exit $?; fi
+  cp "$IDX" "$tx/pack/base-index"; pack_state_signature > "$tx/pack/base-state"
+  case $mode in update) pack_decide "$tx/pack" pack > "$tx/pack/decisions";; keep) pack_decide "$tx/pack" mine > "$tx/pack/decisions";; both) ui_menu(){ echo 2; }; pack_decide "$tx/pack" ask > "$tx/pack/decisions";; esac
+  apply_import_package "$tx/pack" "$tx/pack/decisions" > "$tx/log" 2>&1 || { cat "$tx/log"; exit 1; }
+  build_index full
+  case $mode in
+    update) [ "$(host_field same 3)" = 192.0.2.99 ] && [ "$(wc -l < "$IDX" | tr -d ' ')" = 1 ];;
+    keep) [ "$(host_field same 3)" = 192.0.2.1 ] && [ "$(wc -l < "$IDX" | tr -d ' ')" = 1 ];;
+    both) [ "$(host_field same 3)" = 192.0.2.1 ] && [ "$(host_field same-2 3)" = 192.0.2.99 ];;
+  esac
+); }
+check 'package aliases compare case-insensitively' 'package_alias_casefold'
+check 'case-colliding package update keeps stored alias' 'package_alias_casefold update'
+check 'case-colliding package keep preserves stored alias' 'package_alias_casefold keep'
+check 'case-colliding package both creates a distinct alias' 'package_alias_casefold both'
 check 'package rejects unrelated target edits after preview' 'package_both_names_do_not_collide stale'
 import_flow "$T/incoming.conf" > "$T/result" 2>&1
 check 'SSH config result lists imported names, addresses and project' 'grep -q dev-api "$T/result" && grep -q 192.0.2.10 "$T/result" && grep -q dev-db "$T/result"'

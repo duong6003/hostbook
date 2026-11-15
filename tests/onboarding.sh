@@ -22,7 +22,7 @@ case_setup(){
   show_recovery(){ echo shown > "$STATE/recovery-shown"; }
 }
 pass=0; fail=0
-check(){ if "$@"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
+check(){ local rc; if "$@"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else rc=$?; if [ "$rc" = 77 ]; then printf 'SKIP  %s (symlinks unavailable)\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; fi; }
 new_install(){ (
   case_setup new
   first_run > "$T/new-result" 2>&1 || exit 1
@@ -55,7 +55,8 @@ partial_vault(){ (
 ); }
 symlink_vault_rejected(){ (
   case_setup symlink_vault
-  mkdir -p "$DIR" "$T/outside-vault"; ln -s "$T/outside-vault" "$SEC"
+  mkdir -p "$DIR" "$T/outside-vault"; ln -s "$T/outside-vault" "$SEC" 2>/dev/null || exit 77
+  [ -L "$SEC" ] || exit 77
   ! bash "$HERE/../hostbook" _vault_init "$HOSTBOOK_MASTER" >/dev/null 2>&1 && [ -z "$(ls -A "$T/outside-vault")" ]
 ); }
 failed_vault_creation(){ (

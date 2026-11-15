@@ -963,10 +963,11 @@ key_prepare(){
   fi
   ssh-keygen -lf "$f" | awk '{ t=$NF; gsub(/[()]/,"",t); print $2 "\t" tolower(t) }'
 }
-secret_write_key(){ # name key-file fingerprint type
-  ssh-keygen -y -f "$2" > "$SEC/$1.pub" && chmod 600 "$SEC/$1.pub" || return 1
-  printf 'type=key\nfp=%s\nkeytype=%s\ncreated=%s\n' "$3" "$4" "$(date +%F)" > "$SEC/$1.meta" || return 1
-  secret_enc < "$2" > "$SEC/$1.age"
+secret_write_key(){ # name key-file fingerprint type [output-directory]
+  local out=${5:-$SEC}
+  ssh-keygen -y -f "$2" > "$out/$1.pub" && chmod 600 "$out/$1.pub" || return 1
+  printf 'type=key\nfp=%s\nkeytype=%s\ncreated=%s\n' "$3" "$4" "$(date +%F)" > "$out/$1.meta" || return 1
+  secret_enc < "$2" > "$out/$1.age"
 }
 ask_secret_name(){ # default [preview] [own name to leave out of the taken list] → print a valid, unused name
   local n=$1 prev=${2:-} e= rule d; d=$(tmpd) || return 1; secret_names | awk -v x="${3:-}" '$0!=x' > "$d/taken"
@@ -1001,15 +1002,20 @@ secret_add_key(){ # source(clip|gen|path) [name] [replace]
   elif [ -n "$name" ]; then valid_secret_name "$name" && ! secret_exists "$name" || { err "$(t err_secret_bad "$name")" >&2; rm -rf "$d"; return 1; }
   else name=$(ask_secret_name "$def") || { rm -rf "$d"; return 1; }; fi
   if [ -n "${IMPORT_KEY_MODE:-}" ]; then
-    [ -z "$replace" ] || { rm -rf "$d"; return 1; }
-    for ext in pub meta age; do [ ! -e "$SEC/$name.$ext" ] && [ ! -L "$SEC/$name.$ext" ] || { rm -rf "$d"; return 1; }; done
+    [ -z "$replace" ] && secret_write_key "$name" "$f" "$fp" "$kt" "$d" || { rm -rf "$d"; return 1; }
+    lock 10 || { rm -rf "$d"; err "$(t sync_busy)" >&2; return 1; }
+    [ ! -L "$SEC" ] || { unlock; rm -rf "$d"; return 1; }
+    dup=$(grep -lxF "fp=$fp" "$SEC"/*.meta 2>/dev/null | head -1)
+    if [ -n "$dup" ]; then dup=$(basename "$dup" .meta); unlock; rm -rf "$d"; dim "$(t sc_dup "$dup")" >&2; echo "$dup"; return 0; fi
+    for ext in pub meta age; do [ ! -e "$SEC/$name.$ext" ] && [ ! -L "$SEC/$name.$ext" ] || { unlock; rm -rf "$d"; return 1; }; done
+    for ext in pub meta age; do cp -p "$d/$name.$ext" "$SEC/$name.$ext" || { import_discard_secret "$name"; unlock; rm -rf "$d"; return 1; }; done
+    import_commit_secret "$name" || { import_discard_secret "$name"; unlock; rm -rf "$d"; return 1; }
+    unlock; rm -rf "$d"; echo "$name"; return 0
   fi
-  secret_write_key "$name" "$f" "$fp" "$kt" || { [ -z "${IMPORT_KEY_MODE:-}" ] || import_discard_secret "$name"; rm -rf "$d"; return 1; }
+  secret_write_key "$name" "$f" "$fp" "$kt" || { rm -rf "$d"; return 1; }
   [ -n "$oldpub" ] && ssh-add -q -d "$oldpub" 2>/dev/null
   rm -rf "$d"
-  if [ -n "${IMPORT_KEY_MODE:-}" ]; then
-    import_commit_secret "$name" || { import_discard_secret "$name"; return 1; }
-  else save_and_sync "$( if [ -n "$replace" ]; then t done_secret_key_replaced "$name"; else t done_secret_added "$name"; fi)"; fi
+  save_and_sync "$( if [ -n "$replace" ]; then t done_secret_key_replaced "$name"; else t done_secret_added "$name"; fi)"
   echo "$name"
 }
 secret_add_password(){ # [name] [password] → print the name

@@ -74,6 +74,32 @@ package_secret_names_unique(){
   pack_secret_map "$T/collisions" > "$T/maps" || return 1
   [ "$(cut -f2 "$T/maps" | sort -u | wc -l | tr -d ' ')" = 2 ]
 }
+managed_subdirectory_must_not_alias_basename(){
+  local fake="$SEC/missing/imported-key.pub"
+  printf 'Host subdir\n  HostName 192.0.2.10\n  IdentityFile "%s"\n' "$fake" > "$T/stage/one.conf"
+  printf 'subdir\n' > "$T/stage/added"
+  (pick_login(){ return 1; }; ! import_config_keys "$T/stage" >/dev/null 2>&1) && grep -Fq "$fake" "$T/stage/one.conf"
+}
+public_key_is_not_private_material(){
+  mkdir -p "$T/public-package/secrets"
+  cp "$SEC/imported-key.meta" "$T/public-package/secrets/example.meta"
+  cp "$SEC/imported-key.pub" "$T/public-package/secrets/example.pub"
+  cp "$SEC/imported-key.pub" "$T/public-package/secrets/example.key"
+  ! pack_validate_secrets "$T/public-package" >/dev/null 2>&1
+}
+credential_write_is_locked(){ (
+  local tx=$T/key-race
+  DIR=$tx/hosts; STATE=$tx/state; SSHCFG=$tx/ssh; IDX=$STATE/index.tsv; IDXD=$STATE/idx2; HIST=$STATE/history; SEC=$DIR/secrets; GRP=$DIR/groups.tsv
+  HOSTBOOK_KEYCHAIN="file:$tx/keychain/id"
+  mkdir -p "$DIR" "$STATE"; : > "$HIST"; printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  git -C "$DIR" init -q; git -C "$DIR" commit --allow-empty -qm fixture; vault_create "$HOSTBOOK_MASTER" >/dev/null || exit 1
+  git -C "$DIR" add secrets; git -C "$DIR" commit -qm vault
+  ssh-keygen -q -t ed25519 -N '' -f "$tx/race-key" || exit 1
+  lock(){ [ ! -e "$SEC/race-key.pub" ] || : > "$tx/wrote-before-lock"; g add -A && g commit --allow-empty -qm concurrent; LOCK_HELD=1; }
+  unlock(){ LOCK_HELD=; }
+  IMPORT_KEY_MODE=1 secret_add_key "$tx/race-key" race-key >/dev/null 2>&1 || exit 1
+  [ ! -e "$tx/wrote-before-lock" ] && [ -s "$SEC/race-key.pub" ] && git -C "$DIR" cat-file -e HEAD:secrets/race-key.pub
+); }
 package_fingerprint_mismatch(){
   mkdir -p "$T/package/secrets"
   cp "$SEC/imported-key.meta" "$T/package/secrets/example.meta"
@@ -92,5 +118,8 @@ check incomplete_managed_rejected
 check key_commit_failure_preserves_index
 check package_fingerprint_mismatch
 check package_secret_names_unique
+check managed_subdirectory_must_not_alias_basename
+check public_key_is_not_private_material
+check credential_write_is_locked
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
