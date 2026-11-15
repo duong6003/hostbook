@@ -9,4 +9,4 @@ Base: a07d017 (`feature/compact-controls` worktree). Tasks 3 and 4 only; direct-
 
 Pre-flight: Task 4 consumes Task 3's `ui_choice` and preview interface. Tasks 1–2 are not prerequisites for these controls. Final integration must reconcile import-branch changes and re-run its suites.
 
-Ruling: the installed minimum fzf 0.63 lacks `--gutter` and the `multi` event used by the shared frame/home. Remove the option and update the footer from the Tab action, preserving the existing selection restriction. Risk: default gutter rendering can differ between versions; compare captures.
+Ruling: the installed minimum fzf 0.63 lacks `--gutter` and the `multi` event used by the shared frame/home. Detect gutter support once on screen entry and use the blank gutter on versions that support it; update the footer from the Tab action, preserving the existing selection restriction. Real 0.63 and 0.75 screens now both have one pointer.

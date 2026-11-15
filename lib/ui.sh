@@ -57,13 +57,18 @@ ui_card(){ # [server] → context card: name and PROD; user@ip · project · log
       if ($9 != "" || gs != "") printf "%s%s%s%s%s\n", d, $9, ($9 != "" && gs != "" ? " · " : ""), (gs != "" ? wg " " gs : ""), z
       exit }' "$IDX"
 }
+ui_gutter(){ # The option is absent in fzf 0.63; without it newer fzf repeats the pointer on every row.
+  local help; FZF_GUTTER=(); help=$(fzf --help)
+  case $help in *--gutter*) FZF_GUTTER=(--gutter=' ');; esac
+}
 ui_fzf(){ # header-text fzf-args… (stdin: list) → the shared frame
   local head=$1 border style; shift; cfg border rounded border
+  ui_gutter
   style=--style=full:$border; [ "$border" = none ] && style=--style=minimal
   [ -n "$head" ] || head=' '   # an empty header hides the box that carries the breadcrumb
   [ "$border" != none ] || head="$(ui_label)$NL$head"   # minimal style draws no box labels: the breadcrumb becomes the first header line
   local color; color=$(fzf_colors); [ "$UI_TONE" = danger ] && [ -z "${NO_COLOR:-}" ] && color="$color,border:$TH_ERR,label:$TH_ERR"
-  fzf --ansi --layout=reverse --height="${UI_INLINE:+~}100%" "$style" --header-first --info=hidden --pointer="$ICON_PTR" \
+  fzf ${FZF_GUTTER[@]+"${FZF_GUTTER[@]}"} --ansi --layout=reverse --height="${UI_INLINE:+~}100%" "$style" --header-first --info=hidden --pointer="$ICON_PTR" \
     --no-scrollbar --color="$color" --header-label="$(ui_label)" --header-label-pos=2 --header="$head" "$@"
 }
 ui_head(){ # [line…] → header text: the context card, a blank line, then the screen's own lines

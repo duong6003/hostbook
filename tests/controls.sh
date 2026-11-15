@@ -18,6 +18,7 @@ wait_done(){ local n=0; while [ ! -f "$T/status" ]; do sleep .05; n=$((n+1)); [ 
 k(){ tmux -L "$socket" send-keys -t ui "$@"; }
 start 'UI_POS=2 ui_choice Pick alpha beta gamma'
 wait_text beta
+[ "$(grep -o '▌' "$T/screen" | wc -l | tr -d ' ')" = 1 ] || { echo 'FAIL pointer appears on more than one row'; cat "$T/screen"; exit 1; }
 [ -z "${HOSTBOOK_TEST_ARTIFACTS:-}" ] || { mkdir -p "$HOSTBOOK_TEST_ARTIFACTS"; cp "$T/screen" "$HOSTBOOK_TEST_ARTIFACTS/choice-${CONTROL_WIDTH:-60}.txt"; }
 ! grep -q 'filter' "$T/screen" || { echo 'FAIL unexpected search'; exit 1; }
 k Enter; wait_done
