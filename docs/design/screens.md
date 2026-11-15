@@ -50,7 +50,7 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Progress | `title` + lines | check connections, find the sync hub, sync | elapsed / limit, a way to cancel |
 | Result | `ui_menu` | after check, share, import (only when there is a next step) | import bounds its host summary to keep actions visible; View opens the complete imported list and Undo is available only for the current import commit |
 | Report | `title` + lines | doctor, help | grouped sections, `→ fix` on every problem line |
-| File picker | `ui_menu` per directory | send a file, key from file | starts in `~`, folders first, dot files hidden, sizes right-aligned |
+| File picker | `ui_menu` per directory | send a file, key from file, import package | starts in `~` (Downloads for import), folders first, dot files hidden (Ctrl-O toggles), sizes right-aligned |
 
 Multiline input is a native `gum write` screen: gum does not expose a live outer-border or footer option. It uses the same breadcrumb, theme roles and key-hint words, with the hints above the editor. Ctrl-J inserts a newline and Enter submits in the supported gum versions.
 
@@ -100,7 +100,7 @@ Colours come from the theme (`TH_*`, escapes `CP CU CD CG CY CR CBORDER`), never
 
 All user-facing text comes from `lang/<code>.sh` through `t key [args…]` (or `tv var key [args…]` in hot paths).
 
-- `lang/vi.sh` is complete; `lang/en.sh` overrides it key by key. Every key exists in both files (S11).
+- Every key exists in both `lang/vi.sh` and `lang/en.sh` (S11); only the selected language file is loaded.
 - Keys are `snake_case` grouped by prefix: `key_` (key hints), `err_` (input errors), `act_` (menu items),
   `sec_` (menu sections), `done_` (flash messages), then one prefix per flow (`rename_`, `delete_`, …).
 - A key that takes values is a printf format (`L_done_renamed='Renamed %s → %s'`); escape a literal `%` as `%%`.
