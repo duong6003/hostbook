@@ -1,0 +1,45 @@
+{
+  "method": "20 synthetic hosts, 100x24 private tmux; three warmups then nine samples per revision, alternating order; launch until address screen visible. Includes process startup and 5ms polling.",
+  "results": [
+    {
+      "revision": "5bf4af4",
+      "warm_samples_ms": [
+        122.133,
+        135.53,
+        115.194,
+        113.288,
+        109.551,
+        135.981,
+        138.531,
+        145.782,
+        135.845
+      ],
+      "summary": {
+        "median_ms": 135.53,
+        "p95_ms": 145.782,
+        "min_ms": 109.551,
+        "max_ms": 145.782
+      }
+    },
+    {
+      "revision": "6d3400d",
+      "warm_samples_ms": [
+        116.018,
+        140.637,
+        116.093,
+        137.688,
+        115.356,
+        113.104,
+        158.011,
+        136.222,
+        143.76
+      ],
+      "summary": {
+        "median_ms": 136.222,
+        "p95_ms": 158.011,
+        "min_ms": 113.104,
+        "max_ms": 158.011
+      }
+    }
+  ]
+}

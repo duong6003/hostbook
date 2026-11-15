@@ -1,0 +1,90 @@
+{
+  "app": "/private/tmp/hostbook-host-perf-before/hostbook",
+  "revision": "5bf4af4",
+  "machine": "macOS-27.2-arm64-arm-64bit",
+  "columns": 100,
+  "lines": 24,
+  "samples": 5,
+  "fixtures": [
+    {
+      "hosts": 20,
+      "cold_index_ms": 180.189,
+      "warm": {
+        "version": {
+          "median_ms": 5.381,
+          "min_ms": 5.072,
+          "max_ms": 6.026,
+          "samples_ms": [
+            5.251,
+            5.072,
+            6.026,
+            5.473,
+            5.381
+          ]
+        },
+        "preview": {
+          "median_ms": 22.44,
+          "min_ms": 22.194,
+          "max_ms": 24.177,
+          "samples_ms": [
+            22.44,
+            22.194,
+            22.353,
+            24.177,
+            22.465
+          ]
+        },
+        "header": {
+          "median_ms": 34.912,
+          "min_ms": 33.653,
+          "max_ms": 41.227,
+          "samples_ms": [
+            41.227,
+            35.554,
+            34.374,
+            33.653,
+            34.912
+          ]
+        },
+        "footer": {
+          "median_ms": 20.286,
+          "min_ms": 19.261,
+          "max_ms": 21.406,
+          "samples_ms": [
+            21.406,
+            20.688,
+            20.286,
+            20.017,
+            19.261
+          ]
+        },
+        "list": {
+          "median_ms": 34.881,
+          "min_ms": 33.883,
+          "max_ms": 41.584,
+          "samples_ms": [
+            33.883,
+            34.563,
+            41.584,
+            36.485,
+            34.881
+          ]
+        },
+        "demo": {
+          "median_ms": 54.651,
+          "min_ms": 50.807,
+          "max_ms": 71.154,
+          "samples_ms": [
+            52.897,
+            71.154,
+            55.626,
+            50.807,
+            54.651
+          ]
+        }
+      },
+      "cold_list_ms": 183.184
+    }
+  ],
+  "method_note": "git archive snapshot; 20 synthetic hosts; five warm samples; sequential revision order. App paths are temporary."
+}
