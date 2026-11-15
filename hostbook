@@ -105,7 +105,16 @@ box(){ # color line... · wrap lines wider than the screen within the box
 title(){ at "$*" "$UI_HOST"; printf '%s\n%s\n\n' "$(ui_label)" "$CBORDER$(printf '%*s' "$(term_cols)" '' | tr ' ' '─')$C0"; }   # text screens: breadcrumb line, then a rule
 shown(){ clear; title "$UI_AT"; }   # a text screen under the current breadcrumb (for output that follows a framed screen)
 flash(){ printf '%s\t%s\n' "$(date +%s)" "$*" > "$FLASH"; }
-pause(){ printf '\n%s%s%s' "$CD" "${1:-$(t pause_back)}" "$C0" >&2; read -r _ </dev/tty; }
+pause(){ # [text] → wait for enter, or esc on its own: an arrow key sends esc plus more bytes, which must not leak into the next screen
+  local k r rc; printf '\n%s%s%s' "$CD" "${1:-$(t pause_back)}" "$C0" >&2
+  while IFS= read -rsn1 k </dev/tty; do
+    case $k in
+      '') return 0;;
+      $'\e') r=; read -rsn2 -t 0.05 r </dev/tty 2>/dev/null; rc=$?
+        [ $rc -ne 1 ] || { read -rsn2 -t 1 r </dev/tty 2>/dev/null; rc=$?; }   # bash 3.2 takes whole seconds only
+        [ $rc -le 128 ] || return 0;;
+    esac
+  done; return 0; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 perm(){ stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 port_open(){ # host port [seconds]: check whether a TCP port is open; use Bash /dev/tcp on minimal Linux without nc

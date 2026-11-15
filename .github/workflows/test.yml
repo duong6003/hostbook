@@ -26,6 +26,7 @@ jobs:
           bash tests/ui.sh
           bash tests/import.sh
           bash tests/tui.sh
+          bash tests/screens.sh
       - name: Test against a real SSH server (Docker, Ubuntu only)
         if: runner.os == 'Linux'
         run: |
