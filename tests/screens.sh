@@ -52,9 +52,10 @@ echo 'ok    S11 mọi key của lang/vi.sh có trong lang/en.sh và ngược l�
 
 # One worker: language $1, width $2. Everything it prints goes to its own log; a failure makes it exit 1.
 worker(){
-  local lang=$1 width=$2 W=$T/$1-$2 socket=hb-sc-$N-$1-$2 tag="$1 $2 cột"
+  local lang=$1 width=$2 bd=$3 W=$T/$1-$2-$3 socket=hb-sc-$N-$1-$2-$3 tag="$1 $2 cột border=$3"
   mkdir -p "$W/home/.ssh" "$W/hosts" "$W/config/hostbook" "$W/bin" "$W/state" "$W/kc"
   echo "$socket" > "$W/socket"
+  [ "$bd" = none ] && printf 'border = none\n' > "$W/config/hostbook/config"
   export HOME=$W/home XDG_CONFIG_HOME=$W/config HOSTBOOK_DIR=$W/hosts HOSTBOOK_STATE=$W/state HOSTBOOK_SSH_CONFIG=$W/ssh_config HOSTBOOK_KEYCHAIN=file:$W/kc/id
   export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
   # clipboard tools that touch a file inside the sandbox, never the real clipboard
@@ -75,7 +76,7 @@ worker(){
   : > "$out"
   say(){ printf '%s\n' "$*" >> "$out"; }
   die(){ cat "$cap" >> "$out" 2>/dev/null; say "FAIL $tag: $*"; end_ui "$socket"; echo 1 > "$W/failed"; exit 1; }
-  has_rule(){ grep -qF -- "${1:0:20}" "$cap"; }   # a rule may wrap on a narrow screen: its first words are enough
+  has_rule(){ local i=0; while [ $i -lt 30 ]; do snap; grep -qF -- "${1:0:20}" "$cap" && return 0; sleep .1; i=$((i+1)); done; return 1; }   # a rule may wrap on a narrow screen: its first words are enough
   # fmt: a lang value printed as the screen prints it (printf format with arguments)
   fmt(){ local f=$1; shift; printf -- "$f" "$@"; }
   start(){ # [command args]
@@ -100,7 +101,7 @@ worker(){
   menu_pick(){ typ "$1"; sleep .4; k Enter; }   # filter a menu by the item's label, then enter
   # the checks every screen goes through. $1 = name, $2 = kind (normal | progress | report)
   check(){
-    local name=$1 kind=${2:-normal} f=$ARTIFACTS/$lang-$width-$1.txt bad='' line first esc
+    local name=$1 kind=${2:-normal} f=$ARTIFACTS/$lang-$width-$bd-$1.txt bad='' line first esc
     snap; cp "$cap" "$f"
     first=$(sed -n 1p "$cap")
     case $first in *'hostbook ›'*) ;; *) bad="$bad S1 (dòng đầu: '$first')";; esac
@@ -131,7 +132,7 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   tmux -L "$socket" capture-pane -e -p -t ui > "$W/menu-e"
   grep -qF -- "${CR}$L_act_delete" "$W/menu-e" || die "S6: '$L_act_delete' không có màu lỗi của theme"
   snap; last=$(grep -nF "$L_act_delete" "$cap" | tail -1 | cut -d: -f1)
-  after=$(sed -n "$((last+1)),\$p" "$cap" | sed '/^╰/,$d' | grep -v '^│ *│$' | grep -c . || :)
+  after=$(sed -n "$((last+1)),\$p" "$cap" | sed '/^╰/,$d' | grep -v '^│ *│$' | grep -vF 'esc ' | grep -vE '^(─)*$' | grep -c '[^ ]' || :)   # border=none has no ╰ line: the footer follows the list
   [ "$after" = 0 ] || die "S6: sau '$L_act_delete' còn $after dòng khác trong menu"
   # ---- danger, normal server (same menu)
   menu_pick "$L_act_delete"; wait_for "$(fmt "$L_delete_yes" shop-web)"; check danger-normal; fin
@@ -180,6 +181,14 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   k Escape; wait_for "$L_tools_title" 5; fin
   summary 'báo cáo kiểm tra máy, esc quay lại (S1 S2 S3 S7 S10)'
 
+  # ---- password prompt (gum input) and the tag picker (fzf multi): no English gum help, esc offered
+  start; wait_for shop-api; k C-o; wait_for "$L_tools_title"; menu_pick "$L_act_secrets"; sleep .5; menu_pick "$L_act_pw_new"
+  wait_for "esc $L_key_cancel"; check password-prompt; fin
+  start; wait_for shop-api; k C-a; wait_for "$L_add_addr_label"; typ 'deploy@10.0.9.9'; k Enter; wait_for "$(fmt "$L_add_step" 2 4)"; typ newbox; k Enter; wait_for "$(fmt "$L_add_step" 3 4)"; k Enter; wait_for "$(fmt "$L_add_step" 4 4)"
+  wait_for "$L_act_no_login"; menu_pick "$L_act_no_login"; wait_for "$L_act_add_edit"; menu_pick "$L_act_add_edit"; wait_for "$L_f_tags"; menu_pick "$L_f_tags"
+  wait_for "$L_tags_head"; check tag-picker; fin
+  summary 'ô mật khẩu và chọn tag (S1 S2 S3 S7 S10)'
+
   # ---- file picker: send a file
   start; wait_for shop-api; find_host shop-api; k Right; wait_for "$L_act_ssh"; menu_pick "$L_act_send"; wait_for note.txt; check file-picker
   if grep -qF .secretrc "$cap"; then die 'file picker hiện file ẩn'; fi
@@ -190,15 +199,19 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
 
 ICON_ERR_CHECK='✗'
 pids=''
-for lang in vi en; do for width in 60 100 200; do
-  ( worker "$lang" "$width" ) > "$T/$lang-$width.log" 2>&1 &
+# border = none (fzf's minimal style) must keep the breadcrumb: vi and en at two widths
+combos='vi:60:rounded vi:100:rounded vi:200:rounded en:60:rounded en:100:rounded en:200:rounded vi:60:none en:100:none'
+for c in $combos; do
+  IFS=: read -r lang width bd <<< "$c"
+  ( worker "$lang" "$width" "$bd" ) > "$T/$lang-$width-$bd.log" 2>&1 &
   pids="$pids $!"
-done; done
+done
 rc=0
 for p in $pids; do wait "$p" || rc=1; done
-for lang in vi en; do for width in 60 100 200; do
-  cat "$T/$lang-$width/out" 2>/dev/null; sed 's/^/log: /' "$T/$lang-$width.log" | grep . || :
-done; done
+for c in $combos; do
+  IFS=: read -r lang width bd <<< "$c"
+  cat "$T/$lang-$width-$bd/out" 2>/dev/null; sed 's/^/log: /' "$T/$lang-$width-$bd.log" | grep . || :
+done
 # S11, part 2: no capture shows a missing key (each capture was checked as it was taken; this catches a leftover)
 if grep -l '‹L_' "$ARTIFACTS"/*.txt 2>/dev/null; then echo 'FAIL S11: có màn hình hiện key ngôn ngữ bị thiếu'; rc=1; fi
 leak_check || rc=1

@@ -20,6 +20,7 @@ fi
 unset HOSTBOOK_APP
 umask 077   # only the machine owner can read the server list and state
 VERSION=0.4.0
+case ${1:-} in --version|-v|version) echo "hostbook $VERSION"; exit 0;; esac   # before parsing the rest: this is the cheapest path
 FZF_MIN=0.63; GUM_MIN=0.14; AGE_MIN=1.3.0
 REPO_URL=https://github.com/duong6003/hostbook
 
@@ -148,10 +149,11 @@ ask(){ # header [example] [value] → typed text; an example is shown as "e.g. �
 # base and other languages override it, so a missing translation shows Vietnamese rather than a key name.
 lang_load(){
   local d=${HOSTBOOK_LANG_DIR:-${SELF%/*}/lang} l
-  [ -f "$d/vi.sh" ] && . "$d/vi.sh"
   l=${HOSTBOOK_LANG:-}; [ -n "$l" ] || cfg lang "" l   # HOSTBOOK_LANG overrides the config (tests, one-off runs)
+  case $l in vi|en) ;; *) l=;; esac   # a name is used as a file name below: only known languages
   if [ -z "$l" ]; then case ${LC_ALL:-${LC_MESSAGES:-${LANG:-}}} in vi*) l=vi;; *) l=en;; esac; fi
-  UI_LANG=$l; if [ "$l" != vi ] && [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; fi
+  # every language file defines every key (tests/screens.sh, S11), so one file is enough
+  UI_LANG=$l; if [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; else . "$d/vi.sh"; UI_LANG=vi; fi
 }
 t(){ # key [args…] → text for key (printf format when arguments follow); an unknown key prints ‹L_key›
   local _k=L_$1; shift
@@ -185,6 +187,7 @@ ui_fzf(){ # header-text fzf-args… (stdin: list) → the shared frame
   local head=$1 border style; shift; cfg border rounded border
   style=--style=full:$border; [ "$border" = none ] && style=--style=minimal
   [ -n "$head" ] || head=' '   # an empty header hides the box that carries the breadcrumb
+  [ "$border" != none ] || head="$(ui_label)$NL$head"   # minimal style draws no box labels: the breadcrumb becomes the first header line
   local color; color=$(fzf_colors); [ "$UI_TONE" = danger ] && [ -z "${NO_COLOR:-}" ] && color="$color,border:$TH_ERR,label:$TH_ERR"
   fzf --ansi --layout=reverse --height="${UI_INLINE:+~}100%" "$style" --header-first --info=hidden --gutter=' ' --pointer="$ICON_PTR" \
     --no-scrollbar --color="$color" --header-label="$(ui_label)" --header-label-pos=2 --header="$head" "$@"
@@ -197,7 +200,7 @@ ui_head(){ # [line…] → header text: the context card, a blank line, then the
   if [ -n "$c" ] && [ -n "$o" ]; then printf '%s\n \n%s' "$c" "$o"; else printf '%s' "$c$o"; fi | ui_wrap "$w"; }
 ui_wrap(){ # width: fold stdin lines at spaces, counting characters (not bytes, not colour codes); continuations keep
   # the line's colour and indent
-  awk -v W="$1" '
+  LC_ALL=C awk -v W="$1" '
     function vis(s,  t) { t = s; gsub(/\033\[[0-9;]*m/, "", t); gsub(/[\200-\277]/, "", t); return length(t) }
     { if (vis($0) <= W) { print; next }
       lead = ""; rest = $0; if (match(rest, /^\033\[[0-9;]*m/)) { lead = substr(rest, 1, RLENGTH); rest = substr(rest, RLENGTH + 1) }
@@ -211,7 +214,9 @@ ui_wrap(){ # width: fold stdin lines at spaces, counting characters (not bytes, 
 # every key, builtins only: name:<file of taken names> | lname:<file> (lowercase only) | gname:<file> (group: lowercase, no ".") | addr | port | project | text | equals:<word> | any.
 # PREVIEW is shown in the list box; every %s in it becomes the typed value.
 ui_field(){
-  local label=$1 value=$2 check=$3 rule=${4:-} prev=${5:-} intro=${6:-} d f keys v out tk rc
+  local label=$1 value=$2 check=$3 rule=${4:-} prev=${5:-} intro=${6:-} d f keys v out tk rc prompt='› ' rl w
+  [ "$(cfg border rounded)" != none ] || prompt="$label › "   # no input box label in the minimal style
+  term_cols w; rl=$(printf '%s' "${rule:+$CD$rule$C0}" | ui_wrap "$((w - 7))")   # fzf footers do not wrap (S3)
   tk='m=; while IFS= read -r n; do [ "$n" = "$q" ] && m="${HB_E_TAKEN%%%s*}$q${HB_E_TAKEN#*%s}"; done < "$HB_ARG"'
   d=$(tmpd) || return 1; f=$d/field.sh
   keys=$(ui_keys "enter:${UI_ENTER:-$(t key_save)}" "esc:${UI_ESC:-$(t key_cancel)}")
@@ -237,12 +242,12 @@ case $1 in
 esac
 SH
   } > "$f"
-  out=$(export HB_SELF="$(printf %q "$f")" HB_PREV="$prev" HB_ARG="${check#*:}" HB_FOOT="${rule:+$CD$rule$C0$'\n'}$keys" HB_KEYS="$keys" \
+  out=$(export HB_SELF="$(printf %q "$f")" HB_PREV="$prev" HB_ARG="${check#*:}" HB_FOOT="${rl:+$rl$'\n'}$keys" HB_KEYS="$keys" \
       HB_ERR="$CR$ICON_ERR " HB_C0="$C0" HB_E_EMPTY="$(t err_empty)" HB_E_SPACE="$(t err_name_space)" HB_E_CHARS="$(t err_name_chars)" \
       HB_E_TAKEN="$(t "${UI_TAKEN:-err_name_taken}")" HB_E_LOWER="$(t err_name_lower)" HB_E_GROUP="$(t err_group_chars)" HB_E_PORT="$(t err_port)" HB_E_PROJECT="$(t err_project)" HB_E_EQUALS="$(t err_equals)" HB_E_ADDR="$(t err_addr)"
-    : | ui_fzf "$(ui_head "$intro")" --disabled --print-query --query="$value" --prompt='› ' \
+    : | ui_fzf "$(ui_head "$intro")" --disabled --print-query --query="$value" --prompt="$prompt" \
       --input-label=" $label " --list-label="${prev:+ $(t preview_label) }" --no-highlight-line --pointer=' ' \
-      --footer="${rule:+$CD$rule$C0$'\n'}$keys" --bind "start:transform:sh $(printf %q "$f") change" \
+      --footer="${rl:+$rl$'\n'}$keys" --bind "start:transform:sh $(printf %q "$f") change" \
       --bind "change:transform:sh $(printf %q "$f") change" --bind "enter:transform:sh $(printf %q "$f") enter" --bind 'esc:abort')
   rc=$?; [ $rc -le 1 ] || return 1   # enter on an empty list is "no match" (1) for fzf, esc is 130
   printf '%s\n' "${out%%$'\n'*}"
@@ -250,7 +255,8 @@ SH
 # ui_menu HEADER ITEM… → zero-based index of the chosen item. Items: "Label|description"; "#Name" starts a section
 # (not an item); "!Label" marks a destructive item, shown in the error colour. Prefix a call with UI_HEAD (lines above the
 # question, e.g. finished steps), UI_POS (row to start on), UI_EXPECT (extra keys that end it: the output is then the key,
-# a newline, the index) or UI_FOOT (replaces the key hints).
+# a newline, the index) or UI_FOOT (replaces the key hints). UI_MULTI=1: tab marks items, the output is one index per line
+# (none when enter is pressed with nothing marked); UI_SELECT="1 3" marks those 1-based rows on start.
 ui_menu(){
   local header=$1; shift; local x lab desc sec= cols lw=0 sw=0 i=0 pad spad line list= danger
   cols=$(term_cols)
@@ -268,7 +274,9 @@ ui_menu(){
   printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
     --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" --highlight-line \
     --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_back)}")}" --bind 'esc:abort' \
-    ${UI_POS:+--bind "load:pos($UI_POS)"} ${UI_EXPECT:+--expect="$UI_EXPECT"}
+    ${UI_POS:+--bind "load:pos($UI_POS)"} ${UI_EXPECT:+--expect="$UI_EXPECT"} \
+    ${UI_MULTI:+--multi --marker='✓' --bind 'tab:toggle+down' --bind 'enter:transform:[ "$FZF_SELECT_COUNT" = 0 ] && echo "become(true)" || echo accept'} \
+    ${UI_SELECT:+--bind "load:$(local r=; for i in $UI_SELECT; do r="$r+pos($i)+select"; done; printf '%s' "${r#+}+first")"}
 }
 # ui_confirm [--default=false] [--affirmative X] [--negative Y] [--danger] QUESTION [DETAIL…] → status 0 for yes, 1 for no,
 # 2 for esc. A danger confirm has no "y" shortcut, so a stray key can never delete.
@@ -296,7 +304,9 @@ prog_line(){ # message elapsed limit tick → that one line, redrawn in place (o
 kill_tree(){ # pid… → TERM each process and all its descendants (found first, so nothing is reparented away), KILL what is left
   local all="" new="$*" c p
   while [ -n "$new" ]; do all="$all $new"; c=""
-    if have pgrep; then for p in $new; do c="$c $(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')"; done; fi
+    # pgrep is missing from Git for Windows (MSYS); "ps -ef" prints UID PID PPID there too
+    if have pgrep; then for p in $new; do c="$c $(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')"; done
+    else c=$(ps -ef 2>/dev/null | awk -v l=" $new " '{ if (index(l, " " $3 " ")) printf "%s ", $2 }'); fi
     new=$(echo $c); done
   kill -TERM $all 2>/dev/null || :; sleep 0.3; kill -KILL $all 2>/dev/null || :; return 0
 }
@@ -316,7 +326,7 @@ run_progress(){
 }
 ask_pw(){ # header [error] → print what was typed. Password fields stay gum input (fzf cannot mask): the breadcrumb first, the rule in gum's
   # header. Everything but the password goes to stderr because callers use $(...).
-  { clear; title "$UI_AT"; [ -z "${2:-}" ] || err "$2"; } >&2
+  { clear; title "$UI_AT"; [ -z "${2:-}" ] || err "$2"; ui_keys "enter:$(t key_confirm)" "esc:$(t key_cancel)"; printf '\n\n'; } >&2
   gum input --password --placeholder "" --header "$1"
 }
 dimw(){ dim "$1" | ui_wrap "$(( $(term_cols) - 2 ))"; }   # a dim text line folded to the terminal width
@@ -378,7 +388,7 @@ cfg_errors(){
     i=$((i+1)); line=${line%$'\r'}; case $line in ''|\#*) continue;; esac
     k=$(printf '%s' "${line%%=*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'); case $k in ''|\#*) continue;; esac
     v=$(printf '%s' "${line#*=}" | sed 's/[[:space:]]# .*$//;s/^[[:space:]]*//;s/[[:space:]]*$//')
-    cfg_valid "$k" "$v" || t cfg_bad_line "$CFG" "$i" "$k" "$v"; echo
+    cfg_valid "$k" "$v" || { t cfg_bad_line "${CFG/#$HOME/~}" "$i" "$k" "$v"; echo; }
   done < "$CFG"
 }
 theme_names(){ printf '%s\n' hostbook dracula nord gruvbox solarized-dark solarized-light light high-contrast terminal; }
@@ -1043,7 +1053,7 @@ vault_create(){ # master-password → create the vault and print the recovery co
 ask_new_pw(){ # heading minimum-length [intro] → print the password (the caller sets the breadcrumb with "at")
   local a b e=
   while :; do
-    { clear; title "$UI_AT"; [ -z "${3:-}" ] || { dim "$3"; echo; }; [ -z "$e" ] || err "$e"; } >&2
+    { clear; title "$UI_AT"; [ -z "${3:-}" ] || { dimw "$3"; echo; }; [ -z "$e" ] || err "$e"; ui_keys "enter:$(t key_confirm)" "esc:$(t key_cancel)"; printf '\n\n'; } >&2
     a=$(gum input --password --placeholder "" --header "$(t pw_head_min "$1" "$2")") || return 1
     [ ${#a} -ge "$2" ] || { e=$(t err_pw_short "$2"); continue; }
     b=$(gum input --password --placeholder "" --header "$(t pw_again)") || return 1
@@ -1764,8 +1774,11 @@ pick_project(){ # suggestions-file → print the project name (call with UI_HEAD
 pick_tags(){ # project current-tags → print new tags
   local g=$1 cur=$2 all sel other; other=$(t tags_other)
   all=$( { printf '%s\n' $cur; awk -F'\t' -v g="$g" '$2==g{print $8}' "$IDX" | tr ' ' '\n'; } | grep . | awk '!s[$0]++')
-  shown
-  sel=$( { printf '%s\n' "$all"; echo "$other"; } | grep . | gum choose --no-limit --header "$(t tags_head)" --selected "$(printf '%s' "$cur" | tr ' ' ',')") || return 1
+  local items=() on= t i=0 idx
+  while IFS= read -r t; do [ -n "$t" ] || continue; items+=("$t"); i=$((i+1)); case " $cur " in *" $t "*) on="$on $i";; esac; done <<< "$all"
+  items+=("$other")
+  idx=$(UI_MULTI=1 UI_SELECT=$on UI_FOOT=$(ui_keys "↑↓:$(t key_move)" "tab:$(t key_mark)" "enter:$(t key_done)" "esc:$(t key_cancel)") ui_menu "$(t tags_head)" "${items[@]}") || return 1
+  sel=; for i in $idx; do sel="$sel${items[$i]}"$'\n'; done
   if printf '%s\n' "$sel" | grep -qxF "$other"; then
     sel=$(printf '%s\n' "$sel" | grep -vxF "$other"; ui_field "$(t tags_add_label)" "" any "$(t tags_add_rule)"$'\n'"$(t example 'prod web')" | tr ' ' '\n'); fi
   printf '%s\n' "$sel" | grep . | tr -cd 'A-Za-z0-9._\n-' | tr '\n' ' ' | sed 's/ $//'
@@ -1956,8 +1969,8 @@ edit_host(){ # open the file at the correct line, validate on close, and prompt 
     echo; box err "${CR}$(t eh_unsynced)${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
     l=$(printf '%s' "$e" | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -1); l=${l:-1}
     case $(pick "$(t eh_next)" "$(t eh_reopen)|$(t eh_reopen_h "$l")" "$(t eh_revert)|$(t eh_revert_h)") in
-      0) ;;
-      *) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ $(t done_restored "$(basename "$f")")${C0}"; return 0;;
+      1) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ $(t done_restored "$(basename "$f")")${C0}"; return 0;;
+      *) ;;   # the first item and esc both go back to the editor: esc never drops the edit
     esac
   done
 }
