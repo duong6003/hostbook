@@ -2686,9 +2686,10 @@ home(){
       --bind "resize:$(relayout_actions "$fd")" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
       --bind "tab:transform~case {1} in h:*) echo toggle+down;; *) echo down;; esac~+transform-footer:$fwrite$foot" \
+      --bind "btab:toggle-up+transform-footer:$fwrite$foot" \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
       --bind "focus:transform-footer:$fwrite$foot" \
-      --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
+      --bind "esc:transform~if [ -n \"\$FZF_QUERY\" ]; then echo clear-query; elif [ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ]; then echo clear-selection; else echo abort; fi~+transform-footer:$fwrite$foot" \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list
     [ $rc -eq 130 ] || [ $rc -eq 2 ] && return 0
