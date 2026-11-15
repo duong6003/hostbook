@@ -128,6 +128,9 @@ check "gợi ý tên nhóm từ tag chung" '[ "$("$S" _suggest a-web1 a-web2)" =
 printf 'prod-web\tsync\ta-web1 a-web2\n' > "$HOSTBOOK_DIR/groups.tsv"
 check "tránh trùng tên nhóm" '[ "$("$S" _suggest a-web1 a-web2)" = prod-web-2 ]'
 check "không có tag chung thì lấy tên" '[ "$("$S" _suggest b-api a-db)" = b-api ] || [ -n "$("$S" _suggest b-api a-db)" ]'
+printf 'Host shop-api\n  HostName 192.0.2.7\nHost shop-bastion\n  HostName 192.0.2.8\n' > "$HOSTBOOK_DIR/project-shop.conf"; "$S" _index >/dev/null
+check "không có tag chung: gợi ý phần đầu tên chung, không phải tên server" '[ "$("$S" _suggest shop-api shop-bastion)" = shop ]'
+rm -f "$HOSTBOOK_DIR/project-shop.conf"; "$S" _index >/dev/null
 check "nhóm hiện trong danh sách" '"$S" _list | strip | grep -q "^g:prod-web.*nhóm · 2 server · chạy đồng loạt"'
 
 # ---- repository sync (use a bare repository in a temporary directory) ----
