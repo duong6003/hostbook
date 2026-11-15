@@ -1,7 +1,7 @@
 # Module loading and performance acceptance
 
 Date: 2026-11-15. Baseline: main ef847ee.
-Status: explicit selective import loading adopted after measurement. Shared UI loads eagerly; sourced fixtures and human commands load import, while unrelated internal callbacks skip it. Unknown underscore-prefixed searches load import at the default dispatch. Performance guardrails remain in AGENTS.md.
+Status: explicit selective import loading adopted after measurement. Shared UI loads eagerly; sourced fixtures and human commands load import and interactive settings, while unrelated internal callbacks skip them. Import callbacks load import explicitly; `_demo` keeps its rendering primitives in core. Unknown underscore-prefixed searches load import at the default dispatch. Performance guardrails remain in AGENTS.md.
 
 ## Context
 
