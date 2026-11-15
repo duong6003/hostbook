@@ -203,8 +203,11 @@ check "thư mục trạng thái chỉ chủ máy đọc được" '[ "$(stat -c 
 
 mkdir -p "$T/fakebin"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = -G ] && exec %s "$@"; done\necho "FAKESSH $*"\n' "$(command -v ssh)" > "$T/fakebin/ssh"; chmod +x "$T/fakebin/ssh"
+mkdir -p "$HOSTBOOK_DIR/secrets"
+for f in vault.pub vault.key.age vault.recovery.age; do printf 'fixture\n' > "$HOSTBOOK_DIR/secrets/$f"; done
 out=$(PATH="$T/fakebin:$PATH" "$S" a-web1 2>&1 | strip)
 check "gõ đúng tên thì vào thẳng dù có tên dài hơn khớp (a-web1 vs a-web10…)" 'printf "%s" "$out" | grep -q "FAKESSH.*a-web1$"'
+rm -f "$HOSTBOOK_DIR/secrets/vault.pub" "$HOSTBOOK_DIR/secrets/vault.key.age" "$HOSTBOOK_DIR/secrets/vault.recovery.age"; rmdir "$HOSTBOOK_DIR/secrets"
 
 printf '#!/bin/sh\necho "0.44.1 (debian)"\n' > "$T/fakebin/fzf"; chmod +x "$T/fakebin/fzf"
 out=$(PATH="$T/fakebin:$PATH" "$S" 2>&1 </dev/null | strip)

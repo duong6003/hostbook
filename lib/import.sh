@@ -35,6 +35,10 @@ import_write(){ # tsv-file project(empty = infer from IP range) → write all en
   done < "$list"
   rm -f "$blk"; echo "$cnt"
 }
+# Reject Include and Match before imported config reaches OpenSSH.
+import_config_guard(){
+  awk '{line=tolower($0); sub(/^[ \t]*/, "", line); if (line ~ /^(include|match)([ \t]|=)/) bad=1} END {exit bad}' "$1" || { err "$(t err_import_unsafe)" >&2; return 1; }
+}
 import_flow(){ # [file]
   local src=${1:-} raw list errs n to cnt to_dir
   [ -z "$src" ] || src=$(unix_path "$src")
@@ -55,7 +59,7 @@ import_flow(){ # [file]
   fi
   if printf '%s\n' "$raw" | grep -qiE '^[[:space:]]*host[[:space:]]'; then   # a complete SSH config was pasted: preserve it and split by name
     ensure_index
-    printf '%s\n' "$raw" > "$list"; to_dir=$(mktemp -d)
+    printf '%s\n' "$raw" > "$list"; import_config_guard "$list" || { rm -f "$list" "$errs"; return 1; }; to_dir=$(mktemp -d)
     split_config "$list" "$to_dir" "$to_dir/global" >/dev/null
     n=$(awk 'tolower($1)=="host" {for(i=2;i<=NF;i++) if($i !~ /[*?!]/) print $i}' "$to_dir"/*.conf | wc -l | tr -d ' ')
     dim "$(t impf_ssh "$n")"

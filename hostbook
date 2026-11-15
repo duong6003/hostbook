@@ -872,9 +872,9 @@ recovery_norm(){ printf '%s' "$1" | tr 'a-z' 'A-Z' | sed 's/^HB-//' | tr -d ' -'
 vault_create(){ # master-password → create the vault and print the recovery code
   local pw=$1 id rc; private_dir "$DIR" || return 1; private_dir "$SEC" || return 1
   id=$(age-keygen 2>/dev/null) || return 1
-  printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub"
-  printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age"
-  rc=$(recovery_new) || return 1; printf '%s\n' "$id" | age_pw_enc "$rc" > "$SEC/vault.recovery.age"
+  printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub" || return 1
+  printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age" || return 1
+  rc=$(recovery_new) || return 1; printf '%s\n' "$id" | age_pw_enc "$rc" > "$SEC/vault.recovery.age" || return 1
   printf '%s\n' "$id" | kc_set || return 1
   ensure_merge_setup
   recovery_fmt "$rc"
@@ -900,7 +900,10 @@ show_recovery(){ # code [finished-step line]: a plain text screen, not a frame, 
 }
 # Create the secret vault if absent. Print everything to stderr because this is often called inside $(...).
 vault_init(){
-  vault_exists && return 0
+  if [ -e "$SEC/vault.pub" ] || [ -L "$SEC/vault.pub" ] || [ -e "$SEC/vault.key.age" ] || [ -L "$SEC/vault.key.age" ] || [ -e "$SEC/vault.recovery.age" ] || [ -L "$SEC/vault.recovery.age" ]; then
+    [ -s "$SEC/vault.pub" ] && [ -s "$SEC/vault.key.age" ] && [ -s "$SEC/vault.recovery.age" ] && return 0
+    err "$(t err_vault_partial)" >&2; return 1
+  fi
   check_age || return 1
   local pw code at0=$UI_AT
   at "$(t vault_title)|$(t add_step 1 2)"
@@ -910,7 +913,6 @@ vault_init(){
   at "$(t vault_title)|$(t add_step 2 2)"
   show_recovery "$code" "$CG$ICON_OK$C0 $(t vault_created "$(kc_label)")" >&2
   UI_AT=$at0
-  migrate_keys >&2
   return 0
 }
 vault_passwd(){
@@ -1013,17 +1015,18 @@ secret_add_password(){ # [name] [password] → print the name
   save_and_sync "$(t done_secret_added "$name")"; echo "$name"
 }
 # Choose a login method for a server. Print the secret name (empty = SSH handles it). Return 1 on cancellation.
-pick_login(){ # [suggested secret] [reason]
-  local sug=${1:-} why=${2:-} items=() keys=() n i c f nm d
+pick_login(){ # [suggested secret] [reason] [key: require a stored key]
+  local sug=${1:-} why=${2:-} kind=${3:-} items=() keys=() n i c f nm d
   ensure_index
   for n in $(secret_names | awk -v s="$sug" '$0==s'; secret_names | awk -v s="$sug" '$0!=s'); do
+    [ "$kind" != key ] || [ "$(secret_meta "$n" type)" = key ] || continue
     [ ${#keys[@]} -eq 0 ] && items+=("#$(t sec_secrets)")
     c=$(secret_users "$n" | grep -c .); d=$(secret_label "$n")
     if [ "$n" = "$sug" ] && [ -n "$why" ]; then d="$d · $why"; else if [ "$c" = 0 ]; then d="$d · $(t sc_unused)"; else d="$d · $(t sc_users "$c")"; fi; [ "$n" = "$sug" ] && d="$d · $(t current)"; fi
     items+=("$n|$d"); keys+=("s:$n"); done
-  items+=("#$(t sec_add)" "$(t act_key_paste)|$(t act_key_paste_hint)" "$(t act_key_file)" "$(t act_key_new)|ed25519" "$(t act_pw_new)" \
-    "#$(t sec_other)" "$(t act_no_login)|$(t act_no_login_hint)")
-  keys+=(clip file gen pass none)
+  items+=("#$(t sec_add)" "$(t act_key_paste)|$(t act_key_paste_hint)" "$(t act_key_file)" "$(t act_key_new)|ed25519")
+  keys+=(clip file gen)
+  if [ "$kind" != key ]; then items+=("$(t act_pw_new)" "#$(t sec_other)" "$(t act_no_login)|$(t act_no_login_hint)"); keys+=(pass none); fi
   i=$(ui_menu "$(t login_head)" "${items[@]}") || return 1
   case ${keys[$i]} in clip) n=act_key_paste;; file) n=act_key_file;; gen) n=act_key_new;; pass) n=act_pw_new;; *) n=;; esac
   [ -z "$n" ] || UI_AT="$UI_AT|$(t "$n")"   # this runs inside $(...), so the longer breadcrumb does not leak out
@@ -2831,7 +2834,7 @@ setup(){
   else mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "$(t su_cmd)"; fi
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   if ! grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config"; then
-    [ -f "$HOME/.ssh/config" ] && cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
+    [ "${1:-}" = first-run ] || { [ ! -f "$HOME/.ssh/config" ] || cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"; }
     { echo "# Server list in ~/ssh-hosts (hostbook syncs it with the shared repository)"; echo "Include ~/ssh-hosts/*.conf"; echo; cat "$HOME/.ssh/config" 2>/dev/null || true; } > "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config"
     chmod 600 "$HOME/.ssh/config"; ok "$(t su_include)$( [ -f "$HOME/.ssh/config.bak" ] && t su_include_bak)"
   else ok "$(t su_include_has)"; fi
@@ -2868,7 +2871,7 @@ update(){
   else dim "$(t up_nogit "$REPO_URL")"; fi
 }
 first_run(){ # ~/ssh-hosts does not exist yet
-  local i m url n
+  local i m url n initial=
   set_language "$(t set_language)" || return 1   # first: the language, preselected from the locale
   at "$(t first_title)"
   i=$(UI_HEAD="$CU$CB$(t first_welcome)$C0"$'\n'"$(t first_none)" ui_menu "$(t first_how)" "$(t act_first_remote)|$(t act_first_remote_hint)" "$(t act_first_new)|$(t act_first_new_hint)" "$(t act_first_hub)|$(t act_first_hub_hint)") || return 1
@@ -2879,16 +2882,32 @@ first_run(){ # ~/ssh-hosts does not exist yet
     *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
        ensure_git_identity || return 1
        printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
-       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && ui_confirm --affirmative "$(t first_import_yes)" --negative "$(t first_import_no)" "$(t first_import_q)"; then
-         cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
-         n=$(split_config "$HOME/.ssh/config.bak" "$DIR" "$HOME/.ssh/config")
-         ok "$(t first_imported "$n")"
-         dim "$(t first_imported_keep)"
+       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config"; then
+         initial=$(tmpd) || return 1
+         cp "$HOME/.ssh/config" "$initial/original" || return 1
+         awk 'tolower($1)=="include" && $2=="~/ssh-hosts/*.conf" && NF==2 {next} {print}' "$initial/original" > "$initial/import" || return 1
        fi
        g add -A && g commit -qm "$(t first_commit)" >/dev/null;;
   esac
   chmod 700 "$DIR"; ensure_merge_setup
-  setup
+  if [ -n "$initial" ]; then
+    : > "$initial/empty" || return 1
+    SSHCFG="$initial/empty" vault_init || return 1
+  else vault_init || return 1; fi
+  if [ -n "$initial" ] && ui_confirm --affirmative "$(t first_import_yes)" --negative "$(t first_import_no)" "$(t first_import_q)"; then
+    import_config_guard "$initial/import" || return 1
+    import_flow "$initial/import" || return 1
+    mkdir -p "$initial/split" || return 1
+    split_config "$initial/import" "$initial/split" "$initial/global" >/dev/null || return 1
+    { printf 'Include ~/ssh-hosts/*.conf\n'; cat "$initial/global"; } > "$HOME/.ssh/config.new" || return 1
+    ssh -F "$HOME/.ssh/config.new" -G hostbook-validate-probe >/dev/null 2>&1 || { rm -f "$HOME/.ssh/config.new"; return 1; }
+    cp "$initial/original" "$HOME/.ssh/config.bak" || return 1
+    chmod 600 "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config" || return 1
+    ok "$(t first_imported "$(grep -c . "$STATE/last-import")")"
+    dim "$(t first_imported_keep)"
+  fi
+  setup first-run
+  migrate_keys
   [ "$i" = 2 ] && make_kho_here
   at "$(t first_title)"
   [ "$i" = 1 ] && ui_confirm --affirmative "$(t first_kho_yes)" --negative "$(t first_later)" "$(t first_kho_q)" && connect_kho
@@ -2941,7 +2960,7 @@ case ${1:-} in
   _secret_rename) ensure_index; apply_change "đổi tên secret" secret_rename_raw "$2" "$3";; _secret_delete) ensure_index; apply_change "xoá secret" secret_delete_raw "$2";;
   _load) agent_ready && load_secret "$2";; _secrets_for) ensure_index; secrets_for "$2";;
   unlock) cmd_unlock;; lock) cmd_lock "${2:-}";; secret|secrets) check_deps || exit 1; ensure_index; secret_manager;;
-  vault) case ${2:-} in init) vault_init;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) t vault_usage; echo;; esac;;
+  vault) case ${2:-} in init) vault_init && migrate_keys;; passwd) vault_passwd;; recover) vault_recover;; recovery-code) vault_recovery_code;; *) t vault_usage; echo;; esac;;
   _share_build) ensure_index; d=$2; ws=$3; shift 3; share_build "$d" "$ws" $(share_closure "$@");; _share_pack) ensure_index; pw=$2; shift 2; d=$(tmpd) || exit 1; d=$d/p; share_build "$d" 1 $(share_closure "$@") && share_pack "$d" "$pw";;
   _share_pw) share_password;; _share_words) printf '%s\n' $SHARE_WORDS;;
   _import_classify) x=$(pack_open "$2") && pack_classify "$x";;
@@ -2959,11 +2978,12 @@ case ${1:-} in
   --version|-v|version) echo "hostbook $VERSION";;
   add) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; add_host "${2:-}" "${3:-}";;
   sync) "$SELF" _sync_now; "$SELF" _header | sed -n 1p;;
-  import) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || home;;
+  import) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || { vault_init && home; };;
   doctor) doctor;; setup) setup;; update) update;; kho) check_deps || exit 1; connect_kho;; help|-h|--help) show_help;;
   *) case ${1:-} in _*) . "$LIBDIR/import.sh" || exit 1;; esac
      check_deps || exit 1
      if [ ! -d "$DIR/.git" ]; then first_run || exit 1; fi
+     vault_init || exit 1
      if [ -n "${1:-}" ]; then
        ensure_index
        if valid_name "$1" && [ $# -eq 1 ] && host_exists "$1"; then connect "$1"; exit; fi   # an exact name connects directly

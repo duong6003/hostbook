@@ -3,6 +3,7 @@
 # 60, 100 and 200 columns in vi, and again in en, in private tmux servers with isolated data. Each language x width pair
 # is a worker with its own sandbox, run in parallel, so the whole suite takes about as long as one worker.
 set -u
+unset SSH_AUTH_SOCK SSH_AGENT_PID
 command -v tmux >/dev/null || { echo 'Bỏ qua screens: chưa có tmux'; exit 0; }
 command -v python3 >/dev/null || { echo 'Bỏ qua screens: chưa có python3'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook; LANGD=$HERE/../lang
@@ -64,6 +65,7 @@ worker(){
   export PATH=$W/bin:$PATH
   printf 'Include %s/*.conf\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
   printf '# tags: prod api\n# desc: API payments\nHost shop-api\n  HostName 10.20.1.11\n  User deploy\n# tags: web\nHost shop-web\n  HostName 10.20.1.12\n  User deploy\nHost dead-box\n  HostName 10.255.255.1\n  User deploy\n' > "$HOSTBOOK_DIR/shop.conf"
+  mkdir -p "$HOSTBOOK_DIR/secrets"; for c in vault.pub vault.key.age vault.recovery.age; do printf 'fixture\n' > "$HOSTBOOK_DIR/secrets/$c"; done
   git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" config user.name test; git -C "$HOSTBOOK_DIR" config user.email test@example.com
   git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK_DIR" commit -qm fixture
   "$S" _index >/dev/null

@@ -1,0 +1,5 @@
+# Import implementation progress
+
+Task 1 in progress: vault initialization now rejects incomplete vaults, avoids repeated migration, and gates human search and imported-result view. First-run defers SSH config rewriting until the vault and import succeed; the original and backup are retained on cancellation. Key-only selection excludes password and SSH-managed options. An interim conservative source guard rejects Include and every Match directive before parsing accepted imported configuration; first-run uses an empty SSH config for vault initialization so a declined import is not parsed. Task 2 must integrate safe staged key handling and preserve supported global configuration without allowing Match exec.
+
+Verification so far: onboarding 11/11, core 150/150, platform 21/21, TUI passed. Screens had one failure in a parallel screen worker (vi, 60 columns); a full repeat passed. The accepted first-run onboarding unit stubs import_flow; it does not establish transactional import correctness. No native Windows validation has been run locally.
