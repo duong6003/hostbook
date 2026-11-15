@@ -87,6 +87,21 @@ first_run_exec_rejected_before_ssh(){ (
   ssh(){ case ${2:-} in */empty) command ssh "$@";; *) : > "$T/ssh-called"; return 0;; esac; }
   ! first_run > "$T/unsafe-result" 2>&1 && [ ! -e "$T/ssh-called" ] && [ ! -e "$T/executed" ] && grep -q '^Host original' "$HOME/.ssh/config"
 ); }
+control_whitespace_rejected_before_ssh(){ (
+  case_setup control_whitespace
+  local byte failed=0
+  for byte in 015 013 014; do
+    rm -f "$T/control-executed"
+    printf "\\$byte" > "$T/control-ssh"
+    printf 'Match exec "touch %s"\n  User bad\n' "$T/control-executed" >> "$T/control-ssh"
+    if import_config_guard "$T/control-ssh" >/dev/null 2>&1; then
+      ssh -F "$T/control-ssh" -G example >/dev/null 2>&1 || :
+      failed=1
+    fi
+    [ ! -e "$T/control-executed" ] || failed=1
+  done
+  [ "$failed" = 0 ]
+); }
 key_only_choices(){ (
   case_setup choices
   secret_names(){ printf 'password\nkey\n'; }
@@ -114,6 +129,7 @@ check accepted_first_import
 check first_run_exec_rejected_before_ssh
 check declined_import_with_include
 check match_exec_rejected
+check control_whitespace_rejected_before_ssh
 check key_only_choices
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -37,7 +37,7 @@ import_write(){ # tsv-file project(empty = infer from IP range) → write all en
 }
 # Reject Include and Match before imported config reaches OpenSSH.
 import_config_guard(){
-  awk '{line=tolower($0); sub(/^[ \t]*/, "", line); if (line ~ /^(include|match)([ \t]|=)/) bad=1} END {exit bad}' "$1" || { err "$(t err_import_unsafe)" >&2; return 1; }
+  awk '{line=tolower($0); sub(/\015$/, "", line); if (line ~ /[\001-\010\013-\037\177]/) bad=1; sub(/^[ \t]*/, "", line); if (line ~ /^(include|match)([ \t]|=)/) bad=1} END {exit bad}' "$1" || { err "$(t err_import_unsafe)" >&2; return 1; }
 }
 import_flow(){ # [file]
   local src=${1:-} raw list errs n to cnt to_dir
