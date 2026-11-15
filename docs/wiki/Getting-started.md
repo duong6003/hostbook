@@ -57,6 +57,12 @@ The secure vault encrypts SSH keys and passwords and is required before entering
 The first-run flow also lets you choose an appearance preset. You can change it later
 in **Tools → Appearance**. Press Escape during the first-run appearance selection to choose it later.
 
+## Choose login credentials
+
+The login form shows saved vault credentials immediately. Choose one, or choose **Add to vault…** to import a private key file, paste a private key, generate an Ed25519 key, or save a server password. After import, Hostbook selects the saved credential for the server. Imported files remain unchanged; managed connections use the encrypted vault copy rather than depending on the original file path. Canceling the source picker returns to the vault list.
+
+**No saved login** is available for independently managed SSH agents and hardware keys. Import flows that require a vault key omit this option and passwords.
+
 ## Add a host
 
 Press `Ctrl-A`, or run:

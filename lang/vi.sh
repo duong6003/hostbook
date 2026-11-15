@@ -165,7 +165,7 @@ L_move_yes='Chuyển %s'
 L_done_moved='Đã chuyển %s sang %s'
 
 # đăng nhập
-L_login_head='Đăng nhập bằng'
+L_login_head='Chọn thông tin đăng nhập trong vault'
 L_login_made='Đã tạo key %s. Public key (thêm vào ~/.ssh/authorized_keys trên server):'
 L_login_copied='Đã copy public key vào clipboard'
 L_done_login='Đã đổi cách đăng nhập của %s'
@@ -1178,3 +1178,15 @@ L_file_path_label='Nhập đường dẫn file hoặc thư mục'
 L_file_path_invalid='Không đọc được đường dẫn · kiểm tra rồi thử lại'
 L_multiline_newline='xuống dòng'
 L_menu_search_recovery='Không thấy kết quả? Ctrl-U xoá tìm'
+
+L_login_vault_items='Đã lưu trong vault'
+
+L_login_vault_intro='Chọn key hoặc mật khẩu đã lưu để dùng cho server này.'
+
+L_login_vault_empty='Chưa có thông tin đăng nhập phù hợp trong vault. Thêm vào vault để dùng cho server này.'
+
+L_login_add_vault='Thêm vào vault…'
+
+L_login_import_intro='Thông tin mới sẽ được mã hoá vào vault và chọn cho server này. Với key từ file, file gốc được giữ nguyên.'
+
+L_login_vault_saved='Đã lưu trong vault · đang chọn %s'

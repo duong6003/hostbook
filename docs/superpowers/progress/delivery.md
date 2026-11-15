@@ -111,3 +111,10 @@ The initial menu mixed machine roles with data sources. Setup now explains and a
 Validation: onboarding 21/21, full screen suite and TUI suite passed locally; fresh vi/en launches at 44 columns showed both choices and the password explanation. Updated clone and hub fixtures cover the new branch mapping. A short server password is accepted; a short vault password is rejected. No hosted Windows run for this revision.
 
 The isolated preview launcher passed an explicit missing SSH config to OpenSSH. Reproduced the reported “Can't open user config file” failure; an empty config returns success. The launcher now creates that private file before launch. This is a preview-fixture repair, not a relaxation of application config validation. Existing personal config and vault data were untouched.
+
+
+### Vault-first login selection
+
+The server login form opens directly on saved vault credentials. “Add to vault…” is an inline action; its compact submenu contains private-key file import, clipboard import, key generation and password creation. A key-only caller excludes passwords and external SSH. Canceling the source submenu or file picker returns to the vault list. Successful additions select the secret name returned by storage (including deduplicated keys), display confirmation, and preserve original imported files. Existing generated-key public-key instructions remain available. Server-add context is retained above the vault list.
+
+Validation: onboarding 24/24, import-keys 12/12, and the full screen suite passed locally. A private tmux smoke at 60 columns verified the vault list, add submenu, and Escape return. Preview snapshot updated. No hosted Windows check or main merge for this change. The generic file browser itself is unchanged.

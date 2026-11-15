@@ -227,6 +227,58 @@ password_prompt_policies(){ (
   [ "$(ask_new_pw "$(t vault_master)" 10 2>/dev/null)" = synthetic-password ] &&
   [ "$(wc -l < "$T/password-headers" | tr -d ' ')" = 3 ] && grep -q 'ít nhất 10' "$T/password-headers"
 ); }
+vault_login_sources(){ (
+  case_setup login_sources
+  secret_names(){ :; }
+  local source result
+  ui_menu(){
+    printf '%s\n' "$@" > "$T/vault-login-menu"
+    echo 0
+  }
+  ui_choice(){ printf '%s\n' "$@" > "$T/vault-login-sources"; echo "$source"; }
+  pick_key_file(){ echo /synthetic/key; }
+  secret_add_key(){ printf '%s\n' "$1" > "$T/vault-login-source"; echo saved-key; }
+  secret_add_password(){ echo saved-password; }
+  for source in 0 1 3; do
+    result=$(pick_login) || exit 1
+    case $source in
+      0) [ "$result" = saved-key ] && [ "$(cat "$T/vault-login-source")" = /synthetic/key ] || exit 1;;
+      1) [ "$result" = saved-key ] && [ "$(cat "$T/vault-login-source")" = clip ] || exit 1;;
+      3) [ "$result" = saved-password ] || exit 1;;
+    esac
+    grep -Fq "$(t login_add_vault)" "$T/vault-login-menu" || exit 1
+    ! grep -Fq "$(t act_key_file)" "$T/vault-login-menu" || exit 1
+  done
+  source=0
+  secret_add_key(){ return 1; }
+  ! pick_login >/dev/null 2>&1
+); }
+vault_login_cancel_returns_to_list(){ (
+  case_setup login_cancel
+  secret_names(){ echo saved-key; }
+  secret_meta(){ echo key; }; secret_users(){ :; }; secret_label(){ echo ed25519; }
+  ui_menu(){
+    if [ -e "$T/login-add-opened" ]; then echo 0; else touch "$T/login-add-opened"; echo 1; fi
+  }
+  ui_choice(){ echo 0; }
+  pick_key_file(){ return 1; }
+  secret_add_key(){ echo unexpected > "$T/login-unexpected-import"; return 1; }
+  [ "$(pick_login)" = saved-key ] && [ ! -e "$T/login-unexpected-import" ]
+); }
+vault_key_import_choices(){ (
+  case_setup login_key_only
+  secret_names(){ :; }
+  ui_menu(){ echo 0; }
+  ui_choice(){
+    [ "$#" = 4 ] && ! printf '%s\n' "$@" | grep -Fq "$(t act_pw_new)" || return 1
+    echo 1
+  }
+  secret_add_key(){ [ "$1" = clip ] && echo stored-key; }
+  [ "$(pick_login '' '' key)" = stored-key ]
+); }
+check vault_login_cancel_returns_to_list
+check vault_key_import_choices
+check vault_login_sources
 check password_prompt_policies
 check guided_setup_choices
 check machine_picker_controls

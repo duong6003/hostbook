@@ -165,7 +165,7 @@ L_move_yes='Move %s'
 L_done_moved='Moved %s to %s'
 
 # login
-L_login_head='Log in with'
+L_login_head='Choose a login from the vault'
 L_login_made='Created key %s. Public key (add it to ~/.ssh/authorized_keys on the server):'
 L_login_copied='Public key copied to the clipboard'
 L_done_login='Changed how %s logs in'
@@ -1178,3 +1178,15 @@ L_file_path_label='Enter a file or folder path'
 L_file_path_invalid='Cannot read path · check it and try again'
 L_multiline_newline='new line'
 L_menu_search_recovery='No matches? Ctrl-U clears search'
+
+L_login_vault_items='Saved in the vault'
+
+L_login_vault_intro='Choose a saved key or password for this server.'
+
+L_login_vault_empty='No matching login is saved in the vault yet. Add one to use with this server.'
+
+L_login_add_vault='Add to vault…'
+
+L_login_import_intro='The new login will be encrypted in the vault and selected for this server. Imported key files are kept unchanged.'
+
+L_login_vault_saved='Saved in vault · selecting %s'

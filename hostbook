@@ -1033,29 +1033,44 @@ secret_add_password(){ # [name] [password] → print the name
 }
 # Choose a login method for a server. Print the secret name (empty = SSH handles it). Return 1 on cancellation.
 pick_login(){ # [suggested secret] [reason] [key: require a stored key]
-  local sug=${1:-} why=${2:-} kind=${3:-} items=() keys=() n i c f nm d
+  local sug=${1:-} why=${2:-} kind=${3:-} items=() keys=() n i c f nm d head
+  local UI_AT=$UI_AT base=$UI_AT
   ensure_index
-  for n in $(secret_names | awk -v s="$sug" '$0==s'; secret_names | awk -v s="$sug" '$0!=s'); do
-    [ "$kind" != key ] || [ "$(secret_meta "$n" type)" = key ] || continue
-    [ ${#keys[@]} -eq 0 ] && items+=("#$(t sec_secrets)")
-    c=$(secret_users "$n" | grep -c .); d=$(secret_label "$n")
-    if [ "$n" = "$sug" ] && [ -n "$why" ]; then d="$d · $why"; else if [ "$c" = 0 ]; then d="$d · $(t sc_unused)"; else d="$d · $(t sc_users "$c")"; fi; [ "$n" = "$sug" ] && d="$d · $(t current)"; fi
-    items+=("$n|$d"); keys+=("s:$n"); done
-  items+=("#$(t sec_add)" "$(t act_key_paste)|$(t act_key_paste_hint)" "$(t act_key_file)" "$(t act_key_new)|ed25519")
-  keys+=(clip file gen)
-  if [ "$kind" != key ]; then items+=("$(t act_pw_new)" "#$(t sec_other)" "$(t act_no_login)|$(t act_no_login_hint)"); keys+=(pass none); fi
-  i=$(ui_menu "$(t login_head)" "${items[@]}") || return 1
-  case ${keys[$i]} in clip) n=act_key_paste;; file) n=act_key_file;; gen) n=act_key_new;; pass) n=act_pw_new;; *) n=;; esac
-  [ -z "$n" ] || UI_AT="$UI_AT|$(t "$n")"   # this runs inside $(...), so the longer breadcrumb does not leak out
-  case ${keys[$i]} in
-    s:*) echo "${keys[$i]#s:}";;
-    clip) secret_add_key clip;;
-    file) f=$(pick_key_file) || return 1; secret_add_key "$f";;
-    gen) vault_init || return 1; nm=$(ask_secret_name "") || return 1; secret_add_key gen "$nm" >/dev/null || return 1
-         { shown; ok "$(t login_made "$nm")"; cat "$SEC/$nm.pub"; cat "$SEC/$nm.pub" | copy && dim "$(t login_copied)"; pause "$(t pause_continue)"; } >&2; echo "$nm";;
-    pass) secret_add_password;;
-    none) echo;;
-  esac
+  while :; do
+    UI_AT=$base; items=(); keys=()
+    for n in $(secret_names | awk -v s="$sug" '$0==s'; secret_names | awk -v s="$sug" '$0!=s'); do
+      [ "$kind" != key ] || [ "$(secret_meta "$n" type)" = key ] || continue
+      [ ${#keys[@]} -eq 0 ] && items+=("#$(t login_vault_items)")
+      c=$(secret_users "$n" | grep -c .); d=$(secret_label "$n")
+      if [ "$n" = "$sug" ] && [ -n "$why" ]; then d="$d · $why"; else if [ "$c" = 0 ]; then d="$d · $(t sc_unused)"; else d="$d · $(t sc_users "$c")"; fi; [ "$n" = "$sug" ] && d="$d · $(t current)"; fi
+      items+=("$n|$d"); keys+=("s:$n"); done
+    head=$(t login_vault_intro)
+    [ ${#keys[@]} -gt 0 ] || head=$(t login_vault_empty)
+    items+=("$(t login_add_vault)"); keys+=(add)
+    if [ "$kind" != key ]; then items+=("#$(t sec_other)" "$(t act_no_login)|$(t act_no_login_hint)"); keys+=(none); fi
+    i=$(UI_HEAD="${UI_HEAD:+$UI_HEAD$NL}$head" ui_menu "$(t login_head)" "${items[@]}") || return 1
+    case ${keys[$i]} in
+      s:*) echo "${keys[$i]#s:}"; return 0;;
+      none) echo; return 0;;
+      add) ;;
+      *) return 1;;
+    esac
+    UI_AT="$base|$(t login_add_vault)"
+    items=("$(t act_key_file)" "$(t act_key_paste)|$(t act_key_paste_hint)" "$(t act_key_new)|ed25519"); keys=(file clip gen)
+    if [ "$kind" != key ]; then items+=("$(t act_pw_new)"); keys+=(pass); fi
+    i=$(UI_HEAD="$(t login_import_intro)" ui_choice "$(t login_add_vault)" "${items[@]}") || continue
+    case ${keys[$i]} in
+      file) f=$(pick_key_file) || continue; nm=$(secret_add_key "$f") || return 1;;
+      clip) nm=$(secret_add_key clip) || return 1;;
+      gen) vault_init || return 1; nm=$(ask_secret_name "") || continue
+           nm=$(secret_add_key gen "$nm") || return 1
+           { shown; ok "$(t login_made "$nm")"; cat "$SEC/$nm.pub"; cat "$SEC/$nm.pub" | copy && dim "$(t login_copied)"; pause "$(t pause_continue)"; } >&2;;
+      pass) nm=$(secret_add_password) || return 1;;
+      *) return 1;;
+    esac
+    ok "$(t login_vault_saved "$nm")" >&2
+    printf '%s\n' "$nm"; return 0
+  done
 }
 # Move local key files referenced by servers into the vault and rewrite the config.
 # Only include explicit IdentityFile entries in .conf files, not defaults from "ssh -G"; the key file must exist.
