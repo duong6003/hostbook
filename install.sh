@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Install hostbook (macOS / Linux). Run again at any time to update.
-#   git clone git@github.com:duong6003/hostbook.git ~/.local/share/hostbook && bash ~/.local/share/hostbook/install.sh
-#   (the repository is private; the curl | bash one-liner works only while it is public)
+#   curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
 # No sudo required: everything goes into ~/.local. Download official fzf and gum releases (with checksum verification)
 # when missing or too old (Ubuntu apt only provides fzf 0.44 and has no gum package).
 set -eu
