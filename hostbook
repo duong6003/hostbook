@@ -817,6 +817,7 @@ sync_ui(){ # ^s and Tools → Sync now: a progress screen, then a flash with the
 SEC=$DIR/secrets
 KEY_TTL=${HOSTBOOK_KEY_TTL:-}; [ -n "$KEY_TTL" ] || { cfg key_ttl 8h KEY_TTL; duration "$KEY_TTL" KEY_TTL; }
 vault_exists(){ [ -f "$SEC/vault.pub" ]; }
+vault_started(){ local f; [ ! -L "$SEC" ] || return 0; for f in "$SEC/vault.pub" "$SEC/vault.key.age" "$SEC/vault.recovery.age"; do [ ! -e "$f" ] && [ ! -L "$f" ] || return 0; done; return 1; }
 vault_id(){ sha256 < "$SEC/vault.pub" | cut -c1-8; }
 kc_backend(){
   if is_windows; then echo windows; return; fi
@@ -870,7 +871,7 @@ recovery_new(){ od -An -N20 -tu1 /dev/urandom | awk 'BEGIN{s="0123456789ABCDEFGH
 recovery_fmt(){ echo "HB-$(printf '%s' "$1" | sed 's/..../&-/g; s/-$//')"; }
 recovery_norm(){ printf '%s' "$1" | tr 'a-z' 'A-Z' | sed 's/^HB-//' | tr -d ' -'; }
 vault_create(){ # master-password → create the vault and print the recovery code
-  local pw=$1 id rc; private_dir "$DIR" || return 1; private_dir "$SEC" || return 1
+  local pw=$1 id rc; [ ! -L "$SEC" ] || return 1; private_dir "$DIR" || return 1; private_dir "$SEC" || return 1
   id=$(age-keygen 2>/dev/null) || return 1
   printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub" || return 1
   printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age" || return 1
@@ -900,7 +901,8 @@ show_recovery(){ # code [finished-step line]: a plain text screen, not a frame, 
 }
 # Create the secret vault if absent. Print everything to stderr because this is often called inside $(...).
 vault_init(){
-  if [ -e "$SEC/vault.pub" ] || [ -L "$SEC/vault.pub" ] || [ -e "$SEC/vault.key.age" ] || [ -L "$SEC/vault.key.age" ] || [ -e "$SEC/vault.recovery.age" ] || [ -L "$SEC/vault.recovery.age" ]; then
+  [ ! -L "$SEC" ] || { err "$(t err_vault_partial)" >&2; return 1; }
+  if vault_started; then
     [ -s "$SEC/vault.pub" ] && [ -s "$SEC/vault.key.age" ] && [ -s "$SEC/vault.recovery.age" ] && return 0
     err "$(t err_vault_partial)" >&2; return 1
   fi
@@ -962,8 +964,8 @@ key_prepare(){
   ssh-keygen -lf "$f" | awk '{ t=$NF; gsub(/[()]/,"",t); print $2 "\t" tolower(t) }'
 }
 secret_write_key(){ # name key-file fingerprint type
-  ssh-keygen -y -f "$2" > "$SEC/$1.pub" && chmod 600 "$SEC/$1.pub"
-  printf 'type=key\nfp=%s\nkeytype=%s\ncreated=%s\n' "$3" "$4" "$(date +%F)" > "$SEC/$1.meta"
+  ssh-keygen -y -f "$2" > "$SEC/$1.pub" && chmod 600 "$SEC/$1.pub" || return 1
+  printf 'type=key\nfp=%s\nkeytype=%s\ncreated=%s\n' "$3" "$4" "$(date +%F)" > "$SEC/$1.meta" || return 1
   secret_enc < "$2" > "$SEC/$1.age"
 }
 ask_secret_name(){ # default [preview] [own name to leave out of the taken list] → print a valid, unused name
@@ -978,7 +980,7 @@ ask_secret_name(){ # default [preview] [own name to leave out of the taken list]
 }
 # Add a key to the vault. Print the secret name to stdout (the existing name if the fingerprint is already stored).
 secret_add_key(){ # source(clip|gen|path) [name] [replace]
-  local src=$1 name=${2:-} replace=${3:-} d f info fp kt dup def oldpub=""
+  local src=$1 name=${2:-} replace=${3:-} d f info fp kt dup def ext oldpub=""
   vault_init || return 1
   d=$(tmpd) || return 1; f=$d/key
   case $src in
@@ -998,10 +1000,16 @@ secret_add_key(){ # source(clip|gen|path) [name] [replace]
   if [ -n "$replace" ]; then secret_exists "$name" || return 1; cp "$SEC/$name.pub" "$d/old.pub" 2>/dev/null && oldpub=$d/old.pub
   elif [ -n "$name" ]; then valid_secret_name "$name" && ! secret_exists "$name" || { err "$(t err_secret_bad "$name")" >&2; rm -rf "$d"; return 1; }
   else name=$(ask_secret_name "$def") || { rm -rf "$d"; return 1; }; fi
-  secret_write_key "$name" "$f" "$fp" "$kt" || { rm -rf "$d"; return 1; }
+  if [ -n "${IMPORT_KEY_MODE:-}" ]; then
+    [ -z "$replace" ] || { rm -rf "$d"; return 1; }
+    for ext in pub meta age; do [ ! -e "$SEC/$name.$ext" ] && [ ! -L "$SEC/$name.$ext" ] || { rm -rf "$d"; return 1; }; done
+  fi
+  secret_write_key "$name" "$f" "$fp" "$kt" || { [ -z "${IMPORT_KEY_MODE:-}" ] || import_discard_secret "$name"; rm -rf "$d"; return 1; }
   [ -n "$oldpub" ] && ssh-add -q -d "$oldpub" 2>/dev/null
   rm -rf "$d"
-  save_and_sync "$( if [ -n "$replace" ]; then t done_secret_key_replaced "$name"; else t done_secret_added "$name"; fi)"
+  if [ -n "${IMPORT_KEY_MODE:-}" ]; then
+    import_commit_secret "$name" || { import_discard_secret "$name"; return 1; }
+  else save_and_sync "$( if [ -n "$replace" ]; then t done_secret_key_replaced "$name"; else t done_secret_added "$name"; fi)"; fi
   echo "$name"
 }
 secret_add_password(){ # [name] [password] → print the name
@@ -2871,7 +2879,7 @@ update(){
   else dim "$(t up_nogit "$REPO_URL")"; fi
 }
 first_run(){ # ~/ssh-hosts does not exist yet
-  local i m url n initial=
+  local i m url n initial= newcfg backup
   set_language "$(t set_language)" || return 1   # first: the language, preselected from the locale
   at "$(t first_title)"
   i=$(UI_HEAD="$CU$CB$(t first_welcome)$C0"$'\n'"$(t first_none)" ui_menu "$(t first_how)" "$(t act_first_remote)|$(t act_first_remote_hint)" "$(t act_first_new)|$(t act_first_new_hint)" "$(t act_first_hub)|$(t act_first_hub_hint)") || return 1
@@ -2882,7 +2890,7 @@ first_run(){ # ~/ssh-hosts does not exist yet
     *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
        ensure_git_identity || return 1
        printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
-       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config"; then
+       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host([[:space:]]|=)+[^*[:space:]]' "$HOME/.ssh/config"; then
          initial=$(tmpd) || return 1
          cp "$HOME/.ssh/config" "$initial/original" || return 1
          awk 'tolower($1)=="include" && $2=="~/ssh-hosts/*.conf" && NF==2 {next} {print}' "$initial/original" > "$initial/import" || return 1
@@ -2895,15 +2903,21 @@ first_run(){ # ~/ssh-hosts does not exist yet
     SSHCFG="$initial/empty" vault_init || return 1
   else vault_init || return 1; fi
   if [ -n "$initial" ] && ui_confirm --affirmative "$(t first_import_yes)" --negative "$(t first_import_no)" "$(t first_import_q)"; then
-    import_config_guard "$initial/import" || return 1
-    import_flow "$initial/import" || return 1
+    [ ! -L "$HOME/.ssh/config" ] || { err "$(t err_import_config_symlink)" >&2; return 1; }
+    import_config_guard "$initial/import" && first_import_order_guard "$initial/import" || return 1
+    case $DIR in *'"'*|*'\'*|*$'\n'*) err "$(t err_import_config_path)" >&2; return 1;; esac
     mkdir -p "$initial/split" || return 1
-    split_config "$initial/import" "$initial/split" "$initial/global" >/dev/null || return 1
-    { printf 'Include ~/ssh-hosts/*.conf\n'; cat "$initial/global"; } > "$HOME/.ssh/config.new" || return 1
-    ssh -F "$HOME/.ssh/config.new" -G hostbook-validate-probe >/dev/null 2>&1 || { rm -f "$HOME/.ssh/config.new"; return 1; }
-    cp "$initial/original" "$HOME/.ssh/config.bak" || return 1
-    chmod 600 "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config" || return 1
+    split_config "$initial/import" "$initial/split" "$initial/global" "$initial/ordered" "$initial/header" >/dev/null || return 1
+    { cat "$initial/header"; printf 'Include %s\n' "$(ssh_path "$DIR/*.conf")"; cat "$initial/global"; } > "$initial/validate" || return 1
+    ssh -F "$initial/validate" -G hostbook-validate-probe >/dev/null 2>&1 || return 1
+    newcfg=$(mktemp "$HOME/.ssh/.hostbook-config.XXXXXX") || return 1
+    { cat "$initial/header"; printf 'Include ~/ssh-hosts/*.conf\n'; cat "$initial/global"; } > "$newcfg" && chmod 600 "$newcfg" || { rm -f "$newcfg"; return 1; }
+    IMPORT_KEEP_GLOBAL=1 import_flow "$initial/import" || { rm -f "$newcfg"; return 1; }
+    cmp -s "$initial/original" "$HOME/.ssh/config" || { rm -f "$newcfg"; return 1; }
+    backup=$(mktemp "$HOME/.ssh/config.bak.XXXXXX") || { rm -f "$newcfg"; return 1; }
+    cp -p "$initial/original" "$backup" && mv "$newcfg" "$HOME/.ssh/config" || { rm -f "$newcfg"; return 1; }
     ok "$(t first_imported "$(grep -c . "$STATE/last-import")")"
+    dim "$(t first_imported_backup "$backup")"
     dim "$(t first_imported_keep)"
   fi
   setup first-run
@@ -2954,7 +2968,7 @@ case ${1:-} in
   _askpass) cmd_askpass "${2:-}";;
   _run) ensure_index; h=$2; shift 2; prepare_login "$h" || exit 1; ssh_login "$h" ${HB_LOG:+-v -E "$HB_LOG"} -o ConnectTimeout=6 "$h" "$@" </dev/null;;
   _secret_replace) ensure_index; secret_replace "$2" "$3" "${4:-yes}";;
-  _vault_init) vault_exists || vault_create "$2";; _vault_recover) vault_recover "$2" "$3";; _vault_id) vault_identity >/dev/null && echo ok;;
+  _vault_init) if vault_started; then vault_init; else vault_create "$2"; fi;; _vault_recover) vault_recover "$2" "$3";; _vault_id) vault_identity >/dev/null && echo ok;;
   _secret_add_key) secret_add_key "$2" "${3:-}" "${4:-}";; _secret_add_password) secret_add_password "$2" "$3";; _secret_get) secret_get "$2";;
   _set_host_secret) ensure_index; apply_change "đổi đăng nhập" set_host_secret "$2" "${3:-}";; _migrate) migrate_keys_raw;;
   _secret_rename) ensure_index; apply_change "đổi tên secret" secret_rename_raw "$2" "$3";; _secret_delete) ensure_index; apply_change "xoá secret" secret_delete_raw "$2";;
@@ -2964,8 +2978,13 @@ case ${1:-} in
   _share_build) ensure_index; d=$2; ws=$3; shift 3; share_build "$d" "$ws" $(share_closure "$@");; _share_pack) ensure_index; pw=$2; shift 2; d=$(tmpd) || exit 1; d=$d/p; share_build "$d" 1 $(share_closure "$@") && share_pack "$d" "$pw";;
   _share_pw) share_password;; _share_words) printf '%s\n' $SHARE_WORDS;;
   _import_classify) x=$(pack_open "$2") && pack_classify "$x";;
-  _import_apply) ensure_index; x=$(pack_open "$2") || exit 1; { ls "$x"/secrets/*.meta >/dev/null 2>&1 && ! vault_exists; } && { vault_create "$HOSTBOOK_MASTER" >/dev/null; }
-                 pack_classify "$x" > "$x/classes"; pack_decide "$x" "$3" > "$x/decisions"; apply_change "Nhập gói" pack_apply_raw "$x" "$x/decisions";;
+  _import_apply) ensure_index; x=$(pack_open "$2") || exit 1
+                 pack_validate_secrets "$x" || exit 1
+                 if ls "$x"/secrets/*.meta >/dev/null 2>&1; then
+                   if vault_started; then vault_init || exit 1
+                   else vault_create "$HOSTBOOK_MASTER" >/dev/null || exit 1; fi
+                 fi
+                 pack_classify "$x" > "$x/classes" || exit 1; cp "$IDX" "$x/base-index" && pack_state_signature > "$x/base-state" || exit 1; pack_decide "$x" "$3" > "$x/decisions"; apply_import_package "$x" "$x/decisions";;
   _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/check/run.tsv";;
   share) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then share_flow $(search_hosts "$*"); else share_flow $(cut -f1 "$IDX"); fi;;
   check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi; exit $?;;
@@ -2973,7 +2992,7 @@ case ${1:-} in
   _suggest_host) suggest "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-}";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;
   _rename) ensure_index; apply_change "đổi tên" rename_host_raw "$2" "$3";; _move) ensure_index; apply_change "chuyển" move_host_raw "$2" "$3";;
-  _import_parse) import_parse;; _import_write) ensure_index; apply_change "nhập" import_write "$2" "${3:-}";;
+  _import_parse) import_parse;; _import_write) ensure_index; import_write "$2" "${3:-}";;
   _split) split_config "$2" "$3" "$4";; _resolve) resolve_conflict "$2";; _kho_addr) kho_addr;; _block) shift; host_block "$@";; _validate) validate;;
   --version|-v|version) echo "hostbook $VERSION";;
   add) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; add_host "${2:-}" "${3:-}";;

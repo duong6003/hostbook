@@ -51,7 +51,12 @@ partial_vault(){ (
   case_setup partial
   mkdir -p "$SEC"; printf 'existing recipient\n' > "$SEC/vault.pub"
   ask_new_pw(){ echo unexpected > "$STATE/unexpected"; return 1; }
-  ! vault_init > "$T/partial-result" 2>&1 && [ "$(cat "$SEC/vault.pub")" = 'existing recipient' ] && [ ! -e "$STATE/unexpected" ]
+  ! vault_init > "$T/partial-result" 2>&1 && ! bash "$HERE/../hostbook" _vault_init "$HOSTBOOK_MASTER" >/dev/null 2>&1 && [ "$(cat "$SEC/vault.pub")" = 'existing recipient' ] && [ ! -e "$SEC/vault.key.age" ] && [ ! -e "$STATE/unexpected" ]
+); }
+symlink_vault_rejected(){ (
+  case_setup symlink_vault
+  mkdir -p "$DIR" "$T/outside-vault"; ln -s "$T/outside-vault" "$SEC"
+  ! bash "$HERE/../hostbook" _vault_init "$HOSTBOOK_MASTER" >/dev/null 2>&1 && [ -z "$(ls -A "$T/outside-vault")" ]
 ); }
 failed_vault_creation(){ (
   case_setup create_failure
@@ -72,7 +77,30 @@ accepted_first_import(){ (
   cp "$HOME/.ssh/config" "$T/accepted-original"; printf 'older backup\n' > "$HOME/.ssh/config.bak"
   ui_confirm(){ case "$*" in *"$(t first_import_q)"*) return 0;; *) return 1;; esac; }
   import_flow(){ ! grep -q '^Include' "$1" || return 1; printf 'original\n' > "$STATE/last-import"; }
-  first_run > "$T/import-accept-result" 2>&1 && cmp "$T/accepted-original" "$HOME/.ssh/config.bak" && grep -q '^Host \*' "$HOME/.ssh/config" && ! grep -q '^Host original' "$HOME/.ssh/config"
+  first_run > "$T/import-accept-result" 2>&1 && [ "$(cat "$HOME/.ssh/config.bak")" = 'older backup' ] && cmp "$T/accepted-original" "$HOME/.ssh/"config.bak.* && grep -q '^Host \*' "$HOME/.ssh/config" && ! grep -q '^Host original' "$HOME/.ssh/config"
+); }
+real_first_import_with_key(){ (
+  case_setup first_key
+  ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/key file" || exit 1
+  cp "$HOME/.ssh/key file" "$T/first-original-key"
+  printf 'Host first-host\n  HostName 192.0.2.20\n  IdentityFile "%s"\n' "$HOME/.ssh/key file" > "$HOME/.ssh/config"
+  cp "$HOME/.ssh/config" "$T/first-original-config"
+  ui_menu(){ case "$1" in "$(t first_how)") echo 1;; *'Key trong cấu hình SSH:'*) echo 0;; *) echo 2;; esac; }
+  ui_confirm(){ case "$*" in *"$(t first_import_q)"*|*"$(t impf_ask)"*) return 0;; *) return 1;; esac; }
+  ask_secret_name(){ echo first-key; }
+  first_run > "$T/first-key-result" 2>&1 || exit 1
+  cmp "$T/first-original-key" "$HOME/.ssh/key file" && cmp "$T/first-original-config" "$HOME/.ssh/"config.bak.* && [ -s "$SEC/first-key.age" ] && grep -q '^# secret: first-key' "$DIR/imported.conf" && ! grep -Fq "$HOME/.ssh/key file" "$DIR/imported.conf"
+); }
+global_precedence_preserved(){ (
+  case_setup precedence
+  printf 'User global-user\nHost target\n  HostName 192.0.2.1\n  User host-user\nHost *\n  ServerAliveInterval 30\n' > "$HOME/.ssh/config"
+  before=$(ssh -F "$HOME/.ssh/config" -G target 2>/dev/null | awk '$1=="user" {print $2}')
+  ui_confirm(){ case "$*" in *"$(t first_import_q)"*|*"$(t impf_ask)"*) return 0;; *) return 1;; esac; }
+  ui_menu(){ case "$1" in "$(t first_how)") echo 1;; *) echo 2;; esac; }
+  first_run > "$T/precedence-result" 2>&1 || exit 1
+  awk -v d="$DIR" '$1=="Include" && $2=="~/ssh-hosts/*.conf" {printf "Include \"%s/*.conf\"\n",d; next} {print}' "$HOME/.ssh/config" > "$T/precedence-config"
+  after=$(ssh -F "$T/precedence-config" -G target 2>/dev/null | awk '$1=="user" {print $2}')
+  [ "$before" = global-user ] && [ "$after" = "$before" ] && grep -q '^Host \*' "$HOME/.ssh/config"
 ); }
 declined_import_with_include(){ (
   case_setup declined_include
@@ -102,6 +130,25 @@ control_whitespace_rejected_before_ssh(){ (
   done
   [ "$failed" = 0 ]
 ); }
+canceled_vault_entry_routes(){ (
+  case_setup entry_routes
+  mkdir -p "$DIR"; git -C "$DIR" init -q
+  printf 'Host named\n  HostName 192.0.2.1\n' > "$DIR/hosts.conf"
+  awk -v marker="$T/route-entered" '
+    /^# ---------- entry point ----------/ {
+      print "check_deps(){ :; }"
+      print "ask_new_pw(){ return 1; }"
+      print "home(){ : > \"" marker "\"; }"
+      print "connect(){ : > \"" marker "\"; }"
+      print "import_flow(){ ONLY_NEXT=$STATE/last-import; }"
+    }
+    {print}
+  ' "$HERE/../hostbook" > "$T/route-hostbook"
+  ! bash "$T/route-hostbook" named >/dev/null 2>&1 && [ ! -e "$T/route-entered" ] || exit 1
+  ! bash "$T/route-hostbook" search >/dev/null 2>&1 && [ ! -e "$T/route-entered" ] || exit 1
+  ! bash "$T/route-hostbook" import dummy >/dev/null 2>&1 && [ ! -e "$T/route-entered" ] || exit 1
+  bash "$T/route-hostbook" _header >/dev/null 2>&1 && [ ! -e "$T/route-entered" ]
+); }
 key_only_choices(){ (
   case_setup choices
   secret_names(){ printf 'password\nkey\n'; }
@@ -123,13 +170,17 @@ check new_install
 check canceled_install
 if [ -d "$T/new/hosts/secrets" ]; then check cloned_vault; else fail=$((fail+1)); echo 'FAIL  cloned_vault: new-install fixture has no vault'; fi
 check partial_vault
+check symlink_vault_rejected
 check failed_vault_creation
 check canceled_first_import
 check accepted_first_import
+check real_first_import_with_key
+check global_precedence_preserved
 check first_run_exec_rejected_before_ssh
 check declined_import_with_include
 check match_exec_rejected
 check control_whitespace_rejected_before_ssh
+check canceled_vault_entry_routes
 check key_only_choices
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
