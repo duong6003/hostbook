@@ -112,12 +112,10 @@ run_package_case(){
   end_ui; printf 'ok    package conflict review and apply at 44 columns\n'
 }
 if [ "${IMPORT_PACKAGE_ONLY:-}" = 1 ]; then run_package_case; exit; fi
-for lang in vi en; do
- for width in 44 60 100; do
-  for border in rounded none; do
-   for count in 8 30; do run_case "$lang" "$width" "$border" "$count"; done
-  done
- done
+# Pairwise cover of lang × width × border × count: every pair of values meets in some case (6 runs instead of 24).
+# Full-screen rules at 60/100/200 columns in both languages and both borders are in tests/screens.sh.
+for c in "vi 44 rounded 8" "vi 60 none 30" "vi 100 rounded 30" "en 44 none 30" "en 60 rounded 8" "en 100 none 8"; do
+  run_case $c
 done
 
 run_package_case

@@ -23,7 +23,10 @@ case_setup(){
   show_recovery(){ echo shown > "$STATE/recovery-shown"; }
 }
 pass=0; fail=0
-check(){ local rc; if "$@"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else rc=$?; if [ "$rc" = 77 ]; then printf 'SKIP  %s (symlinks unavailable)\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; fi; }
+check(){ local rc
+  # ONBOARDING_ONLY="a b": run only these checks (the Windows job keeps the file-system and vault paths; Unix runs all)
+  case " ${ONBOARDING_ONLY:-$1} " in *" $1 "*) ;; *) return 0;; esac
+  if "$@"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else rc=$?; if [ "$rc" = 77 ]; then printf 'SKIP  %s (symlinks unavailable)\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; fi; }
 new_install(){ (
   case_setup new
   first_run > "$T/new-result" 2>&1 || exit 1
