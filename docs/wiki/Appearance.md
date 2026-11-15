@@ -6,22 +6,36 @@ Open appearance settings directly:
 hostbook settings
 ```
 
-Or use `Ctrl-O` -> `Giao diện` in the app. Enter saves a previewed choice; Esc cancels.
+Or use `Ctrl-O` → **Appearance** (`Giao diện`) in the app. The menu lists **Presets**, **List style**,
+**Frame**, **Detail pane**, **Card dividers**, **Icons**, **Colour theme**, **Language**, **Create your own
+theme…** and **Reset to defaults** (Cards and the hostbook theme). Each choice previews live; Enter saves it
+and Esc cancels.
 
 ## Layout and color
 
-Choose two-line cards, a compact list, or a minimal name/address view. Borders,
-separators, preview position, and icons can be adjusted independently. Ctrl-T switches
-cards/compact; Ctrl-/ toggles the details pane. Preview hides when there is not enough
-horizontal space.
+List style is **Two-line cards**, **One-line rows**, or **Name and IP only**. Frame
+(rounded, sharp, bold, double, none), detail pane position (right, bottom, hidden), card dividers, and
+icons can be adjusted independently. Ctrl-T switches cards/compact; Ctrl-/ toggles the details pane.
+The preview hides when there is not enough horizontal space.
 
-Presets include cards, compact, minimal, Dracula, Nord, light, and high contrast.
-Color themes also include Gruvbox, Solarized dark/light, and terminal ANSI colors.
+Presets: Cards (default), Compact, Minimal, Dracula, Nord compact, Light, High contrast.
+Colour themes: hostbook, dracula, nord, gruvbox, solarized-dark, solarized-light, light,
+high-contrast, and terminal (your terminal's ANSI colors).
 Unicode and ASCII icons work without Nerd Fonts; the Nerd Font option requires a
 compatible terminal font.
 
+`NO_COLOR=1 hostbook` runs without color.
+
+## Language
+
+The interface is English or Vietnamese. It is asked on first run and changed in
+**Appearance → Language** (`Language / Ngôn ngữ`); the choice is saved as `lang` in the config.
+Resolution order: `HOSTBOOK_LANG` (`en` or `vi`, for one run), then `lang` in the config, then the
+locale (`vi*` selects Vietnamese, anything else English). Installs that predate languages stay on
+Vietnamese until you change it. Text coming from Git, SSH and other tools is shown as is, not translated.
+
 ```bash
-NO_COLOR=1 hostbook
+HOSTBOOK_LANG=en hostbook
 ```
 
 ## Terminal backgrounds
@@ -40,13 +54,14 @@ The file is `${XDG_CONFIG_HOME:-$HOME/.config}/hostbook/config`. It is local to 
 machine and is not synchronized with hosts.
 
 ```ini
+lang = en                 # en, vi
 list = cards              # cards, compact, minimal
 border = rounded          # rounded, sharp, bold, double, none
 preview = right           # right, bottom, hidden
 separator = on            # on, off
 icons = unicode           # unicode, ascii, nerd
 theme = hostbook
-key_ttl = 8h              # Agent key lifetime; hours, minutes, or seconds
+key_ttl = 8h              # Agent key lifetime; hours, minutes, or seconds (HOSTBOOK_KEY_TTL, in seconds, overrides)
 connect_timeout = 15      # Seconds; HOSTBOOK_CONNECT_TIMEOUT takes precedence
 ```
 
@@ -56,8 +71,8 @@ not executed as a shell script.
 
 ## Custom themes
 
-Choose `Tự tạo theme…`. hostbook creates `themes/<name>.theme`, opens `$EDITOR`,
-validates colors, and previews the result before use. Names support letters, numbers,
+Choose **Create your own theme…** (`Tự tạo theme…`). hostbook creates `themes/<name>.theme`
+from the current theme, opens `$EDITOR`, validates colors, and previews the result before use. Names support letters, numbers,
 hyphens, and underscores.
 
 Theme fields: `accent`, `title`, `dim`, `ok`, `warn`, `err`, `border`, `sel_bg`,

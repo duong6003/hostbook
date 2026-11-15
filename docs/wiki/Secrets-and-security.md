@@ -1,28 +1,54 @@
 # Secrets and security
 
-## Reusable credentials
+## The vault and reusable credentials
 
 The secret vault holds named SSH keys and passwords, encrypted with
-[age](https://github.com/FiloSottile/age). A credential can be reused across hosts;
-key fingerprints help avoid duplicate imports.
+[age](https://github.com/FiloSottile/age). It is created on first run (see
+[Getting started](Getting-started)): you set a **vault protection password** (the master password,
+at least ten characters) and save a **recovery code** that is shown once. This password is not a
+server login password. A credential can be reused across hosts; key fingerprints prevent duplicate
+imports.
 
-Use `Ctrl-O` -> `Secret`, or:
+Use `Ctrl-O` → **Secrets** (`Secret`), or:
 
 ```bash
 hostbook secrets
 ```
 
-You can import or generate keys, replace credentials, rename entries, copy public
-keys, inspect usage, and remove credentials after reviewing affected hosts.
-When adding a host, `Đăng nhập bằng` selects an existing credential or creates one.
-Existing external agents and hardware-backed keys can use the option that lets SSH
-manage authentication without storing a new secret.
+The screen opens on saved entries and an **Add to vault…** action, which offers a key from a
+file, a pasted key, a new generated key, or a server password. Original key files are never
+changed or relied on: the vault keeps an encrypted copy, and canceling a source returns to the
+vault list. For each secret you can show the servers that use it, copy the public key, replace the
+key (from the clipboard, a file, or a new one), edit contents, change a password, rename it, or
+delete it. After replacing a key hostbook can install the new key on the servers that use it and,
+separately, remove the old one; removal cannot be undone automatically. **Secret vault** in the same
+menu holds the master password, recovery code, and lock actions, and **Move this machine's keys
+into the vault** moves keys that servers still read from files.
 
-During SSH-config import, an external private key is saved to the vault only after you confirm it. The original key file is left in place. A separately confirmed key save is committed independently and remains saved if you later cancel the host import. Imported sources with unsupported inherited credentials, executable Match rules, or Include directives are rejected before SSH examines them. Share bundles are validated before extraction and reject archive links.
+Secret names start with a letter or digit, use lowercase letters, digits and `. _ -`, are at most
+40 characters, and must not be `vault` or start with `vault.` (those names are reserved).
+
+Deleting a secret shows which servers lose their saved login and that the servers themselves stay.
+If a server tagged `prod` uses it, you must type the exact secret name before it is deleted.
+
+When adding or editing a host, the login step lists vault credentials first, then **Add to vault…**.
+**No saved login** lets SSH use external agents and hardware-backed keys without storing a secret.
+
+During first-run SSH-config migration, an external private key is saved to the vault only after you
+confirm it; the original file stays. A key saved that way is committed independently and remains if you
+later cancel the host import. Imported sources with unsupported inherited credentials, executable
+Match rules, or Include directives are rejected before SSH examines them.
+
+## Share packages
+
+Only encrypted Hostbook packages (`.hbshare`) can be imported. A package is encrypted with its own
+password and is validated before extraction: unexpected content and archive links are rejected, and
+nothing reaches your hosts or vault until you finish the review. Updating or replacing a `prod`
+server from a package requires typing its name. See [Sync and sharing](Sync-and-sharing).
 
 ## Unlocking and external SSH clients
 
-The vault identity is protected by a master password. A recovery code is shown when
+The vault identity is protected by the master password. The recovery code is shown when
 the vault is created; save it securely. Encrypted credentials sync with the host list.
 
 ```bash
@@ -63,18 +89,20 @@ This is not a guarantee that unlocked secrets never exist in memory or runtime f
 ## Master password and recovery
 
 ```bash
-hostbook vault passwd
-hostbook vault recover
+hostbook vault passwd         # change the master password
+hostbook vault recover        # forgot it: use the recovery code, then set a new password
+hostbook vault recovery-code  # create a new recovery code (the old one stops working)
 ```
 
-Use a strong master password (at least ten characters). The recovery code can restore
-access if you forget it. Neither an encrypted Git backup nor a share bundle should be
-published together with its unlocking material.
+The same actions are in **Secrets → Secret vault**. Use a strong master password (at least ten
+characters). The recovery code looks like `HB-XXXX-XXXX-XXXX-XXXX-XXXX`; recovering issues a new code and the
+old one stops working, so save the new one. Keep it in a password manager or on paper, apart from the vault. Neither an encrypted
+Git backup nor a share package should be published together with its unlocking material.
 
 ## Trust boundaries
 
 - SSH host verification still matters. A changed host key must be investigated.
 - Connection checks may accept a previously unseen host key, but reject changed keys.
 - `~/ssh-hosts` contains readable hostnames, addresses, users, and tags. Encryption protects vault secrets, not the entire host list.
-- Share bundles include credentials by default; share only with intended recipients.
+- A share package can include credentials (you choose with or without secrets); share only with intended recipients and send its password through a different channel.
 - Imported host names and repository content are validated. Keep SSH and Git up to date and review access to your remote.

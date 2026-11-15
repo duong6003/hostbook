@@ -9,9 +9,10 @@ page and select **Report a vulnerability** when that option is available. This s
 to repository maintainers.
 
 Private vulnerability reporting must be enabled separately in GitHub settings; this file does not enable it.
-If the private reporting option is unavailable, open a public issue asking only for a private security
-contact, without naming the affected component, describing the vulnerability or attaching sensitive data.
-Wait for a private channel before sending the report.
+If the private reporting option is unavailable, contact the repository owner directly (the repository is
+private, so even issues are visible to every collaborator). Ask only for a private security channel,
+without naming the affected component, describing the vulnerability or attaching sensitive data.
+Wait for that channel before sending the report.
 
 Include in a private report:
 
@@ -40,7 +41,7 @@ Hostbook maintainers as well when Hostbook's integration or distributed dependen
   hostnames, addresses, usernames, tags or all repository metadata.
 - An unlocked vault, SSH agent or compromised operating-system account can expose credentials.
   Protected caches and encryption at rest do not protect against a compromised unlocked session.
-- Share bundles may include credentials. Review the selected hosts and secrets, and send the bundle
+- Share packages may include credentials. Review the selected hosts and secrets, and send the package
   password through a separate trusted channel.
 - SSH host verification remains important. Investigate changed host keys rather than disabling checks.
 - Imported configuration and shared repositories require trust. SSH directives can invoke local

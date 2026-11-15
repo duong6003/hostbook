@@ -7,28 +7,36 @@ GitHub/Gitea repository or a bare repository on a machine you control, such as a
 home server, or VPS. Machines need network access to that remote; LAN, VPN, and
 Tailscale connections work as long as Git/SSH can reach it.
 
-Connect through `Ctrl-O` -> `Kết nối kho`, or choose a remote on first launch.
-The app can discover candidate machines on LAN/Tailscale; you still need permission
-to access the repository.
+Connect through `Ctrl-O` → **Connect sync repository** (`Kết nối kho đồng bộ`; **Change sync
+repository** once one is set), or choose a remote on first launch. Pick a machine the app found on
+the LAN/Tailscale, **Enter an address…** (`user@machine` or an IP), or **Use a URL…** such as
+`git@github.com:you/ssh-hosts-private.git`. The repository must be private, and you still need
+permission to access it. To host the repository yourself, run **Create the store on this machine**
+once on an always-on Linux/macOS machine (SSH must be on); Windows can only connect to an existing one.
 
 ## Synchronization behavior
 
-hostbook starts background synchronization when opened. Changes are checked with
-`ssh -G` before publication. If the remote is unavailable, local changes remain
-pending and can be pushed after connectivity returns.
+hostbook starts background synchronization when opened, and the header shows the state ("in sync",
+"3 changes not synced yet", "Cannot reach the store"). Changes are checked with `ssh -G` before
+publication. If the remote is unavailable, local changes remain pending and can be pushed after
+connectivity returns.
 
 ```bash
 hostbook sync
 ```
 
+`Ctrl-S` (or **Tools → Sync now**) shows a progress screen with elapsed time and a limit; `ctrl-c`
+cancels, and your changes stay on this machine.
+
 Merging works per host. Independent host changes can merge automatically; conflicting
-changes to the same host open `Gộp xung đột`, where you choose a version or edit it.
-Invalid SSH configuration is rejected rather than silently propagated.
+changes to the same host add **Merge conflicts** (`Gộp xung đột`) to Tools, where you choose a version or
+edit it. Invalid SSH configuration is rejected rather than silently propagated.
 
 ## Share selected hosts
 
 Use the search box to narrow the list. Select individual hosts with Tab if needed,
-then press Ctrl-Y. With no selection, sharing uses the matching hosts.
+then press Ctrl-Y (or use Right on a host, **Share this server**). With no selection, sharing uses the
+matching hosts. Jump hosts the selection needs are added automatically and listed.
 
 From the command line:
 
@@ -36,22 +44,34 @@ From the command line:
 hostbook share '#prod web'
 ```
 
-The share flow exports hosts, tags, descriptions, related groups, and **credentials
-by default**. Review the selection before sharing. The bundle is encrypted with its
-own password; send that password through a separate channel. A shared file does not
-require connectivity between the sender and recipient.
+The package holds hosts, tags, descriptions, related groups, and optionally credentials. When the
+selected hosts use secrets you choose **Create a package with secrets** (the recipient can log in
+right away) or **Create a package without secrets** (the recipient picks how to log in). Review the
+count of `prod` servers and secrets before confirming.
 
-## Import a share bundle
+The package is encrypted with its own password, shown on the result screen with **Copy the
+password**; send it through a separate channel. Export always saves a
+`hostbook-<date>-<time>-<random>.hbshare` file in Downloads (or Home when Downloads is absent) and
+also copies it to the clipboard when a clipboard tool is available. Sender and recipient do not
+need to be connected.
+
+## Import a share package
 
 ```bash
 hostbook import workspace.hbshare
 ```
 
-Export always saves a `.hbshare` file in Downloads, or Home if Downloads is absent. A clipboard copy is optional; importing uses the saved file.
+or **Tools → Import Hostbook package**. Only Hostbook packages are accepted; anything else (plain
+lists, pasted text, SSH config files) is refused with "Only exported Hostbook packages (.hbshare)
+are supported". Enter the package password; a wrong password or unexpected content stops before
+anything is applied.
 
-Only Hostbook share packages are accepted by Import. Enter the package password to decrypt it. The import flow previews the bundle, compares hosts and credential fingerprints,
-and lets you keep, update, or rename conflicting entries. After import, connection
-checks are offered explicitly; they do not run automatically.
+The review shows new, identical, changed and same-address servers, plus the secrets (new, already
+there, renamed). Choose how to import: as suggested, update all, keep all of yours, or decide per
+server (update, keep yours, keep both with the packaged one renamed `-2`, replace). Replacing or
+updating a `prod` server needs its name typed. Nothing is written before you confirm. Afterwards the result
+screen can show only the imported servers, check their connections (explicitly; never automatic), or undo
+the import while it is still the latest change. See [Daily use](Daily-use).
 
 Host lists themselves are ordinary Git-tracked configuration, not encrypted data.
 Protect access to the repository even when the credentials inside it are encrypted.

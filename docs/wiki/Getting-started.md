@@ -2,26 +2,49 @@
 
 ## Install
 
-Supports macOS, Linux, and Windows x64. macOS/Linux: You need Git, curl, tar, and OpenSSH. The installer supplies
-fzf, gum, and age when missing or too old; tmux is needed for multi-host sessions.
+The GitHub repository `duong6003/hostbook` is **private**, so the public one-line
+installer and an anonymous `git clone https://...` do not work. Clone with an account that has
+access, then run the installer from that clone. Supports macOS, Linux, and Windows x64.
+
+### macOS / Linux
+
+You need Git, curl, tar, and OpenSSH. The installer supplies fzf, gum, and age when missing
+or too old; tmux is needed for multi-host sessions.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
+gh repo clone duong6003/hostbook ~/.local/share/hostbook
+# or, with an SSH key registered on GitHub:
+# git clone git@github.com:duong6003/hostbook.git ~/.local/share/hostbook
+bash ~/.local/share/hostbook/install.sh
 ```
+
+When `~/.local/share/hostbook` is already a Git clone, the installer fast-forwards it
+(`git pull --ff-only`) instead of cloning again, installs missing dependencies, and runs
+`hostbook setup`. To keep the clone elsewhere, run it with `HOSTBOOK_HOME` pointing at
+that clone: `HOSTBOOK_HOME=/path/to/hostbook bash /path/to/hostbook/install.sh`.
 
 The app installs under `~/.local`; sudo is not required. Dependencies use Homebrew
 when available on macOS, or user-local release binaries otherwise. Open a new terminal and
-run `hostbook`. For Bash/Zsh, the installer provides `hb` when available, or
-`hop` if `hb` is taken and `hop` is free. If both are taken, use `hostbook`.
+run `hostbook`. For Bash/Zsh, setup adds the alias `hb`, or `hop` if `hb` is taken and
+`hop` is free. If both are taken, use `hostbook`.
 
 ### Windows
 
-Run from PowerShell in Windows Terminal (Windows 10/11 x64):
+Run from PowerShell in Windows Terminal (Windows 10/11 x64). `install.ps1` must exist on disk,
+so clone first with your own Git or `gh`, then point `-Repository` at the repository the
+installer should clone for the app:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/duong6003/hostbook/main/install.ps1 -OutFile "$env:TEMP\hostbook-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-install.ps1"
+gh repo clone duong6003/hostbook "$env:TEMP\hostbook-src"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-src\install.ps1" -Repository git@github.com:duong6003/hostbook.git
 ```
+
+`-Repository` (or the `HOSTBOOK_REPO` environment variable) accepts any Git URL or local path.
+The installer clones it with its own bundled Git and OpenSSH, so an SSH URL needs a key in
+`%USERPROFILE%\.ssh` that GitHub accepts. Passing the local clone path
+(`-Repository "$env:TEMP\hostbook-src"`) also works, but `hostbook update` then pulls from that
+local clone, so keep it and update it yourself first. Access to the private repository from the
+installer's bundled Git has not been verified here.
 
 The installer downloads a private portable Git for Windows runtime, fzf, gum, and age
 from official releases and verifies SHA-256 before extraction. You do not need to
@@ -43,19 +66,40 @@ user-relative locations listed below. The app uses bundled Git OpenSSH. Native
 Windows OpenSSH and VS Code may use a different agent/config interpretation;
 see [Secrets and security](Secrets-and-security).
 
+If the repository becomes public again, `curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash`
+(macOS/Linux) and downloading `install.ps1` from the same raw URL (Windows) work again.
+
 ## First launch
 
-Setup asks one question at a time. Use the arrow keys and Enter; Escape cancels.
+Run `hostbook`. When `~/ssh-hosts` does not exist, setup asks one question at a time.
+Use the arrow keys and Enter; Escape cancels.
 
-1. Choose the machine's role: **Connect to and manage servers** for your personal machine, or **Host a shared sync repository** for a machine other devices will sync with.
-2. For a personal machine, choose **Create a new server list** or **Get data from a sync repository**. New users can start with an empty list; sync can wait.
-3. Create the secure vault when no vault exists, then save its recovery code. The vault protection password is separate from server login passwords. It needs at least ten characters; server passwords retain their existing value and only need to be nonempty.
-4. Optionally import existing SSH entries, connect sync, and choose an appearance preset.
+1. **Language** (`Language / Ngôn ngữ`): choose English or Vietnamese. The default follows your
+   locale (`vi*` selects Vietnamese, anything else English). You can change it later in
+   **Tools → Appearance → Language**; `HOSTBOOK_LANG=en` or `vi` overrides it for one run.
+2. **Role.** Choose **Connect to and manage servers** (`Kết nối và quản lý server`) for a personal
+   machine, or **Host a shared sync repository** for a machine other devices will sync with.
+3. **Data** (personal machines only). Choose **Create a new server list** or **Get data from a
+   sync repository**. For the latter, pick a machine found on your LAN/Tailscale, **Enter an
+   address…**, or **Use a URL…** (for example `git@github.com:you/ssh-hosts-private.git`).
+4. **Secure vault**, two steps. Type a vault protection password (at least ten characters, twice),
+   then save the **recovery code**, which is shown once. This password only encrypts saved SSH keys
+   and passwords; it is not a server login password. If the data you fetched already contains a
+   vault, this step is skipped and the password is asked when needed.
+5. **Existing SSH config.** With a new list and Host entries in `~/.ssh/config`, choose
+   **Review and import** or **Later**. The vault exists before this step. A declined or cancelled
+   import leaves your SSH config untouched; an accepted import saves a backup
+   (`~/.ssh/config.bak.XXXXXX`) without overwriting an earlier one. `Host *` and `Match`
+   blocks stay in `~/.ssh/config`. Includes, executable Match rules, inherited identity settings,
+   and some ordering that cannot be preserved are rejected; adjust the source and retry.
+6. **Keys on this machine.** If servers use key files outside the vault, you are offered to move
+   them into it (the original files stay).
+7. **Sync repository.** A personal machine with a new list is asked whether to connect one now;
+   **Later** is fine. A repository host sets up the store on this machine (SSH must be on).
+8. **Appearance.** Pick a preset with a live preview, or press Escape to choose later
+   (**Tools → Appearance**). Enter then opens the server list.
 
-The secure vault encrypts SSH keys and passwords and is required before entering the app. A sync repository is optional and can be connected later. First launch initializes the vault before the optional SSH import. If you decline or cancel that import, your original SSH config remains in place. An accepted import preserves a backup without overwriting an existing backup. Includes, executable Match rules, inherited identity settings, and some ordering that cannot be preserved are rejected; adjust the source before retrying.
-
-The first-run flow also lets you choose an appearance preset. You can change it later
-in **Tools → Appearance**. Press Escape during the first-run appearance selection to choose it later.
+The vault is required before entering the app; a sync repository is optional.
 
 ## Choose login credentials
 
@@ -80,17 +124,21 @@ from related entries and shows where suggestions came from.
 | Path | Contents |
 | --- | --- |
 | `~/ssh-hosts/` | Host configuration, groups, and encrypted secrets; synchronized through Git. |
-| `~/.config/hostbook/` | Local appearance settings and custom themes; not synchronized. |
+| `~/.config/hostbook/` | Local settings (`config`, including `lang`) and custom themes; not synchronized. |
 | `~/.local/state/hostbook/` | Local history, index, and status. |
 | `~/.local/share/hostbook/` | Installed application checkout. |
 | `~/.ssh/config` | Includes the host files under `~/ssh-hosts/`. |
 
-Appearance settings respect `XDG_CONFIG_HOME`. For contributor/test overrides, see
+Settings respect `XDG_CONFIG_HOME`. For contributor/test overrides, see
 [Development](Development).
 
 ## Update or uninstall
 
-Update with `hostbook update`, or rerun the installer.
+On macOS/Linux, `hostbook update` runs `git pull --ff-only` in the installed clone with that
+clone's own credentials, so use an SSH remote (or a configured credential helper); a failed pull
+changes nothing. To also refresh dependencies, rerun `bash ~/.local/share/hostbook/install.sh`.
+On Windows, `hostbook update` pulls the app clone and reruns `install.ps1`. If the clone has no
+`.git` directory, update does nothing; reinstall from a clone.
 
 On Windows, close hostbook, then remove the app/runtime and its user PATH entry with:
 
@@ -100,10 +148,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\hostbook\
 
 Uninstall also stops this installation's private SSH agent. Your host list, encrypted
 vault, settings, and SSH config remain. For a custom
-`-InstallRoot`, pass that same path to uninstall. Update with `hostbook update` or
-rerun the Windows installer.
+`-InstallRoot`, pass that same path to uninstall.
 
 On macOS/Linux, remove `~/.local/share/hostbook`, `~/.local/state/hostbook`, and the
-`~/.local/bin/hostbook` symlink. Remove the hostbook alias from your shell startup file.
+`~/.local/bin/hostbook` symlink. Remove the `hb`/`hop` alias from your shell startup file.
 Keep `~/ssh-hosts` to retain your hosts; standard SSH can continue to use them.
 Local appearance settings remain in `~/.config/hostbook` unless you remove them too.
