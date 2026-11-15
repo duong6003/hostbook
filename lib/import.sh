@@ -805,8 +805,9 @@ import_done(){ # new-count updated-count skipped-count
   sum="$CG${ICON_OK} $(t imp_done "$1" "$2" "$3")$C0"
   if [ "$n" -eq 0 ]; then flash "$sum"; return 0; fi
   at "$(t import_title)"
-  rows=$(term_rows); term_cols cols; limit=$((rows - 17)); [ "$limit" -ge 0 ] || limit=0
-  allowed=$((rows - 14)); [ "$allowed" -ge 1 ] || allowed=1
+  # Reserve two extra rows for the search-recovery footer when it wraps at 44 columns.
+  rows=$(term_rows); term_cols cols; limit=$((rows - 19)); [ "$limit" -ge 0 ] || limit=0
+  allowed=$((rows - 16)); [ "$allowed" -ge 1 ] || allowed=1
   cols=$((cols - 9)); [ "$cols" -ge 8 ] || cols=8
   while :; do
     list=$(LC_ALL=C awk -F '\t' -v f="$(t imp_done_line '%s' '%s' '%s')" -v max="$limit" -v width="$cols" '
