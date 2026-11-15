@@ -710,12 +710,10 @@ import_pack(){ # file
   np=$(awk -F'\t' '(" " $8 " ") ~ / prod /' "$x/index" | grep -c .)
   at "$(t import_title)"
   if [ $((nnew + ndiff + ndup)) -eq 0 ]; then : > "$STATE/last-import"; ONLY_NEXT=; IMPORT_COMMIT=; flash "${CG}${ICON_OK} $(t imp_nothing)${C0}"; return 0; fi
-  sum=$(printf '%s\n' "$(t imp_from "$from" "$nh" "$(grep -c . "$x/groups.tsv" 2>/dev/null)" "$(grep -c . "$x/smap")")$( [ "$np" -gt 0 ] && printf "   %s${ICON_PROD} %s%s" "$CR" "$(t imp_prod "$np")" "$C0")" ""
-    [ "$nnew" -gt 0 ] && printf '  %s%s%s            %s\n' "$CG" "$(t imp_new "$nnew")" "$C0" "$(awk -F'\t' '$2=="new"{printf "%s ", $1}' "$x/classes" | cut -c1-60)"
-    [ "$nsame" -gt 0 ] && printf '  %s%s%s\n' "$CD" "$(t imp_same "$nsame")" "$C0"
-    [ "$ndiff" -gt 0 ] && { printf '  %s%s%s\n' "$CY" "$(t imp_diff "$ndiff")" "$C0"; awk -F'\t' '$2=="diff"{printf "      %-14s %s\n", $1, $3}' "$x/classes" | head -5 | cut -c1-100; }
-    [ "$ndup" -gt 0 ] && { printf '  %s%s%s\n' "$CY" "$(t imp_dup "$ndup")" "$C0"; awk -F'\t' '$2=="ipdup"{print $1 "\t" $3}' "$x/classes" | head -5 | while IFS="$TAB" read -r n dec; do printf '      %s\n' "$(t imp_dup_line "$n" "$dec")"; done; }
-    [ -s "$x/smap" ] && printf '\n  %s\n' "$(t imp_secrets "$(awk -F'\t' -v n="$(t imp_sc_new)" -v e="$(t imp_sc_existing)" -v r="$(t imp_sc_renamed)" '{printf "%s (%s%s) · ", $1, ($3=="new" ? n : $3=="existing" ? e : r), ($1!=$2 ? " → " $2 : "")}' "$x/smap" | sed 's/ · $//')")")
+  # Keep this choice visible in a short terminal; per-host details follow in
+  # the conflict decisions and the scrollable final review.
+  from=${from:0:18}
+  sum="$(t imp_from "$from" "$nh" "$(grep -c . "$x/groups.tsv" 2>/dev/null)" "$(grep -c . "$x/smap")")$NL$(t imp_counts "$nnew" "$nsame" "$ndiff" "$ndup" "$np")"
   case $(UI_HEAD=$sum$NL ui_menu "$(t imp_head)" "$(t act_imp_suggest)|$(t act_imp_suggest_hint)$( [ $((ndiff + ndup)) -gt 0 ] && t act_imp_suggest_ask)" "$(t act_imp_all)" "$(t act_imp_mine)|$(t act_imp_mine_hint)" "$(t cancel)") in
     0) mode=ask;; 1) mode=pack;; 2) mode=mine;; *) return 1;; esac
   dec=$x/decisions; pack_decide "$x" "$mode" > "$dec" || return 1

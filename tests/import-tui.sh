@@ -76,6 +76,37 @@ run_case(){
   end_ui
   printf 'ok    import review/results %s\n' "$name"
 }
+run_package_case(){
+  local root="$T/package" cmd i label
+  export HOME="$root/home" XDG_CONFIG_HOME="$root/config" HOSTBOOK_DIR="$root/hosts" HOSTBOOK_STATE="$root/state" HOSTBOOK_SSH_CONFIG="$root/ssh-config" HOSTBOOK_KEYCHAIN="file:$root/keychain/id"
+  mkdir -p "$HOME/.ssh" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$XDG_CONFIG_HOME/hostbook" "$root/package/conf" "$root/package/secrets"
+  printf 'lang = en\nborder = rounded\n' > "$XDG_CONFIG_HOME/hostbook/config"
+  printf 'Include "%s/*.conf"\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
+  printf 'version=1\nfrom=fixture\n' > "$root/package/manifest"; : > "$root/package/groups.tsv"
+  i=1; while [ "$i" -le 5 ]; do
+    printf 'Host same-%s\n  HostName 192.0.2.%s\n' "$i" "$i" >> "$HOSTBOOK_DIR/test.conf"
+    printf 'Host same-%s\n  HostName 198.51.100.%s\nHost duplicate-%s\n  HostName 192.0.2.%s\n' "$i" "$i" "$i" "$i" >> "$root/package/conf/test.conf"
+    i=$((i+1))
+  done
+  printf 'Host identical\n  HostName 203.0.113.1\n' >> "$HOSTBOOK_DIR/test.conf"
+  printf 'Host identical\n  HostName 203.0.113.1\n# tags: prod\nHost fresh\n  HostName 203.0.113.2\n' >> "$root/package/conf/test.conf"
+  git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add .; git -C "$HOSTBOOK_DIR" commit -qm fixture
+  { printf '# hostbook-share v1 · 10 server\n'; tar -czf - -C "$root/package" manifest groups.tsv conf secrets | AGE_PASSPHRASE=fixture age -e -j batchpass -a; } > "$root/share"
+  . "$HERE/../lang/en.sh"
+  printf -v cmd 'env HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q HOSTBOOK_KEYCHAIN=%q HOSTBOOK_LANG=en HB_PACK_PW=fixture PATH=%q SHELL=/bin/bash /bin/bash %q import %q' "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$HOSTBOOK_KEYCHAIN" "$PATH" "$S" "$root/share"
+  tmux -L "$socket" new-session -d -x 44 -y 24 -s ui "$cmd"
+  wait_for "$L_imp_head"
+  for label in "$L_act_imp_suggest" "$L_act_imp_all" "$L_act_imp_mine" "$L_cancel"; do
+    grep -Fq "$label" "$T/screen" || { cat "$T/screen"; echo "FAIL package menu action: $label"; return 1; }
+  done
+  tmux -L "$socket" send-keys -t ui Down Enter
+  wait_for "$L_import_review_title"; wait_for 'same-1'
+  tmux -L "$socket" send-keys -t ui Enter
+  wait_for "$L_imp_next"
+  grep -q '198.51.100.1' "$HOSTBOOK_DIR/test.conf" || { echo 'FAIL package update'; return 1; }
+  end_ui; printf 'ok    package conflict review and apply at 44 columns\n'
+}
+if [ "${IMPORT_PACKAGE_ONLY:-}" = 1 ]; then run_package_case; exit; fi
 for lang in vi en; do
  for width in 44 60 100; do
   for border in rounded none; do
@@ -83,3 +114,5 @@ for lang in vi en; do
   done
  done
 done
+
+run_package_case

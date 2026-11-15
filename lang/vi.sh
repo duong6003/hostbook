@@ -419,6 +419,7 @@ L_act_open_tabs_hint='mỗi server một tab tmux'
 
 # nhập gói
 L_import_title='Nhập gói chia sẻ'
+L_imp_counts='Mới %s · giống %s · khác %s · trùng %s · prod %s'
 L_imp_from='Gói từ %s · %s server · %s nhóm · %s secret'
 L_imp_prod='%s server prod'
 L_imp_new='+ %s server mới'

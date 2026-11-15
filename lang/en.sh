@@ -419,6 +419,7 @@ L_act_open_tabs_hint='one tmux tab per server'
 
 # import
 L_import_title='Import a shared package'
+L_imp_counts='New %s · same %s · changed %s · duplicate %s · prod %s'
 L_imp_from='Package from %s · %s servers · %s groups · %s secrets'
 L_imp_prod='%s prod servers'
 L_imp_new='+ %s new servers'

@@ -67,6 +67,16 @@ malformed_package_rejected(){
   done
   [ ! -s "$T/menu-log" ] && [ ! -e "$T/editor-called" ]
 }
+invalid_package_versions_not_offered(){ (
+  local version
+  for version in v10 v1broken; do
+    printf '# hostbook-share %s\n' "$version" > "$T/clipboard"
+    rm -f "$T/unexpected-offer"
+    ui_confirm(){ : > "$T/unexpected-offer"; return 1; }
+    clip_offer || exit 1
+    [ ! -e "$T/unexpected-offer" ] || exit 1
+  done
+); }
 quoted_path_bypasses_menu(){
   reset_menu; INPUT_FILE="$T/a space's ü.conf"
   printf 'Host test-host\n  HostName 192.0.2.1\n' > "$INPUT_FILE"
@@ -109,6 +119,7 @@ check clipboard_unavailable_returns_to_source
 check private_key_rejected
 check binary_rejected
 check malformed_package_rejected
+check invalid_package_versions_not_offered
 check quoted_path_bypasses_menu
 check literal_relative_paths_and_tilde
 check paste_keeps_last_submitted_draft
