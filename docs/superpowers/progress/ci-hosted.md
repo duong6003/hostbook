@@ -29,3 +29,11 @@ Docker SSH15 plus the new Unix install/update fixture.
 
 Limits: macOS hosted real-SSH and Windows10/11 physical terminal rendering remain
 explicit gaps in the coverage matrix. No claim of complete platform parity.
+
+## Integrated delivery verification
+
+[Run43708273567](https://github.com/duong6003/hostbook/actions/runs/43708273567) passed at `c7dfabf` on all three platforms. Ubuntu took4m48s, macOS7m3s and Windows8m18s. These totals include expanded transaction, source, review and terminal coverage, so they are not comparable to the earlier cache-only job timings.
+
+Windows cached installation took45.90s and update7.39s. Native SSH key/password, fzf callbacks, installation/update/uninstall, source12 and review14 passed. Vault and package symlink-parent cases explicitly skipped because link creation was unavailable; archive link rejection remained covered. macOS ran the actual terminal tests after CI explicitly installed optional-app dependency tmux; no missing-tool skip occurred. Ubuntu also passed real Docker SSH checks.
+
+Two prior integration failures were corrected: missing vaults in the home-recovery fixtures and option-like filenames passed to cygpath without an end-of-options marker. A separate macOS runner failure revealed the missing tmux test prerequisite. Independent review accepted all three fixes. Matrix fail-fast is disabled to collect both Unix outcomes; superseded workflow runs still cancel through concurrency.
