@@ -4,7 +4,7 @@ set -eu
 unset SSH_AUTH_SOCK SSH_AGENT_PID
 for tool in tmux fzf gum git ssh; do command -v "$tool" >/dev/null || { echo "SKIP import-tui: missing $tool"; exit 0; }; done
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
-T=$(mktemp -d); socket=hb-import-ui-$$
+T=$(mktemp -d); socket=hb-import-ui-$; cancellation_checked=0
 end_ui(){
   local p groups=''
   for p in $(tmux -L "$socket" list-panes -a -F '#{pane_pid}' 2>/dev/null); do
@@ -62,6 +62,8 @@ run_case(){
     i=0; while tmux -L "$socket" has-session -t ui 2>/dev/null; do i=$((i+1)); [ "$i" -lt 100 ] || { echo 'FAIL import TUI: canceled review did not exit'; return 1; }; sleep .05; done
     end_ui
     [ "$(cat "$HOSTBOOK_STATE/last-import")" = previous-result ] && ! ls "$HOSTBOOK_DIR"/*.conf >/dev/null 2>&1 && [ -z "$(ls -A "$HOSTBOOK_STATE/tmp" 2>/dev/null)" ] || { echo 'FAIL import TUI: canceled review wrote data or left temporary files'; return 1; }
+    cancellation_checked=1
+    printf 'ok    canceled import review preserves data and cleans up\n'
     tmux -L "$socket" new-session -d -x "$width" -y 24 -s ui "$cmd"
     wait_for "$L_imp_head"; tmux -L "$socket" send-keys -t ui Enter
     wait_for "$L_import_review_title"; wait_for 'very-long-server-name-01'
@@ -114,8 +116,10 @@ run_package_case(){
 if [ "${IMPORT_PACKAGE_ONLY:-}" = 1 ]; then run_package_case; exit; fi
 # Pairwise cover of lang × width × border × count: every pair of values meets in some case (6 runs instead of 24).
 # Full-screen rules at 60/100/200 columns in both languages and both borders are in tests/screens.sh.
-for c in "vi 44 rounded 8" "vi 60 none 30" "vi 100 rounded 30" "en 44 none 30" "en 60 rounded 8" "en 100 none 8"; do
+# Keep vi/44/rounded/30: it exercises cancellation above.
+for c in "vi 44 rounded 30" "vi 60 none 8" "vi 100 rounded 8" "en 44 none 8" "en 60 rounded 30" "en 100 none 30"; do
   run_case $c
 done
+[ "$cancellation_checked" = 1 ] || { echo 'FAIL import TUI: cancellation case was not exercised'; exit 1; }
 
 run_package_case
