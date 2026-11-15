@@ -18,6 +18,7 @@ trap 'end_ui; rm -rf "$T"' EXIT
 start(){ local cmd; printf -v cmd 'env SSH_AUTH_SOCK= SSH_AGENT_PID= HOSTBOOK_KEYCHAIN=%q HOSTBOOK_LIB_DIR=%q HOSTBOOK_LANG_DIR=%q HOSTBOOK_LANG=%q HOSTBOOK_ONLY=%q HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash /bin/bash %q' "$HOSTBOOK_KEYCHAIN" "$HOSTBOOK_LIB_DIR" "$HOSTBOOK_LANG_DIR" "$HOSTBOOK_LANG" "${HOSTBOOK_ONLY:-}" "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "$S"; tmux -L "$socket" new-session -d -x "${WIDTH:-100}" -y 24 -s ui "$cmd"; }
 snap(){ tmux -L "$socket" capture-pane -p -t ui > "$T/screen" 2>/dev/null || :; }
 wait_for(){ local n=0; while [ "$n" -lt 100 ]; do snap; grep -qF "$1" "$T/screen" && return; sleep .05; n=$((n+1)); done; cat "$T/screen"; printf 'FAIL: missing %s\n' "$1"; exit 1; }
+gone(){ local n=0; while [ "$n" -lt 100 ]; do snap; ! grep -qF "$1" "$T/screen" && return; sleep .05; n=$((n+1)); done; cat "$T/screen"; printf 'FAIL: still showing %s\n' "$1"; exit 1; }
 k(){ tmux -L "$socket" send-keys -t ui "$@"; }
 start; wait_for alpha; k Tab; wait_for 'mở 1 server'; k Escape; wait_for 'enter ssh'
 ! grep -q 'mở 1 server' "$T/screen" || { echo 'FAIL stale selection footer'; exit 1; }
@@ -61,7 +62,7 @@ export HOSTBOOK_ONLY=$T/only
 start; wait_for alpha
 ! grep -q beta "$T/screen" || { echo 'FAIL filtered view'; exit 1; }
 k Tab; wait_for 'open 1 servers'; k -l 'no-match'; wait_for 'Selection kept'
-k Escape; wait_for alpha; wait_for 'open 1 servers'
+k Escape; gone 'No matches'; wait_for 'open 1 servers'
 k Escape; wait_for 'enter ssh'
 k Escape; wait_for beta; end_ui
 unset HOSTBOOK_ONLY
