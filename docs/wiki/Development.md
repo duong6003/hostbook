@@ -64,7 +64,8 @@ last, no absolute home paths, PROD deletes need the typed name, progress screens
 and a way to cancel, no git words, vi/en key parity).
 
 TUI tests (`tui`, `screens`, `controls`, `import-tui`, …) skip if tmux is missing; E2E tests skip if Docker is unavailable. A skipped
-check is not evidence of a pass. CI runs on macOS, Ubuntu, and Windows. Ubuntu runs
+check is not evidence of a pass. CI runs on macOS, Ubuntu, and Windows; a change that touches only
+Markdown, `docs/` or `LICENSE` skips it. Ubuntu runs
 Docker SSH tests;
 Windows installs its managed portable runtime, verifies launcher/native tool boundaries,
 checks NTFS/DPAPI/clipboard behavior, and provisions an isolated native SSH server for
@@ -93,8 +94,6 @@ Keep README focused on the product, installation, and links. Detailed usage belo
 here. Screenshots in `docs/assets/` should come from the real app with synthetic
 hosts and no private data. Quote UI labels from `lang/en.sh`, adding the
 Vietnamese label from `lang/vi.sh` in parentheses where a reader of that UI needs it, and keep command names exact.
-The repository is private, so installation instructions start from a clone; do not document the public
-`curl | bash` one-liner as the primary route.
 
 ## CI coverage matrix
 

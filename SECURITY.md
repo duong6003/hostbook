@@ -9,10 +9,9 @@ page and select **Report a vulnerability** when that option is available. This s
 to repository maintainers.
 
 Private vulnerability reporting must be enabled separately in GitHub settings; this file does not enable it.
-If the private reporting option is unavailable, contact the repository owner directly (the repository is
-private, so even issues are visible to every collaborator). Ask only for a private security channel,
-without naming the affected component, describing the vulnerability or attaching sensitive data.
-Wait for that channel before sending the report.
+If the private reporting option is unavailable, open a public issue asking only for a private security
+channel, without naming the affected component, describing the vulnerability or attaching sensitive data.
+Wait for a private channel before sending the report.
 
 Include in a private report:
 

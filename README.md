@@ -21,21 +21,17 @@ configuration, usable with `ssh`, `scp`, and VS Code Remote-SSH.
 
 ## Get started
 
-The repository is private, so install from a clone you have access to.
-
 macOS / Linux (needs Git, curl, tar, and OpenSSH):
 
 ```bash
-gh repo clone duong6003/hostbook ~/.local/share/hostbook
-# or: git clone git@github.com:duong6003/hostbook.git ~/.local/share/hostbook
-bash ~/.local/share/hostbook/install.sh
+curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
 ```
 
-Windows (PowerShell, with Git or `gh` available for the first clone):
+Windows (PowerShell):
 
 ```powershell
-gh repo clone duong6003/hostbook "$env:TEMP\hostbook-src"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-src\install.ps1" -Repository git@github.com:duong6003/hostbook.git
+Invoke-WebRequest https://raw.githubusercontent.com/duong6003/hostbook/main/install.ps1 -OutFile "$env:TEMP\hostbook-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-install.ps1"
 ```
 
 Close and reopen your terminal (all Windows Terminal windows on Windows), then run:
@@ -51,9 +47,9 @@ and hosting a Git hub over SSH require macOS/Linux or WSL. The interface is avai
 English and Vietnamese (chosen on first run, changeable in **Tools → Appearance → Language**);
 this README and the documentation are in English.
 
-If the repository is made public again, the one-line installer
-(`curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash`) works again.
-Details and updates: [Getting started](https://github.com/duong6003/hostbook/wiki/Getting-started).
+To install from a clone instead (for example to contribute), run
+`git clone https://github.com/duong6003/hostbook.git ~/.local/share/hostbook` and then
+`bash ~/.local/share/hostbook/install.sh`. Details and updates: [Getting started](https://github.com/duong6003/hostbook/wiki/Getting-started).
 
 [Getting started](https://github.com/duong6003/hostbook/wiki/Getting-started)
  · [User guide](https://github.com/duong6003/hostbook/wiki)

@@ -2,9 +2,7 @@
 
 ## Install
 
-The GitHub repository `duong6003/hostbook` is **private**, so the public one-line
-installer and an anonymous `git clone https://...` do not work. Clone with an account that has
-access, then run the installer from that clone. Supports macOS, Linux, and Windows x64.
+Supports macOS, Linux, and Windows x64.
 
 ### macOS / Linux
 
@@ -12,9 +10,14 @@ You need Git, curl, tar, and OpenSSH. The installer supplies fzf, gum, and age w
 or too old; tmux is needed for multi-host sessions.
 
 ```bash
-gh repo clone duong6003/hostbook ~/.local/share/hostbook
-# or, with an SSH key registered on GitHub:
-# git clone git@github.com:duong6003/hostbook.git ~/.local/share/hostbook
+curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
+```
+
+The installer clones the app into `~/.local/share/hostbook`. To install from your own clone
+instead (for example to contribute), clone first and run the installer from it:
+
+```bash
+git clone https://github.com/duong6003/hostbook.git ~/.local/share/hostbook
 bash ~/.local/share/hostbook/install.sh
 ```
 
@@ -30,21 +33,16 @@ run `hostbook`. For Bash/Zsh, setup adds the alias `hb`, or `hop` if `hb` is tak
 
 ### Windows
 
-Run from PowerShell in Windows Terminal (Windows 10/11 x64). `install.ps1` must exist on disk,
-so clone first with your own Git or `gh`, then point `-Repository` at the repository the
-installer should clone for the app:
+Run from PowerShell in Windows Terminal (Windows 10/11 x64):
 
 ```powershell
-gh repo clone duong6003/hostbook "$env:TEMP\hostbook-src"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-src\install.ps1" -Repository git@github.com:duong6003/hostbook.git
+Invoke-WebRequest https://raw.githubusercontent.com/duong6003/hostbook/main/install.ps1 -OutFile "$env:TEMP\hostbook-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-install.ps1"
 ```
 
-`-Repository` (or the `HOSTBOOK_REPO` environment variable) accepts any Git URL or local path.
-The installer clones it with its own bundled Git and OpenSSH, so an SSH URL needs a key in
-`%USERPROFILE%\.ssh` that GitHub accepts. Passing the local clone path
-(`-Repository "$env:TEMP\hostbook-src"`) also works, but `hostbook update` then pulls from that
-local clone, so keep it and update it yourself first. Access to the private repository from the
-installer's bundled Git has not been verified here.
+The installer clones the app from `https://github.com/duong6003/hostbook.git` with its own
+bundled Git. `-Repository` (or the `HOSTBOOK_REPO` environment variable) accepts another Git URL
+or local path, for example your own fork.
 
 The installer downloads a private portable Git for Windows runtime, fzf, gum, and age
 from official releases and verifies SHA-256 before extraction. You do not need to
@@ -65,9 +63,6 @@ Windows `~` means your user profile. Application/runtime files are under
 user-relative locations listed below. The app uses bundled Git OpenSSH. Native
 Windows OpenSSH and VS Code may use a different agent/config interpretation;
 see [Secrets and security](Secrets-and-security).
-
-If the repository becomes public again, `curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash`
-(macOS/Linux) and downloading `install.ps1` from the same raw URL (Windows) work again.
 
 ## First launch
 
@@ -134,11 +129,11 @@ Settings respect `XDG_CONFIG_HOME`. For contributor/test overrides, see
 
 ## Update or uninstall
 
-On macOS/Linux, `hostbook update` runs `git pull --ff-only` in the installed clone with that
-clone's own credentials, so use an SSH remote (or a configured credential helper); a failed pull
-changes nothing. To also refresh dependencies, rerun `bash ~/.local/share/hostbook/install.sh`.
+On macOS/Linux, `hostbook update` runs `git pull --ff-only` in the installed clone; a failed pull
+changes nothing. To also refresh dependencies, rerun the one-line installer (or
+`bash ~/.local/share/hostbook/install.sh`).
 On Windows, `hostbook update` pulls the app clone and reruns `install.ps1`. If the clone has no
-`.git` directory, update does nothing; reinstall from a clone.
+`.git` directory, update does nothing; rerun the installer.
 
 On Windows, close hostbook, then remove the app/runtime and its user PATH entry with:
 
