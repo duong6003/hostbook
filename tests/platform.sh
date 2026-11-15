@@ -48,6 +48,17 @@ if command -v tmux >/dev/null 2>&1; then
   ); }
   check 'list sessions counts live panes and excludes unrelated sessions' 'session_check'
 fi
+# Simulate MSYS option parsing even when this suite runs on Unix.
+check 'Windows path conversion protects option-like names and preserves drive paths' '(
+  is_windows(){ return 0; }
+  cygpath(){ [ "$#" = 3 ] && [ "$1" = -u ] && [ "$2" = -- ] || return 2; case "$3" in --help) printf "%s\n" --help;; "C:/Users/fixture name/key") printf "%s\n" "/c/Users/fixture name/key";; *) return 1;; esac; }
+  [ "$(unix_path --help)" = --help ] && [ "$(unix_path "C:/Users/fixture name/key")" = "/c/Users/fixture name/key" ]
+)'
+if is_windows; then
+  check 'native cygpath accepts option-like names and drive paths' '(
+    [ "$(unix_path --help)" = "$(cygpath -u -- --help)" ] && [ "$(unix_path "C:/Users/fixture name/key")" = "$(cygpath -u -- "C:/Users/fixture name/key")" ]
+  )'
+fi
 # Replacing this with raw single quotes breaks callbacks under a path containing apostrophes.
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"

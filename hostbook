@@ -35,7 +35,7 @@ resolve_self "$0"
 LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
 IS_WIN=; IS_MAC=; case $OSTYPE in darwin*) IS_MAC=1;; linux*) ;; *) case $(uname -s) in MINGW*|MSYS*) IS_WIN=1;; esac;; esac   # no fork on macOS/Linux; $OSTYPE varies on Windows runtimes, so ask uname there
 is_windows(){ [ -n "$IS_WIN" ]; }
-unix_path(){ if is_windows; then cygpath -u "$1"; else printf '%s\n' "$1"; fi; }
+unix_path(){ if is_windows; then cygpath -u -- "$1"; else printf '%s\n' "$1"; fi; }
 native_path(){ if is_windows; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
 windows_tool(){ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "${HOSTBOOK_PLATFORM_HELPER:-$(dirname "$SELF")/windows/platform.ps1}")" "$@"; }
 private_dir(){ if is_windows; then windows_tool private-dir "$(cygpath -w "$1")"; else mkdir -p "$1" && chmod 700 "$1"; fi; }
