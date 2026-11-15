@@ -20,8 +20,19 @@ try { & (Join-Path $source 'install.ps1') -InstallRoot $unrelated } catch { $rej
 if (!$rejected -or !(Test-Path -LiteralPath (Join-Path $unrelated 'sentinel'))) { throw 'Installer must refuse a nonempty unrelated directory.' }
 Write-Host 'ok    installer refuses an unrelated nonempty directory'
 function Assert([bool]$Ok, [string]$Message) { if (!$Ok) { throw $Message }; Write-Host "ok    $Message" }
+if (!$env:HOSTBOOK_DOWNLOAD_CACHE) { $env:HOSTBOOK_DOWNLOAD_CACHE = Join-Path $testRoot 'downloads' }
+$cache = $env:HOSTBOOK_DOWNLOAD_CACHE
+$ageHash = 'f48d8f8f9ebe903ab5027ed067652f2cc1db94bc206976430133b905dcd8e8c7'
+$ageArchive = Join-Path (Join-Path $cache $ageHash) 'age-v1.3.2-windows-amd64.zip'
+New-Item -ItemType Directory -Force -Path (Split-Path $ageArchive) | Out-Null
+Set-Content -LiteralPath $ageArchive -Value 'corrupt archive'
+$installTime = [Diagnostics.Stopwatch]::StartNew()
 & (Join-Path $source 'install.ps1') -InstallRoot $root
+$installTime.Stop()
+Write-Host "Install (restored or cold cache): $($installTime.Elapsed.TotalSeconds) seconds"
 Assert ($LASTEXITCODE -eq 0) 'portable runtime installation completes'
+Assert ((Get-FileHash -LiteralPath $ageArchive -Algorithm SHA256).Hash -eq $ageHash) 'corrupt cached archive is replaced with a verified download'
+$ageWriteTime = (Get-Item -LiteralPath $ageArchive).LastWriteTimeUtc
 $launcher = Join-Path $root 'bin\hostbook.exe'
 $env:HOSTBOOK_WINDOWS_ROOT = $root
 $env:HOSTBOOK_PLATFORM_HELPER = Join-Path $root 'app\windows\platform.ps1'
@@ -29,6 +40,9 @@ $runtime = (Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | Con
 $bash = Join-Path $runtime 'bin\bash.exe'
 $env:PATH = "$root\bin;$runtime\usr\bin;$runtime\mingw64\bin;$runtime\cmd;$env:PATH"
 Assert ((& $launcher --version) -match '^hostbook ') 'native launcher supports version under spaced Unicode path'
+Push-Location $testRoot
+try { Assert ((& $launcher _header | Out-String).Trim().Length -gt 0) 'installed callback works outside the app directory' }
+finally { Pop-Location }
 # A fresh command lookup finds the native executable even when PowerShell script policy is Restricted.
 Assert ((Get-Command hostbook).Source -eq $launcher) 'bare hostbook resolves the native launcher'
 & $bash --noprofile --norc -c 'cd "$1" && bash tests/platform.sh' test $source
@@ -68,7 +82,11 @@ Run-Check 'Native clipboard, vault and first-machine setup' {
     Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, private temps and vault checks'
 }
 Run-Check 'Update' {
+    $updateTime = [Diagnostics.Stopwatch]::StartNew()
     & $launcher update
+    $updateTime.Stop()
+    Write-Host "Update (warm cache): $($updateTime.Elapsed.TotalSeconds) seconds"
+    Assert ((Get-Item -LiteralPath $ageArchive).LastWriteTimeUtc -eq $ageWriteTime) 'update reuses the verified age archive'
     Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
     Assert (@($userPath | Where-Object { $_ -eq (Join-Path $root 'bin') }).Count -eq 1) 'update keeps one user PATH entry'
