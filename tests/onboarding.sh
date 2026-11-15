@@ -17,7 +17,8 @@ case_setup(){
   SELF=$HERE/../hostbook
   trap 'cleanup' EXIT
   clear(){ :; }; box(){ :; }; title(){ :; }; pause(){ :; }
-  ui_menu(){ echo 1; }; ui_confirm(){ return 1; }; set_language(){ return 0; }; setting_pick(){ return 1; }
+  ui_menu(){ echo 1; }; ui_choice(){ echo 0; }; ui_confirm(){ return 1; }; set_language(){ return 0; }; setting_pick(){ return 1; }
+  import_review(){ return 0; }
   ask_new_pw(){ printf '%s' "$HOSTBOOK_MASTER"; }
   show_recovery(){ echo shown > "$STATE/recovery-shown"; }
 }

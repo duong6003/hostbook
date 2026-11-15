@@ -17,6 +17,8 @@ clear(){ :; }; pause(){ :; }; confirm(){ return 0; }; pick(){ echo 0; }
 # Screens: the result menu prints its header lines (summary and list) to stderr and picks the first item; a flash prints its text there too.
 # ui_menu answers from $T/picks, one choice per call (default 0); it counts in a file because it runs inside $(...).
 ui_menu(){ case "$1" in "$(t import_key_question "~/.ssh/fixture")") echo 0; return;; esac; local n; printf '%s\n' "${UI_HEAD:-}" >&2; n=$(cat "$T/pn" 2>/dev/null || echo 0); echo $((n+1)) > "$T/pn"; sed -n "$((n+1))p" "$T/picks" 2>/dev/null | grep . || echo 0; }; flash(){ printf '%s\n' "$*" >&2; }
+ui_choice(){ echo 0; }
+import_review(){ return 0; }
 gum(){ if [ "$1" = choose ]; then echo dev; else command gum "$@"; fi; }
 ask_secret_name(){ echo fixture; }
 printf 'Host existing\n  HostName 192.0.2.1\n  User original\n' > "$DIR/old.conf"
@@ -77,6 +79,8 @@ check 'package rejects duplicate aliases before decisions' 'declare -F pack_vali
 printf 'same\ta\t192.0.2.1\n' > "$T/bad-package/index"
 printf 'group\tsplit\tsame absent\n' > "$T/bad-package/groups.tsv"
 check 'package rejects groups referencing absent hosts' 'declare -F pack_validate_index >/dev/null && ! pack_validate_index "$T/bad-package" >/dev/null 2>&1'
+printf 'Host cert-host\n  HostName 192.0.2.1\n  CertificateFile ~/.ssh/unmanaged-cert.pub\n' > "$T/unmanaged-cert.conf"
+check 'unsupported certificate files are rejected before inspection' '! import_config_guard "$T/unmanaged-cert.conf" >/dev/null 2>&1'
 mkdir -p "$T/source-split"
 printf '# tags: one two\n# desc: retained\nHost existing fresh fresh\n  HostName 192.0.2.19\nHost fresh\n  HostName 192.0.2.20\n' > "$T/source-split/incoming.conf"
 printf 'prior-result\n' > "$STATE/last-import"

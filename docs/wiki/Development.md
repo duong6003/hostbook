@@ -22,6 +22,8 @@ Core files:
 | `tests/windows.ps1` | Native Windows install, security, fzf, SSH, update, and uninstall checks. |
 | `tests/test.sh` | Core regression tests with isolated data. |
 | `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
+| `tests/import.sh`, `tests/import-keys.sh`, `tests/import-input.sh`, `tests/import-review.sh` | Import staging, rollback, credentials, source routing and review regressions. |
+| `tests/file-input.sh`, `tests/import-tui.sh` | Shared file/multiline inputs and real import screens in private tmux sessions. |
 | `tests/tui.sh` | Real fzf interaction in isolated tmux sessions. |
 | `tests/controls.sh`, `tests/home-recovery.sh` | Compact controls, selection and home recovery in private tmux sessions. |
 | `tests/screens.sh` | Screen-system rules S1-S11 on one screen of each type, at 60, 100 and 200 columns, in vi and en. |
@@ -38,6 +40,13 @@ bash tests/platform.sh
 bash tests/install.sh
 bash tests/test.sh
 bash tests/ui.sh
+bash tests/onboarding.sh
+bash tests/import.sh
+bash tests/import-keys.sh
+bash tests/import-input.sh
+bash tests/import-review.sh
+bash tests/file-input.sh
+bash tests/import-tui.sh
 bash tests/tui.sh
 bash tests/screens.sh
 bash tests/e2e.sh
@@ -81,7 +90,7 @@ Vietnamese menu labels rather than inventing an English UI.
 
 | Coverage | Ubuntu | macOS | Windows |
 | --- | --- | --- | --- |
-| Core, platform, UI, import | Shared suites | Shared suites | Platform callbacks and Windows-specific checks; full shared suites not run |
+| Core, platform, UI, import | Shared suites | Shared suites | Platform callbacks, import headless suites and Windows-specific checks; full shared suites not run |
 | Interactive UI | tmux, fzf screens | tmux, fzf screens | Native fzf callbacks; no tmux suite or physical terminal rendering |
 | Install / update | Fresh isolated install and Git update | Fresh isolated install and Git update | Fresh managed install, update and uninstall |
 | Uninstall | Manual documented removal; not automated | Manual documented removal; not automated | Automated; preserves host data and unrelated files |

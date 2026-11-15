@@ -986,7 +986,9 @@ secret_add_key(){ # source(clip|gen|path) [name] [replace]
   d=$(tmpd) || return 1; f=$d/key
   case $src in
     clip) clip_get > "$f" 2>/dev/null
-          if ! grep -q 'PRIVATE KEY' "$f"; then printf '%s\n' "$(t secret_clip_note)" > "$f"
+          if ! grep -q 'PRIVATE KEY' "$f"; then
+            if [ -n "${IMPORT_KEY_MODE:-}" ]; then err "$(t err_import_key_clipboard)" >&2; rm -rf "$d"; return 1; fi
+            printf '%s\n' "$(t secret_clip_note)" > "$f"
             ${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}} "$f" </dev/tty >/dev/tty; grep -v '^# ' "$f" > "$f.x"; mv "$f.x" "$f"; fi
           def="";;
     gen)  rm -f "$f"; ssh-keygen -q -t ed25519 -N "" -C "${name:-hostbook}" -f "$f" || return 1; def="";;
@@ -2256,6 +2258,7 @@ undo_hosts(){ # old-file new-file
 undo_last(){
   local id par m="" files f sec="" grp="" lines=() d h c o n add="" rem="" edt="" r
   id=$(g rev-parse -q --verify HEAD 2>/dev/null) || return 1
+  [ -z "${1:-}" ] || [ "$id" = "$1" ] || { shown; err "$(t err_undo_moved)"; pause; return 1; }
   par=$(g rev-parse -q --verify "$id^1" 2>/dev/null); [ -z "$(g rev-parse -q --verify "$id^2" 2>/dev/null)" ] || m="-m 1"
   if [ -n "$par" ]; then files=$(g diff --no-color --name-only "$par" "$id"); else files=$(g show --no-color --name-only --format= "$id"); fi
   d=$(tmpd) || return 1
@@ -2647,7 +2650,7 @@ first_run(){ # ~/ssh-hosts does not exist yet
     ssh -F "$initial/validate" -G hostbook-validate-probe >/dev/null 2>&1 || return 1
     newcfg=$(mktemp "$HOME/.ssh/.hostbook-config.XXXXXX") || return 1
     { cat "$initial/header"; printf 'Include ~/ssh-hosts/*.conf\n'; cat "$initial/global"; } > "$newcfg" && chmod 600 "$newcfg" || { rm -f "$newcfg"; return 1; }
-    IMPORT_KEEP_GLOBAL=1 import_flow "$initial/import" || { rm -f "$newcfg"; return 1; }
+    IMPORT_KEEP_GLOBAL=1 IMPORT_HEADER="$initial/header" IMPORT_TAIL="$initial/global" import_flow "$initial/import" || { rm -f "$newcfg"; return 1; }
     cmp -s "$initial/original" "$HOME/.ssh/config" || { rm -f "$newcfg"; return 1; }
     backup=$(mktemp "$HOME/.ssh/config.bak.XXXXXX") || { rm -f "$newcfg"; return 1; }
     cp -p "$initial/original" "$backup" && mv "$newcfg" "$HOME/.ssh/config" || { rm -f "$newcfg"; return 1; }

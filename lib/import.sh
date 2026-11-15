@@ -22,8 +22,8 @@ import_parse(){
 prepare_import_list(){ # parsed TSV and optional project → private stage
   local list=$1 to=$2 d n u h pt tg blk
   local group src_group user src_user port tags src_tags jump src_jump secret src_secret
-  d=$(import_tmpd) || return 1; : > "$d/added"; blk=$d/block
-  awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} !seen[$1]++' "$IDX" "$list" > "$d/accepted" || return 1
+  d=$(import_tmpd) || return 1; : > "$d/added"; : > "$d/skipped"; blk=$d/block
+  awk -F '\t' -v skipped="$d/skipped" 'FILENAME==ARGV[1] {seen[$1]="existing"; next} {if($1 in seen) {print $1 "\t" seen[$1] >> skipped; next} seen[$1]="duplicate"; print}' "$IDX" "$list" > "$d/accepted" || return 1
   while IFS="$TAB" read -r n u h pt tg; do
     [ "$u" = - ] && u=""; [ "$pt" = - ] && pt=""; [ "$tg" = - ] && tg=""
     valid_name "$n" && parse_addr "${u:+$u@}$h${pt:+:$pt}" >/dev/null || return 1
@@ -61,7 +61,8 @@ import_config_guard(){
        for (i=1;i<=n;i++) {if (a[i] ~ /^#/) break; if (a[i]=="") continue; count++; if (a[i] !~ /^[A-Za-z0-9._*?!-]+$/) bad=1; if (a[i] ~ /[*?!]/) {scope="wild"; if(strict) bad=1}}
        if (!count) bad=1
      }
-     if (scope!="host" && key ~ /^(identityfile|certificatefile|identitiesonly|identityagent|addkeystoagent|pkcs11provider|securitykeyprovider)$/) bad=1
+     if (key ~ /^(certificatefile|identityagent|addkeystoagent|pkcs11provider|securitykeyprovider)$/) bad=1
+     if (scope!="host" && key ~ /^(identityfile|identitiesonly)$/) bad=1
     }
     END {exit bad}
   ' "$1" || { err "$(t err_import_unsafe)" >&2; return 1; }
@@ -89,43 +90,45 @@ import_flow(){ # [file]
   return "$rc"
 }
 import_source(){ # [file]
-  local src=${1:-} choice draft= value input=$IMPORT_WORK/input rc session=$IMPORT_WORK/picker
+  local src=${1:-} choice draft= value label input=$IMPORT_WORK/input rc session=$IMPORT_WORK/picker
   mkdir -p "$session" || return 1
   if [ -n "$src" ]; then
-    src=${src/#\~/$HOME}; src=$(unix_path "$src") || return 1
-    [ -f "$src" ] && [ -r "$src" ] && cp "$src" "$input" || { err "$(t err_import_read)" >&2; return 1; }
-    import_content "$input"; return $?
+    case $src in '~') src=$HOME;; '~/'*) src=$HOME/${src#\~/};; esac
+    src=$(unix_path "$src") || return 1
+    [ -f "$src" ] && [ -r "$src" ] && cp -- "$src" "$input" || { err "$(t err_import_read)" >&2; return 1; }
+    import_content "$input" "$src"; return $?
   fi
   while :; do
     at "$(t import_title)"
-    choice=$(ui_menu "$(t import_source_title)" "$(t import_source_file)" "$(t import_source_paste)" "$(t import_source_clipboard)" "$(t cancel)") || return 1
+    choice=$(ui_choice "$(t import_source_title)" "$(t import_source_file)" "$(t import_source_paste)" "$(t import_source_clipboard)" "$(t cancel)") || return 1
     case $choice in
       0) src=$(file_pick "$HOME" "$(t import_source_file)" "" "" "$session") || continue
-         src=${src/#\~/$HOME}; src=$(unix_path "$src") || continue
-         if ! { [ -f "$src" ] && [ -r "$src" ] && cp "$src" "$input"; }; then err "$(t err_import_read)" >&2; pause; continue; fi;;
+         label=$src; case $src in '~') src=$HOME;; '~/'*) src=$HOME/${src#\~/};; esac
+         src=$(unix_path "$src") || continue
+         if ! { [ -f "$src" ] && [ -r "$src" ] && cp -- "$src" "$input"; }; then err "$(t err_import_read)" >&2; pause; continue; fi;;
       1) value=$(ui_multiline "$(t import_source_paste)" "$draft") || continue
-         draft=$value; printf '%s\n' "$draft" > "$input" || return 1;;
-      2) if ! clip_get > "$input" 2>/dev/null || [ ! -s "$input" ]; then err "$(t err_import_clipboard)" >&2; pause; continue; fi;;
+         label=$(t import_source_paste); draft=$value; printf '%s\n' "$draft" > "$input" || return 1;;
+      2) label=$(t import_source_clipboard); if ! clip_get > "$input" 2>/dev/null || [ ! -s "$input" ]; then err "$(t err_import_clipboard)" >&2; pause; continue; fi;;
       *) return 1;;
     esac
-    import_content "$input"; rc=$?
+    import_content "$input" "$label"; rc=$?
     [ "$rc" -ne 0 ] || return 0
     [ "$rc" -ne 2 ] || pause
   done
 }
 import_content(){ # private input file, after choosing a source
-  local src=$1 raw list errs n to cnt to_dir tmp stage f invalid
+  local src=$1 label=${2:-$(t import_title)} raw list errs n to cnt to_dir tmp stage f invalid
   title "$(t impf_title)"
   [ -s "$src" ] || { err "$(t err_import_empty)" >&2; return 2; }
-  invalid=$(LC_ALL=C tr -d '\011\012\015\040-\176\200-\377' < "$src" | wc -c | tr -d ' ') || return 1
-  [ "$invalid" = 0 ] || { err "$(t err_import_binary)" >&2; return 2; }
+  LC_ALL=C tr -d '\011\012\015\040-\176\200-\377' < "$src" > "$IMPORT_WORK/control-bytes" || return 1
+  [ ! -s "$IMPORT_WORK/control-bytes" ] || { err "$(t err_import_binary)" >&2; return 2; }
   if grep -qiE 'BEGIN [A-Z0-9 ]*PRIVATE KEY' "$src"; then err "$(t err_import_private)" >&2; return 2; fi
-  if is_pack "$src"; then remember_package_offer "$src" || return 1; import_pack "$src"; return $?; fi
+  if is_pack "$src"; then remember_package_offer "$src" || return 1; import_pack "$src" "$label"; return $?; fi
   if grep -qiE '^#[[:space:]]*hostbook-share|BEGIN AGE ENCRYPTED FILE' "$src"; then err "$(t err_pack_bad)" >&2; return 2; fi
   raw=$(cat "$src") || return 1
   [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || { err "$(t err_import_empty)" >&2; return 1; }
   tmp=$(import_tmpd) || return 1; list=$tmp/list; errs=$tmp/errs; : > "$list"; : > "$errs"
-  if printf '%s\n' "$raw" | grep -qiE '^[[:space:]]*host([[:space:]]|=)'; then   # a complete SSH config was pasted: preserve it and split by name
+  if printf '%s\n' "$raw" | grep -qiE '^[[:space:]]*(host|match|include)([[:space:]]|=)'; then   # a complete SSH config was pasted: preserve it and split by name
     ensure_index
     printf '%s\n' "$raw" > "$list"; import_config_guard "$list" || { rm -f "$list" "$errs"; return 1; }; to_dir=$(import_tmpd) || return 1
     : > "$to_dir/ordered"
@@ -140,8 +143,8 @@ import_content(){ # private input file, after choosing a source
     for f in "$stage/grouped"/*.conf; do [ ! -f "$f" ] || mv "$f" "$stage/${f##*/}" || return 1; done
     import_snapshot_targets "$stage" || return 1
     import_config_keys "$stage" || return 1
-    dim "$(t impf_ssh "$n")"
-    confirm "$(t impf_ask)" || return 1
+    cnt=$(grep -c . "$stage/added")
+    import_review "$stage" "$label" "$cnt" 0 "$((n-cnt))" 0 || return 1
     apply_import_config "$stage" || return 1
     cnt=$(grep -c . "$STATE/last-import"); rm -rf "$list" "$errs" "$to_dir"
     import_done "$cnt" 0 "$((n-cnt))"; return
@@ -156,6 +159,10 @@ import_content(){ # private input file, after choosing a source
   pi=$(pick "$(t impf_which "$n")" "$(t impf_guess)" $projs) || { rm -f "$list" "$errs"; return 1; }
   if [ "$pi" = 0 ]; then to=""; else to=$(printf '%s\n' "$projs" | sed -n "${pi}p"); fi
   stage=$(prepare_import_list "$list" "$to") || return 1
+  cp "$errs" "$stage/invalid" || return 1
+  invalid=$(grep -c . "$errs")
+  cnt=$(grep -c . "$stage/added")
+  import_review "$stage" "$label" "$cnt" 0 "$((n-cnt))" "$invalid" || return 1
   apply_import_config "$stage" || return 1
   cnt=$(grep -c . "$STATE/last-import"); rm -f "$list" "$errs"
   import_done "$cnt" 0 "$((n-cnt))"
@@ -187,12 +194,12 @@ split_config(){ # source-file destination-directory global-file
 }
 prepare_import_config(){ # split directory → private stage with accepted names
   local f d; d=$(import_tmpd) || return 1
-  : > "$d/added"
+  : > "$d/added"; : > "$d/skipped"
   for f in "$1"/*.conf; do [ -f "$f" ] || continue
-    awk -v idx="$IDX" -v added="$d/added" '
+    awk -v idx="$IDX" -v added="$d/added" -v skipped="$d/skipped" '
       BEGIN {
-        while ((getline line < idx)>0) {split(line,a,"\t"); seen[a[1]]=1} close(idx)
-        while ((getline line < added)>0) seen[line]=1; close(added)
+        while ((getline line < idx)>0) {split(line,a,"\t"); seen[a[1]]="existing"} close(idx)
+        while ((getline line < added)>0) seen[line]="duplicate"; close(added)
       }
       function emit(i) {
         if (!started || !nn) return
@@ -203,7 +210,7 @@ prepare_import_config(){ # split directory → private stage with accepted names
         if (key=="host") {
           emit(); rest=line; sub(/^[ \t]*[^ \t=]+[ \t=]+/, "", rest); count=split(rest,a,/[ \t]+/)
           nn=0; started=1
-          for(i=1;i<=count;i++) {n=a[i]; if(n ~ /^#/) break; if(n!="" && !(n in seen)) {seen[n]=1; names[++nn]=n}}
+          for(i=1;i<=count;i++) {n=a[i]; if(n ~ /^#/) break; if(n=="") continue; if(n in seen) {print n "\t" seen[n] >> skipped; continue} seen[n]="duplicate"; names[++nn]=n}
           prefix=pending; body=""; pending=""; next
         }
         if (line ~ /^[ \t]*#/) {pending=pending line "\n"; next}
@@ -257,7 +264,7 @@ import_config_keys(){ # staged config → encrypted key bindings before host wri
     esac
     if [ -z "$nm" ]; then
       if [ -f "$full" ]; then
-        choice=$(ui_menu "$(t import_key_question "$k")" "$(t import_key_encrypt)" "$(t import_key_other)" "$(t cancel)") || return 1
+        choice=$(ui_choice "$(t import_key_question "$k")" "$(t import_key_encrypt)" "$(t import_key_other)" "$(t cancel)") || return 1
         case $choice in 0) nm=$(secret_add_key "$full") || return 1;; 1) nm=$(pick_login "" "" key) || return 1;; *) return 1;; esac
       else
         warn "$(t import_key_missing "$k")" >&2
@@ -315,13 +322,14 @@ import_targets_unchanged(){
   done < "$stage/targets"
 }
 apply_import_config(){ # staged config and names; restore only these destinations on failure
-  local stage=$1 rollback f name idxfile failed=0 restore=0 n
+  local stage=$1 rollback f name idxfile before failed=0 restore=0 n
   lock 10 || { err "$(t sync_busy)"; return 1; }
-  if [ ! -s "$stage/added" ]; then : > "$STATE/last-import"; ONLY_NEXT=; unlock; return 0; fi
+  if [ ! -s "$stage/added" ]; then : > "$STATE/last-import"; ONLY_NEXT=; IMPORT_COMMIT=; unlock; return 0; fi
   validate >/dev/null || { unlock; return 1; }
   import_targets_unchanged "$stage" || { unlock; err "$(t err_import_changed)" >&2; return 1; }
   ensure_index
   if ! awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} $0 in seen {exit 1}' "$IDX" "$stage/added"; then unlock; return 1; fi
+  before=$(g rev-parse -q --verify HEAD 2>/dev/null) || before=
   rollback=$(mktemp -d "$STATE/import-rollback.XXXXXX") || { unlock; return 1; }
   mkdir "$rollback/work" && : > "$rollback/touched" || { unlock; return 1; }
   idxfile=$(g rev-parse --git-path index) || { unlock; return 1; }
@@ -357,11 +365,13 @@ apply_import_config(){ # staged config and names; restore only these destination
     return 1
   fi
   cp "$stage/added" "$STATE/last-import" || { unlock; return 1; }
+  IMPORT_COMMIT=$(g rev-parse -q --verify HEAD 2>/dev/null) || IMPORT_COMMIT=
+  [ "$IMPORT_COMMIT" != "$before" ] || IMPORT_COMMIT=
   ONLY_NEXT=; : > "$ST.force"; flash "${CG}${ICON_OK} $(t done_imported_config)${C0}"
   rm -rf "$rollback"; unlock
 }
 # ---------- share package import ----------
-is_pack(){ head -c 300 "$1" 2>/dev/null | grep -q '^# hostbook-share v1'; }
+is_pack(){ head -c 300 "$1" 2>/dev/null | grep -qE '^# hostbook-share v1([[:space:]]|$)'; }
 pack_open(){ # package-file → print the extracted directory (inside tmpd); prompt for the package password
   local f=$1 d pw i bad=""
   d=$(import_tmpd) || return 1; at "$(t import_title)"
@@ -492,22 +502,6 @@ pack_jump_map(){ # ProxyJump list and normalized package decisions
       printf "%s", out
     }' "$2"
 }
-pack_jump_map(){ # ProxyJump list and normalized package decisions
-  awk -F '\t' -v jumps="$1" '
-    $2 ~ /^both:/ {map[$1]=substr($2,6)}
-    END {
-      n=split(jumps,a,","); out=""
-      for(i=1;i<=n;i++) {
-        part=a[i]; prefix=""; suffix=""
-        if(index(part,"ssh://")==1) {prefix="ssh://"; part=substr(part,7)}
-        if(index(part,"@")) {at=index(part,"@"); prefix=prefix substr(part,1,at); part=substr(part,at+1)}
-        if(substr(part,1,1)!="[" && index(part,":")) {at=index(part,":"); suffix=substr(part,at); part=substr(part,1,at-1)}
-        if(part in map) part=map[part]
-        out=out (i>1?",":"") prefix part suffix
-      }
-      printf "%s", out
-    }' "$2"
-}
 pack_block(){ # package-directory name [new-name] [normalized decisions]
   local x=$1 n=$2 as=${3:-$2} decisions=${4:-} r sc jump
   r=$(awk -F'\t' -v n="$n" '$1==n{print $0; exit}' "$x/index"); sc=$(printf '%s' "$r" | cut -f12)
@@ -573,21 +567,26 @@ pack_delete_host(){
     import_touch groups.tsv && cp -p "$work/groups" "$GRP" || return 1
   fi
 }
+pack_normalize_decisions(){ # resolve "both" names while reserving every incoming alias
+  awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} {name[++n]=$1; act[n]=$2; if($2!="skip") seen[$1]=1} END {for(i=1;i<=n;i++) {a=act[i]; if(a=="both") {v=name[i] "-2"; while(v in seen) v=v "-2"; seen[v]=1; a="both:" v} print name[i] "\t" a}}' "$IDX" "$1"
+}
 apply_import_package(){ # package and decisions; preserve unrelated and staged files on failure
-  local x=$1 decisions=$2 rollback idxfile f rel n act p target loc status needed failed=0 restore=0
-  if ! awk -F '\t' '$2!="skip" {found=1} END {exit !found}' "$decisions"; then : > "$STATE/last-import"; ONLY_NEXT=; return 0; fi
+  local x=$1 decisions=$2 rollback idxfile f rel n act p target loc status needed before failed=0 restore=0
+  if ! awk -F '\t' '$2!="skip" {found=1} END {exit !found}' "$decisions"; then : > "$STATE/last-import"; ONLY_NEXT=; IMPORT_COMMIT=; return 0; fi
   lock 10 || { err "$(t sync_busy)"; return 1; }
   validate >/dev/null || { unlock; return 1; }
   ensure_index
   [ -f "$x/base-index" ] && cmp -s "$x/base-index" "$IDX" || { unlock; return 1; }
   pack_state_signature > "$x/current-state" && cmp -s "$x/base-state" "$x/current-state" || { unlock; err "$(t err_import_changed)" >&2; return 1; }
+  before=$(g rev-parse -q --verify HEAD 2>/dev/null) || before=
   rollback=$(mktemp -d "$STATE/import-rollback.XXXXXX") || { unlock; return 1; }
   mkdir -p "$rollback/files" "$rollback/work" || { unlock; return 1; }
   : > "$rollback/manifest"; : > "$rollback/touched"
   idxfile=$(g rev-parse --git-path index) || { unlock; return 1; }; case $idxfile in /*) ;; *) idxfile=$DIR/$idxfile;; esac
   [ ! -L "$idxfile" ] || { unlock; return 1; }
   [ ! -e "$idxfile" ] || cp -p "$idxfile" "$rollback/index" || { unlock; return 1; }
-  awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} {name[++n]=$1; act[n]=$2; if($2!="skip") seen[$1]=1} END {for(i=1;i<=n;i++) {a=act[i]; if(a=="both") {v=name[i] "-2"; while(v in seen) v=v "-2"; seen[v]=1; a="both:" v} print name[i] "\t" a}}' "$IDX" "$decisions" > "$rollback/decisions" || { unlock; return 1; }
+  pack_normalize_decisions "$decisions" > "$rollback/decisions" || { unlock; return 1; }
+  if [ -f "$x/preview-decisions" ] && ! cmp -s "$x/preview-decisions" "$rollback/decisions"; then unlock; err "$(t err_import_changed)" >&2; return 1; fi
   while IFS="$TAB" read -r n act; do
     [ "$act" != skip ] || continue
     valid_name "$n" || { unlock; return 1; }
@@ -632,6 +631,8 @@ apply_import_package(){ # package and decisions; preserve unrelated and staged f
     return 1
   fi
   cp "$x/applied" "$STATE/last-import" || { unlock; return 1; }
+  IMPORT_COMMIT=$(g rev-parse -q --verify HEAD 2>/dev/null) || IMPORT_COMMIT=
+  [ "$IMPORT_COMMIT" != "$before" ] || IMPORT_COMMIT=
   ONLY_NEXT=; : > "$ST.force"; rm -rf "$rollback"; unlock
 }
 # Apply a decisions file: "name<TAB>add|skip|update|both|replace:<existing name>". Record added/updated names in last-import.
@@ -687,17 +688,18 @@ pack_decide(){ # package-directory mode(pack|mine|ask) → print the decisions f
       same) printf '%s\tskip\n' "$n";;
       diff) if [ "$mode" = pack ] || [ "$all" = update ]; then printf '%s\tupdate\n' "$n"; elif [ "$mode" = mine ] || [ "$all" = skip ]; then printf '%s\tskip\n' "$n"
             else at "$(t import_title)|$n"
-              i=$(UI_HEAD="$CB$(t imp_differs "$n")$C0$NL$(printf '%s\n' "$det" | tr ';' '\n' | sed 's/^ */  /')" ui_menu "" "$(t act_dec_update)" "$(t act_dec_keep)" "$(t act_dec_both)|$(t act_dec_both_hint "$n")" "$(t act_dec_update_all)" "$(t act_dec_keep_all)") || i=1
+              i=$(UI_HEAD="$CB$(t imp_differs "$n")$C0$NL$(printf '%s\n' "$det" | tr ';' '\n' | sed 's/^ */  /')" ui_menu "" "$(t act_dec_update)" "$(t act_dec_keep)" "$(t act_dec_both)|$(t act_dec_both_hint "$n")" "$(t act_dec_update_all)" "$(t act_dec_keep_all)") || return 1
               case $i in
                 0) printf '%s\tupdate\n' "$n";; 2) printf '%s\tboth\n' "$n";; 3) all=update; printf '%s\tupdate\n' "$n";; 4) all=skip; printf '%s\tskip\n' "$n";; *) printf '%s\tskip\n' "$n";; esac; fi;;
       ipdup) if [ "$mode" = pack ]; then printf '%s\tadd\n' "$n"; elif [ "$mode" = mine ]; then printf '%s\tskip\n' "$n"
              else at "$(t import_title)|$n"
-               case $(ui_menu "$(t imp_dupip "$n" "$det")" "$(t act_dup_add)" "$(t act_dup_skip)" "!$(t act_dup_replace "$det")") in 0) printf '%s\tadd\n' "$n";; 2) printf '%s\treplace:%s\n' "$n" "$det";; *) printf '%s\tskip\n' "$n";; esac; fi;;
+               i=$(ui_menu "$(t imp_dupip "$n" "$det")" "$(t act_dup_add)" "$(t act_dup_skip)" "!$(t act_dup_replace "$det")") || return 1
+               case $i in 0) printf '%s\tadd\n' "$n";; 2) printf '%s\treplace:%s\n' "$n" "$det";; *) printf '%s\tskip\n' "$n";; esac; fi;;
     esac
   done 3< "$x/classes"
 }
 import_pack(){ # file
-  local f=$1 x from nh nnew nsame ndiff ndup dec mode np n sum
+  local f=$1 source=${2:-$(t import_title)} x from nh nnew nsame ndiff ndup dec mode np n sum new_count updated_count skip_count
   x=$(pack_open "$f") || { pause; return 1; }
   pack_validate_secrets "$x" || { err "$(t err_pack_bad)" >&2; return 1; }
   if ls "$x"/secrets/*.meta >/dev/null 2>&1; then vault_init || { pause; return 1; }; fi
@@ -707,7 +709,7 @@ import_pack(){ # file
   nnew=$(grep -c "${TAB}new${TAB}" "$x/classes"); nsame=$(grep -c "${TAB}same${TAB}" "$x/classes"); ndiff=$(grep -c "${TAB}diff${TAB}" "$x/classes"); ndup=$(grep -c "${TAB}ipdup${TAB}" "$x/classes")
   np=$(awk -F'\t' '(" " $8 " ") ~ / prod /' "$x/index" | grep -c .)
   at "$(t import_title)"
-  if [ $((nnew + ndiff + ndup)) -eq 0 ]; then : > "$STATE/last-import"; ONLY_NEXT=; flash "${CG}${ICON_OK} $(t imp_nothing)${C0}"; return 0; fi
+  if [ $((nnew + ndiff + ndup)) -eq 0 ]; then : > "$STATE/last-import"; ONLY_NEXT=; IMPORT_COMMIT=; flash "${CG}${ICON_OK} $(t imp_nothing)${C0}"; return 0; fi
   sum=$(printf '%s\n' "$(t imp_from "$from" "$nh" "$(grep -c . "$x/groups.tsv" 2>/dev/null)" "$(grep -c . "$x/smap")")$( [ "$np" -gt 0 ] && printf "   %s${ICON_PROD} %s%s" "$CR" "$(t imp_prod "$np")" "$C0")" ""
     [ "$nnew" -gt 0 ] && printf '  %s%s%s            %s\n' "$CG" "$(t imp_new "$nnew")" "$C0" "$(awk -F'\t' '$2=="new"{printf "%s ", $1}' "$x/classes" | cut -c1-60)"
     [ "$nsame" -gt 0 ] && printf '  %s%s%s\n' "$CD" "$(t imp_same "$nsame")" "$C0"
@@ -716,27 +718,129 @@ import_pack(){ # file
     [ -s "$x/smap" ] && printf '\n  %s\n' "$(t imp_secrets "$(awk -F'\t' -v n="$(t imp_sc_new)" -v e="$(t imp_sc_existing)" -v r="$(t imp_sc_renamed)" '{printf "%s (%s%s) · ", $1, ($3=="new" ? n : $3=="existing" ? e : r), ($1!=$2 ? " → " $2 : "")}' "$x/smap" | sed 's/ · $//')")")
   case $(UI_HEAD=$sum$NL ui_menu "$(t imp_head)" "$(t act_imp_suggest)|$(t act_imp_suggest_hint)$( [ $((ndiff + ndup)) -gt 0 ] && t act_imp_suggest_ask)" "$(t act_imp_all)" "$(t act_imp_mine)|$(t act_imp_mine_hint)" "$(t cancel)") in
     0) mode=ask;; 1) mode=pack;; 2) mode=mine;; *) return 1;; esac
-  dec=$x/decisions; pack_decide "$x" "$mode" > "$dec"
+  dec=$x/decisions; pack_decide "$x" "$mode" > "$dec" || return 1
+  import_review_package "$x" "$dec" "$source" || return 1
+  pack_confirm_prod "$x/preview-decisions" || return 1
+  new_count=$(grep -cE "${TAB}(add|both)$" "$dec"); updated_count=$(grep -cE "${TAB}(update|replace:.*)$" "$dec"); skip_count=$(grep -c "${TAB}skip$" "$dec")
   apply_import_package "$x" "$dec" || { pause; return 1; }
-  import_done "$(grep -cE "${TAB}(add|both)$" "$dec")" "$(grep -cE "${TAB}(update|replace:.*)$" "$dec")" "$(grep -c "${TAB}skip$" "$dec")"
+  import_done "$new_count" "$updated_count" "$skip_count"
+}
+pack_confirm_prod(){ # require the existing PROD alias before update or replacement
+  local decisions=$1 n act target
+  while IFS="$TAB" read -r n act; do
+    case $act in update) target=$n;; replace:*) target=${act#replace:};; *) continue;; esac
+    if is_prod "$target"; then
+      UI_TONE=danger UI_ENTER=$(t key_confirm) ui_field "$(t delete_type_label "$target")" "" "equals:$target" "$(t delete_type_rule "$target")" >/dev/null || return 1
+    fi
+  done < "$decisions"
+}
+import_review_package(){ # package directory decisions source → final read-only review
+  local x=$1 decisions=$2 source=$3 new updated skipped
+  pack_normalize_decisions "$decisions" > "$x/preview-decisions" || return 1
+  new=$(grep -cE "${TAB}(add|both:.*)$" "$x/preview-decisions")
+  updated=$(grep -cE "${TAB}(update|replace:.*)$" "$x/preview-decisions")
+  skipped=$(grep -c "${TAB}skip$" "$x/preview-decisions")
+  awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v sk="$(t import_review_skipped '%s' '%s')" -v keep="$(t import_skip_kept)" -v keyfmt="$(t import_review_secret '%s' '%s' '%s')" -v newlabel="$(t imp_sc_new)" -v oldlabel="$(t imp_sc_existing)" -v renamedlabel="$(t imp_sc_renamed)" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" '
+    function mapped(j,  count,a,i,part,prefix,suffix,at,out) {
+      count=split(j,a,","); out=""
+      for(i=1;i<=count;i++) {part=a[i]; prefix=""; suffix=""
+        if(index(part,"ssh://")==1) {prefix="ssh://"; part=substr(part,7)}
+        if(index(part,"@")) {at=index(part,"@"); prefix=prefix substr(part,1,at); part=substr(part,at+1)}
+        if(substr(part,1,1)!="[" && index(part,":")) {at=index(part,":"); suffix=substr(part,at); part=substr(part,1,at-1)}
+        if(part in renamed) part=renamed[part]; out=out (i>1?",":"") prefix part suffix
+      } return out
+    }
+    FILENAME==ARGV[1] {action[$1]=$2; if($2 ~ /^both:/) renamed[$1]=substr($2,6); next}
+    FILENAME==ARGV[2] {secret[$1]=$2; status[$1]=$3; order[++k]=$1; next}
+    {n=$1; act=action[n]; if(act=="skip") {printf sk,n,keep; print ""; next}
+     if(act=="") next; name=(n in renamed?renamed[n]:n); mark=(" " $8 " " ~ / prod / ? prod " " : "")
+     user=($4==""?"-":$4); port=($5==""?"-":$5); tags=($8==""?"-":$8); login=($12==""?self:secret[$12]); jump=($6==""?"-":mapped($6))
+     if($12!="") needed[$12]=1
+     printf "%s", mark; printf h,name,user,$3,port,$2; printf "  "; printf d,tags,login,jump; if($9!="") {printf "  "; printf desc,$9} printf "\n"
+    }
+    END {for(i=1;i<=k;i++) {n=order[i]; if(n in needed) {label=(status[n]=="new"?newlabel:status[n]=="existing"?oldlabel:renamedlabel); printf keyfmt,n,secret[n],label; print ""}}}
+  ' "$x/preview-decisions" "$x/smap" "$x/index" > "$x/review-rows" || return 1
+  import_review_screen "$x/review-rows" "$source" "$new" "$updated" "$skipped" 0
+}
+import_review_screen(){ # rows source new updated skipped invalid
+  local rows=$1 source=$2 new=$3 updated=$4 skipped=$5 invalid=$6 header cols max
+  source=$(printf '%s' "$source" | LC_ALL=C tr -d '\000-\037\177')
+  term_cols cols; max=$((cols - 18)); [ "$max" -ge 8 ] || max=8
+  if [ ${#source} -gt "$max" ]; then source="${source:0:$((max-1))}…"; fi
+  at "$(t import_title)|$(t import_review_title)"
+  header=$(ui_head "$CB$(t import_review_title)$C0" "$(t import_review_source "$source")" "$(t import_review_counts "$new" "$updated" "$skipped" "$invalid")" "$(t import_review_retained)")
+  [ -s "$rows" ] || printf '%s\n' "$(t import_review_nothing)" > "$rows"
+  cat "$rows" | ui_fzf "$header" --no-input --wrap --prompt='› ' --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t import_review_apply)" "esc:$(t key_cancel)")" --bind 'esc:abort' >/dev/null
+}
+import_review(){ # stage source new updated skipped invalid → read-only review
+  local stage=$1 source=$2 new=$3 updated=$4 skipped=$5 invalid=$6 f
+  mkdir -p "$stage/review-state" || return 1
+  case $stage in *'"'*|*'\'*|*$'\n'*) err "$(t err_import_config_path)" >&2; return 1;; esac
+  {
+    [ -z "${IMPORT_HEADER:-}" ] || cat "$IMPORT_HEADER"
+    printf 'Include %s\n' "$(ssh_path "$stage/*.conf")"
+    [ -z "${IMPORT_TAIL:-}" ] || cat "$IMPORT_TAIL"
+  } > "$stage/review-ssh" || return 1
+  : > "$stage/review-index"
+  for f in "$stage"/*.conf; do [ -f "$f" ] || continue
+    import_config_guard "$f" || return 1
+    (SSHCFG="$stage/review-ssh"; STATE="$stage/review-state"; index_file "$f") >> "$stage/review-index" || return 1
+  done
+  LC_ALL=C sort "$stage/added" > "$stage/review-expected"
+  cut -f1 "$stage/review-index" | LC_ALL=C sort > "$stage/review-actual"
+  cmp -s "$stage/review-expected" "$stage/review-actual" || return 1
+  { awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" '
+      {mark=(" " $8 " " ~ / prod / ? prod " " : ""); user=($4==""?"-":$4); port=($5==""?"-":$5); tags=($8==""?"-":$8); secret=($12==""?self:$12); jump=($6==""?"-":$6)
+       printf "%s", mark; printf h,$1,user,$3,port,$2; printf "  "; printf d,tags,secret,jump; if($9!="") {printf "  "; printf desc,$9} printf "\n"}
+    ' "$stage/review-index"
+    if [ -f "$stage/key-refs" ] && [ -f "$stage/bindings" ]; then
+      awk -F '\t' -v f="$(t import_review_key '%s' '%s')" 'FILENAME==ARGV[1] {path[$1]=$2; next} ($1 in path) {key=path[$1] SUBSEP $2; if(!seen[key]++) {printf f,path[$1],$2; print ""}}' "$stage/key-refs" "$stage/bindings"
+    fi
+    [ ! -f "$stage/skipped" ] || awk -F '\t' -v f="$(t import_review_skipped '%s' '%s')" -v e="$(t import_skip_existing)" -v d="$(t import_skip_duplicate)" '{printf f,$1,($2=="existing"?e:d); print ""}' "$stage/skipped"
+    [ ! -s "$stage/invalid" ] || awk -v f="$(t import_review_invalid '%s')" '{printf f,$0; print ""}' "$stage/invalid"
+  } > "$stage/review-rows" || return 1
+  import_review_screen "$stage/review-rows" "$source" "$new" "$updated" "$skipped" "$invalid"
 }
 import_done(){ # new-count updated-count skipped-count
-  local n sum list; n=$(grep -c . "$STATE/last-import")
+  local n sum list rows cols limit more choice lines allowed actions=()
+  n=$(grep -c . "$STATE/last-import")
   sum="$CG${ICON_OK} $(t imp_done "$1" "$2" "$3")$C0"
   if [ "$n" -eq 0 ]; then flash "$sum"; return 0; fi
-  list=$(awk -F'\t' -v f="$(t imp_done_line '%s' '%s' '%s')" 'FILENAME==ARGV[1] {wanted[$1]=1; next} ($1 in wanted) && ++k<=8 {printf "  "; printf f, $1, $3, $2; printf "\n"}' "$STATE/last-import" "$IDX")
-  [ "$n" -le 8 ] || list="$list$NL$CD  $(t imp_done_more $((n-8)))$C0"
   at "$(t import_title)"
-  case $(UI_HEAD="$sum$NL $NL$list" ui_menu "$(t imp_next)" "$(t act_imp_view)" "$(t act_imp_check)|$(t act_imp_check_hint)" "$(t act_imp_later)" "$(t act_imp_undo)") in
-    0) ONLY_NEXT=$STATE/last-import;;
-    1) check_hosts $(cat "$STATE/last-import");;
-    3) undo_last;;
-  esac
+  rows=$(term_rows); term_cols cols; limit=$((rows - 17)); [ "$limit" -ge 0 ] || limit=0
+  allowed=$((rows - 14)); [ "$allowed" -ge 1 ] || allowed=1
+  cols=$((cols - 9)); [ "$cols" -ge 8 ] || cols=8
+  while :; do
+    list=$(LC_ALL=C awk -F '\t' -v f="$(t imp_done_line '%s' '%s' '%s')" -v max="$limit" -v width="$cols" '
+      function clip(s,w, i,ch,o,c) {if(length(s)<=w) return s; o=""; c=0; for(i=1;i<=length(s);i++) {ch=substr(s,i,1); if(ch !~ /[\200-\277]/) {if(c>=w-1) break; c++} o=o ch} return o "…"}
+      FILENAME==ARGV[1] {wanted[$1]=1; next}
+      ($1 in wanted) && ++k<=max {printf "  %s\n", clip(sprintf(f,$1,$3,$2),width)}' "$STATE/last-import" "$IDX")
+    more=$((n-limit)); [ "$more" -gt 0 ] || more=0
+    [ "$more" -eq 0 ] || list="$list${list:+$NL}$CD$(t imp_done_more "$more")$C0"
+    lines=$(ui_head "$sum" " " "$list" "$CB$(t imp_next)$C0" | awk 'END {print NR}')
+    [ "$lines" -gt "$allowed" ] && [ "$limit" -gt 0 ] || break
+    limit=$((limit-1))
+  done
+  actions=("$(t act_imp_view)" "$(t act_imp_check)|$(t act_imp_check_hint)" "$(t act_imp_later)")
+  [ -z "${IMPORT_COMMIT:-}" ] || actions+=("$(t act_imp_undo)")
+  while :; do
+    at "$(t import_title)"
+    choice=$(UI_HEAD="$sum$NL $NL$list" ui_menu "$(t imp_next)" "${actions[@]}") || return 0
+    case $choice in
+      0) ONLY_NEXT=$STATE/last-import; return 0;;
+      1) check_hosts $(cat "$STATE/last-import");;
+      3) if [ -z "${IMPORT_COMMIT:-}" ] || [ "$(g rev-parse HEAD 2>/dev/null)" != "$IMPORT_COMMIT" ]; then
+           err "$(t err_import_undo_stale)" >&2; pause; continue
+         fi
+         undo_last "$IMPORT_COMMIT" && return 0;;
+      *) return 0;;
+    esac
+  done
 }
 clip_offer(){ # offer to import a share package from the clipboard (only once per package)
   local c h f line cnt from d rc
   c=$(clip_get 2>/dev/null | head -c 200000) || return 0
-  printf '%s' "$c" | head -c 300 | grep -q '^# hostbook-share v1' || return 0
+  printf '%s' "$c" | head -c 300 | grep -qE '^# hostbook-share v1([[:space:]]|$)' || return 0
   h=$(printf '%s' "$c" | sha256); [ "$h" = "$(cat "$STATE/last-offer" 2>/dev/null)" ] && return 0
   echo "$h" > "$STATE/last-offer"
   line=$(printf '%s' "$c" | head -1)   # "# hostbook-share v1 · N server · từ <machine>": the file format, not screen text

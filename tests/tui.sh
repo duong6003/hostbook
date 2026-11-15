@@ -76,6 +76,27 @@ start(){
     "$HERE/../lib" "$HERE/../lang" "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
   tmux -L "$socket" new-session -d -x "$1" -y 36 -s ui "$cmd"
 }
+# Real source menu: picker and paste cancellation return to the same source selection.
+printf '#!/bin/sh\nprintf called > "%s/editor-called"\nexit 1\n' "$T" > "$T/bin/editor"; chmod +x "$T/bin/editor"
+export EDITOR="$T/bin/editor" VISUAL="$T/bin/editor"
+start 100 import
+wait_for 'Dữ liệu nhập ở đâu?'
+tmux -L "$socket" send-keys -t ui Enter
+wait_for 'Chọn file'
+tmux -L "$socket" send-keys -t ui Escape
+wait_for 'Dữ liệu nhập ở đâu?'
+tmux -L "$socket" send-keys -t ui Down Enter
+wait_for 'Dán nội dung'
+tmux -L "$socket" send-keys -t ui C-c
+wait_for 'Dữ liệu nhập ở đâu?'
+tmux -L "$socket" send-keys -t ui Down Down Enter
+wait_for 'Clipboard trống'
+tmux -L "$socket" send-keys -t ui Enter
+wait_for 'Dữ liệu nhập ở đâu?'
+tmux -L "$socket" send-keys -t ui Escape
+end_ui
+[ ! -e "$T/editor-called" ] || { echo 'FAIL TUI: import opened an editor'; exit 1; }
+echo 'ok    TUI nguồn nhập quay lại từ chọn file, dán và clipboard trống'
 # An unknown underscore-prefixed argument remains an ordinary search query.
 printf '\nHost _web-a\n  HostName 192.0.2.1\nHost _web-b\n  HostName 192.0.2.2\n' >> "$HOSTBOOK_DIR/booking.conf"
 "$S" _index >/dev/null
@@ -141,7 +162,7 @@ Host dev-db
   User ubuntu
 CONF
 start 100 "import $T/import.conf"
-wait_for 'Nhập?'
+wait_for 'Xem lại trước khi nhập'
 tmux -L "$socket" send-keys -t ui Enter
 wait_for 'Tiếp theo'
 grep -q '2 mới' "$T/screen"

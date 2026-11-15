@@ -44,11 +44,11 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Single field | `ui_field` | rename, port, path, group name, secret name | rule shown before typing, inline error, preview of the change |
 | Multiline input | `ui_multiline` | paste or edit multiline text | native gum editor, breadcrumb and localized key hints; Ctrl-C cancels (Escape also cancels on gum 2) |
 | Multi-step | `ui_field` per step | add server, connect sync hub, vault setup | `step n/m` in the breadcrumb, finished steps as `✓` lines |
-| Review | `ui_menu` with header lines | last step of add/import | label → value table, `← source` for every suggestion |
+| Review | `ui_menu` for add; `ui_fzf` for import | last step of add/import | import review scrolls through staged hosts, counts, skipped reasons and key actions; Enter accepts, Escape cancels |
 | Confirm | `ui_confirm` | move project, undo, group open mode | the object's name, what changes, a primary button that names the action |
 | Danger | `ui_confirm --danger` or `UI_TONE=danger ui_field … equals:<name>` | delete server/group/secret, replace key | error-coloured frame, what is removed and what is kept, how to undo; PROD needs the name typed |
 | Progress | `title` + lines | check connections, find the sync hub, sync | elapsed / limit, a way to cancel |
-| Result | `ui_menu` | after check, share, import (only when there is a next step) | one summary line first, one line per object |
+| Result | `ui_menu` | after check, share, import (only when there is a next step) | import bounds its host summary to keep actions visible; View opens the complete imported list and Undo is available only for the current import commit |
 | Report | `title` + lines | doctor, help | grouped sections, `→ fix` on every problem line |
 | File picker | `ui_menu` per directory | send a file, key from file | starts in `~`, folders first, dot files hidden, sizes right-aligned |
 

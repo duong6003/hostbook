@@ -22,10 +22,12 @@ ui_menu(){
   local n; n=$(cat "$T/pick-number" 2>/dev/null || echo 0); echo $((n+1)) > "$T/pick-number"
   sed -n "$((n+1))p" "$T/picks"
 }
+ui_choice(){ : > "$T/source-compact"; ui_menu "$@"; }
 file_pick(){ [ "${PICK_CANCEL:-}" != 1 ] || return 1; printf '%s\n' "$INPUT_FILE"; }
 ui_multiline(){ [ "${PASTE_CANCEL:-}" != 1 ] || return 1; printf '%s\n' "${PASTE_VALUE:-}"; }
 clip_get(){ [ "${CLIP_FAIL:-}" != 1 ] || return 1; cat "$T/clipboard"; }
 confirm(){ : > "$T/confirmed"; return 1; }
+import_review(){ : > "$T/confirmed"; return 1; }
 pick(){ echo 0; }
 apply_import_config(){ : > "$T/applied"; return 1; }
 import_done(){ : > "$T/result"; return 0; }
@@ -34,7 +36,7 @@ check(){ if "$@"; then pass=$((pass+1)); echo "ok    $1"; else fail=$((fail+1));
 reset_menu(){ : > "$T/menu-log"; echo 0 > "$T/pick-number"; rm -f "$T/applied" "$T/confirmed"; }
 source_menu_offers_choices(){
   reset_menu; printf '3\n' > "$T/picks"
-  ! import_flow > "$T/output" 2>&1 && grep -Fq "$(t import_source_file)" "$T/menu-log" && grep -Fq "$(t import_source_paste)" "$T/menu-log" && grep -Fq "$(t import_source_clipboard)" "$T/menu-log" && [ ! -e "$T/editor-called" ]
+  ! import_flow > "$T/output" 2>&1 && [ -e "$T/source-compact" ] && grep -Fq "$(t import_source_file)" "$T/menu-log" && grep -Fq "$(t import_source_paste)" "$T/menu-log" && grep -Fq "$(t import_source_clipboard)" "$T/menu-log" && [ ! -e "$T/editor-called" ]
 }
 file_cancel_returns_to_source(){
   reset_menu; printf '0\n3\n' > "$T/picks"
@@ -57,8 +59,13 @@ binary_rejected(){
   ! import_flow "$T/binary" > "$T/output" 2>&1 && [ ! -s "$T/menu-log" ] && [ ! -e "$T/confirmed" ] && [ ! -e "$T/applied" ] && [ ! -e "$T/editor-called" ]
 }
 malformed_package_rejected(){
-  reset_menu; printf '# hostbook-share v9\nHost unsafe\n' > "$T/malformed"
-  ! import_flow "$T/malformed" > "$T/output" 2>&1 && [ ! -s "$T/menu-log" ] && [ ! -e "$T/editor-called" ]
+  reset_menu; rm -f "$T/package-attempted"
+  for version in v9 v10 v1broken; do
+    printf '# hostbook-share %s\nHost unsafe\n' "$version" > "$T/malformed"
+    (import_pack(){ : > "$T/package-attempted"; return 1; }; ! import_flow "$T/malformed" > "$T/output" 2>&1) || return 1
+    [ ! -e "$T/package-attempted" ] || return 1
+  done
+  [ ! -s "$T/menu-log" ] && [ ! -e "$T/editor-called" ]
 }
 quoted_path_bypasses_menu(){
   reset_menu; INPUT_FILE="$T/a space's ü.conf"
@@ -66,6 +73,16 @@ quoted_path_bypasses_menu(){
   rm -f "$T/confirmed"
   ! import_flow "$INPUT_FILE" > "$T/output" 2>&1 && [ -e "$T/confirmed" ] && [ ! -s "$T/menu-log" ] && [ ! -e "$T/editor-called" ]
 }
+literal_relative_paths_and_tilde(){ (
+  mkdir -p "$T/route-cwd"
+  for name in --help '~literal.conf'; do printf 'Host literal\n  HostName 192.0.2.2\n' > "$T/route-cwd/$name"; done
+  printf 'Host literal\n  HostName 192.0.2.2\n' > "$HOME/tilde.conf"
+  cd "$T/route-cwd" || exit 1
+  for name in --help '~literal.conf' '~/tilde.conf'; do
+    rm -f "$T/confirmed"
+    ! import_flow "$name" > "$T/output" 2>&1 && [ -e "$T/confirmed" ] || exit 1
+  done
+); }
 paste_keeps_last_submitted_draft(){
   reset_menu; printf '1\n1\n3\n' > "$T/picks"; echo 0 > "$T/paste-number"
   (ui_multiline(){
@@ -93,6 +110,7 @@ check private_key_rejected
 check binary_rejected
 check malformed_package_rejected
 check quoted_path_bypasses_menu
+check literal_relative_paths_and_tilde
 check paste_keeps_last_submitted_draft
 check real_package_cleanup_and_offer_suppression
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

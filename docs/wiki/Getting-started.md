@@ -51,6 +51,8 @@ Choose the path that matches your setup:
 - **Use a remote repository** (`Dùng kho ở máy khác`): clone your existing host list onto this machine.
 - **Host a repository here** (`Tạo kho trên máy này`): create a Git hub on an always-on machine.
 
+First launch initializes the encrypted vault before the optional SSH import. If you decline or cancel that import, your original SSH config remains in place. An accepted import preserves a backup without overwriting an existing backup. Includes, executable Match rules, inherited identity settings, and some ordering that cannot be preserved are rejected; adjust the source before retrying.
+
 The first-run flow also lets you choose an appearance preset. You can change it later
 with `hostbook settings`.
 

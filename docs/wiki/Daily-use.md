@@ -45,7 +45,7 @@ production hosts requires confirmation and defaults to No.
 
 ## Import hosts
 
-Use `Ctrl-O` -> `Nhập nhiều server`, paste an OpenSSH configuration, or run:
+Use `Ctrl-O` -> `Nhập nhiều server` and choose a file, paste, or clipboard. The file picker supports Ctrl-L to enter a path. The paste editor submits with Enter, inserts a newline with Ctrl-J, and cancels with Ctrl-C. You can also run:
 
 ```bash
 hostbook import hosts.txt
@@ -58,11 +58,12 @@ web1 ubuntu@10.0.1.11 #prod #web
 api1 deploy@10.0.1.12:2222 #staging #api
 ```
 
+Review the proposed hosts and key bindings before accepting; Escape cancels host changes. Text lists and SSH configurations add new aliases only: existing and repeated aliases are skipped. Unsupported SSH configuration directives are rejected with an error rather than imported with different behavior. Share bundles offer conflict choices and can update hosts.
+
 After import, the result shows how many hosts were added, updated, or skipped,
 with names, addresses, and projects. Choose **Xem các server vừa nhập** to open
 the list filtered to that import; press Escape to return to all hosts. Existing
-aliases are skipped when importing a text list or SSH config. Use a share bundle
-when you need to review and update conflicting hosts.
+aliases are skipped when importing a text list or SSH config. The result can undo its import while that commit remains the latest change; if another commit arrives, use the regular undo workflow after reviewing it.
 
 ## File transfer and forwarding
 

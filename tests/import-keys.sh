@@ -12,7 +12,7 @@ printf 'Include "%s/*.conf"\n' "$HOSTBOOK_DIR" > "$HOSTBOOK_SSH_CONFIG"
 sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
 . "$T/lib"
 trap 'cleanup; rm -rf "$T"' EXIT
-clear(){ :; }; pause(){ :; }; ui_menu(){ echo 0; }; ask_secret_name(){ echo imported-key; }
+clear(){ :; }; pause(){ :; }; ui_menu(){ echo 0; }; ui_choice(){ : > "$T/key-compact"; echo 0; }; ask_secret_name(){ echo imported-key; }
 git -C "$DIR" init -q
 printf 'tracked original\n' > "$DIR/note"; git -C "$DIR" add note; git -C "$DIR" commit -qm fixture
 vault_create "$HOSTBOOK_MASTER" >/dev/null || exit 1
@@ -29,7 +29,7 @@ external_key(){
   declare -F import_config_keys >/dev/null || return 1
   import_config_keys "$T/stage" >/dev/null 2>&1 || return 1
   git -C "$DIR" diff --cached --binary > "$T/after-key-index"
-  cmp "$T/preexisting-index" "$T/after-key-index" && [ "$(git -C "$DIR" show HEAD:note)" = 'tracked original' ] && cmp "$T/original-key" "$T/key space/id" && [ -s "$SEC/imported-key.age" ] && [ -s "$SEC/imported-key.pub" ] && grep -q '^# secret: imported-key$' "$T/stage/one.conf" && ! grep -Fq "$T/key space/id" "$T/stage/one.conf"
+  cmp "$T/preexisting-index" "$T/after-key-index" && [ "$(git -C "$DIR" show HEAD:note)" = 'tracked original' ] && cmp "$T/original-key" "$T/key space/id" && [ -e "$T/key-compact" ] && [ -s "$SEC/imported-key.age" ] && [ -s "$SEC/imported-key.pub" ] && grep -q '^# secret: imported-key$' "$T/stage/one.conf" && ! grep -Fq "$T/key space/id" "$T/stage/one.conf"
 }
 deduplicate_fingerprint(){
   cp "$T/key space/id" "$T/key space/other"
@@ -52,7 +52,7 @@ incomplete_managed_rejected(){
   printf 'type=key\nfp=invalid\n' > "$SEC/incomplete.meta"
   printf 'Host broken\n  HostName 192.0.2.5\n  IdentityFile "%s"\n' "$SEC/incomplete.pub" > "$T/stage/one.conf"
   printf 'broken\n' > "$T/stage/added"
-  (ui_menu(){ : > "$T/incomplete-prompt"; return 1; }; ! import_config_keys "$T/stage" >/dev/null 2>&1) && [ ! -e "$T/incomplete-prompt" ]
+  (ui_choice(){ : > "$T/incomplete-prompt"; return 1; }; ! import_config_keys "$T/stage" >/dev/null 2>&1) && [ ! -e "$T/incomplete-prompt" ]
 }
 key_commit_failure_preserves_index(){
   ssh-keygen -q -t ed25519 -N '' -f "$T/second-key" || return 1
@@ -64,6 +64,9 @@ key_commit_failure_preserves_index(){
   rm -f "$DIR/.git/hooks/pre-commit"
   git -C "$DIR" diff --cached --binary > "$T/after-failed-key-index"
   cmp "$T/preexisting-index" "$T/after-failed-key-index" && cmp "$T/second-original" "$T/second-key" && [ ! -e "$SEC/failed-key.pub" ] && [ ! -e "$SEC/failed-key.meta" ] && [ ! -e "$SEC/failed-key.age" ] && [ ! -d "$STATE/sync.lock" ]
+}
+invalid_key_clipboard_never_opens_editor(){
+  (clip_get(){ printf 'not a private key\n'; }; IMPORT_KEY_MODE=1; VISUAL=/nonexistent-editor; ! secret_add_key clip should-not-exist > "$T/key-clipboard-output" 2>&1) && grep -Fq "$(t err_import_key_clipboard)" "$T/key-clipboard-output" && [ ! -e "$SEC/should-not-exist.meta" ]
 }
 package_secret_names_unique(){
   mkdir -p "$T/collisions/secrets"
@@ -116,6 +119,7 @@ check missing_key_cancel
 check multiple_keys_rejected
 check incomplete_managed_rejected
 check key_commit_failure_preserves_index
+check invalid_key_clipboard_never_opens_editor
 check package_fingerprint_mismatch
 check package_secret_names_unique
 check managed_subdirectory_must_not_alias_basename
