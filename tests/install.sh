@@ -13,7 +13,7 @@ export GIT_AUTHOR_NAME=ci GIT_AUTHOR_EMAIL=ci@example.com GIT_COMMITTER_NAME=ci 
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
 printf 'keep host data\n' > "$HOSTBOOK_DIR/sentinel"
 git clone -q "$HERE" "$T/source"
-git -C "$T/source" checkout -q -b ci-install
+git -C "$T/source" checkout -q -B ci-install
 export HOSTBOOK_REPO="$T/source"
 bash "$HERE/install.sh" </dev/null
 app="$HOME/.local/share/hostbook"
