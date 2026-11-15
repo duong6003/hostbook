@@ -3,6 +3,7 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+export HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR="$HERE/../lang"   # the library is sourced from a temporary copy: tell it where the texts are
 export HOME="$T/home" HOSTBOOK_STATE="$T/state" HOSTBOOK_DIR="$T/hosts" XDG_CONFIG_HOME="$T/config"
 mkdir -p "$HOME"
 sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
