@@ -660,7 +660,10 @@ pack_apply_raw(){ # package-directory decisions-file
       replace:*) build_index && pack_delete_host "${act#replace:}" || return 1;;
       both:*) t=${act#both:};;
     esac
-    pack_block "$x" "$n" "$t" "$dec" > "$blk" && pack_write_host "$p" "$blk" || return 1
+    if [ -f "$x/preview-decisions" ]; then
+      [ -f "$x/review-blocks.d/$n.conf" ] && cp "$x/review-blocks.d/$n.conf" "$blk" || return 1
+    else pack_block "$x" "$n" "$t" "$dec" > "$blk" || return 1; fi
+    pack_write_host "$p" "$blk" || return 1
     printf '%s\n' "$t" >> "$x/applied" || return 1
   done < "$dec"
   build_index || return 1
@@ -732,32 +735,44 @@ pack_confirm_prod(){ # require the existing PROD alias before update or replacem
     fi
   done < "$decisions"
 }
+# Extract raw saved directives, without interpreting SSH inheritance or quoting.
+import_review_values(){ # concatenated concrete Host blocks → name, hostname, user, port, jump
+  awk 'BEGIN {OFS="\t"}
+    function emit() {if (name!="") print name, (h==""?"-":h), (u==""?"-":u), (p==""?"-":p), (j==""?"-":j)}
+    {line=$0; sub(/^[ \t]*/,"",line); if(line ~ /^#/ || line=="") next
+     key=line; sub(/[ \t=].*/,"",key); key=tolower(key)
+     val=line; sub(/^[^ \t=]+[ \t=]+/,"",val); sub(/[ \t]+$/,"",val)
+     if(key=="host") {emit(); name=val; sub(/[ \t].*/,"",name); h=u=p=j=""; next}
+     if(key=="hostname" && h=="") h=val
+     if(key=="user" && u=="") u=val
+     if(key=="port" && p=="") p=val
+     if(key=="proxyjump" && j=="") j=val
+    } END {emit()}' "$@"
+}
 import_review_package(){ # package directory decisions source → final read-only review
-  local x=$1 decisions=$2 source=$3 new updated skipped
+  local x=$1 decisions=$2 source=$3 new updated skipped n act target
   pack_normalize_decisions "$decisions" > "$x/preview-decisions" || return 1
   new=$(grep -cE "${TAB}(add|both:.*)$" "$x/preview-decisions")
   updated=$(grep -cE "${TAB}(update|replace:.*)$" "$x/preview-decisions")
   skipped=$(grep -c "${TAB}skip$" "$x/preview-decisions")
-  awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v sk="$(t import_review_skipped '%s' '%s')" -v keep="$(t import_skip_kept)" -v keyfmt="$(t import_review_secret '%s' '%s' '%s')" -v newlabel="$(t imp_sc_new)" -v oldlabel="$(t imp_sc_existing)" -v renamedlabel="$(t imp_sc_renamed)" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" '
-    function mapped(j,  count,a,i,part,prefix,suffix,at,out) {
-      count=split(j,a,","); out=""
-      for(i=1;i<=count;i++) {part=a[i]; prefix=""; suffix=""
-        if(index(part,"ssh://")==1) {prefix="ssh://"; part=substr(part,7)}
-        if(index(part,"@")) {at=index(part,"@"); prefix=prefix substr(part,1,at); part=substr(part,at+1)}
-        if(substr(part,1,1)!="[" && index(part,":")) {at=index(part,":"); suffix=substr(part,at); part=substr(part,1,at-1)}
-        if(part in renamed) part=renamed[part]; out=out (i>1?",":"") prefix part suffix
-      } return out
-    }
+  mkdir -p "$x/review-blocks.d" && : > "$x/review-blocks" || return 1
+  while IFS="$TAB" read -r n act; do
+    case $act in skip) continue;; both:*) target=${act#both:};; *) target=$n;; esac
+    pack_block "$x" "$n" "$target" "$x/preview-decisions" > "$x/review-blocks.d/$n.conf" && cat "$x/review-blocks.d/$n.conf" >> "$x/review-blocks" || return 1
+  done < "$x/preview-decisions"
+  import_review_values "$x/review-blocks" > "$x/review-values" || return 1
+  awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v sk="$(t import_review_skipped '%s' '%s')" -v keep="$(t import_skip_kept)" -v keyfmt="$(t import_review_secret '%s' '%s' '%s')" -v newlabel="$(t imp_sc_new)" -v oldlabel="$(t imp_sc_existing)" -v renamedlabel="$(t imp_sc_renamed)" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" -v inherited="$(t import_review_inherited)" '
     FILENAME==ARGV[1] {action[$1]=$2; if($2 ~ /^both:/) renamed[$1]=substr($2,6); next}
     FILENAME==ARGV[2] {secret[$1]=$2; status[$1]=$3; order[++k]=$1; next}
+    FILENAME==ARGV[3] {host[$1]=$2; userval[$1]=$3; portval[$1]=$4; jumpval[$1]=$5; next}
     {n=$1; act=action[n]; if(act=="skip") {printf sk,n,keep; print ""; next}
      if(act=="") next; name=(n in renamed?renamed[n]:n); mark=(" " $8 " " ~ / prod / ? prod " " : "")
-     user=($4==""?"-":$4); port=($5==""?"-":$5); tags=($8==""?"-":$8); login=($12==""?self:secret[$12]); jump=($6==""?"-":mapped($6))
+     user=(userval[name]=="-"?inherited:userval[name]); port=(portval[name]=="-"?inherited:portval[name]); address=(host[name]=="-"?inherited:host[name]); tags=($8==""?"-":$8); login=($12==""?self:secret[$12]); jump=(jumpval[name]=="-"?inherited:jumpval[name])
      if($12!="") needed[$12]=1
-     printf "%s", mark; printf h,name,user,$3,port,$2; printf "  "; printf d,tags,login,jump; if($9!="") {printf "  "; printf desc,$9} printf "\n"
+     printf "%s", mark; printf h,name,user,address,port,$2; printf "  "; printf d,tags,login,jump; if($9!="") {printf "  "; printf desc,$9} printf "\n"
     }
     END {for(i=1;i<=k;i++) {n=order[i]; if(n in needed) {label=(status[n]=="new"?newlabel:status[n]=="existing"?oldlabel:renamedlabel); printf keyfmt,n,secret[n],label; print ""}}}
-  ' "$x/preview-decisions" "$x/smap" "$x/index" > "$x/review-rows" || return 1
+  ' "$x/preview-decisions" "$x/smap" "$x/review-values" "$x/index" > "$x/review-rows" || return 1
   import_review_screen "$x/review-rows" "$source" "$new" "$updated" "$skipped" 0
 }
 import_review_screen(){ # rows source new updated skipped invalid
@@ -787,10 +802,13 @@ import_review(){ # stage source new updated skipped invalid → read-only review
   LC_ALL=C sort "$stage/added" > "$stage/review-expected"
   cut -f1 "$stage/review-index" | LC_ALL=C sort > "$stage/review-actual"
   cmp -s "$stage/review-expected" "$stage/review-actual" || return 1
-  { awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" '
-      {mark=(" " $8 " " ~ / prod / ? prod " " : ""); user=($4==""?"-":$4); port=($5==""?"-":$5); tags=($8==""?"-":$8); secret=($12==""?self:$12); jump=($6==""?"-":$6)
-       printf "%s", mark; printf h,$1,user,$3,port,$2; printf "  "; printf d,tags,secret,jump; if($9!="") {printf "  "; printf desc,$9} printf "\n"}
-    ' "$stage/review-index"
+  : > "$stage/review-values" || return 1
+  for f in "$stage"/*.conf; do [ ! -f "$f" ] || import_review_values "$f" >> "$stage/review-values" || return 1; done
+  { awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" -v inherited="$(t import_review_inherited)" '
+      FILENAME==ARGV[1] {host[$1]=$2; userval[$1]=$3; portval[$1]=$4; jumpval[$1]=$5; next}
+      {mark=(" " $8 " " ~ / prod / ? prod " " : ""); user=(userval[$1]=="-"?inherited:userval[$1]); port=(portval[$1]=="-"?inherited:portval[$1]); address=(host[$1]=="-"?inherited:host[$1]); tags=($8==""?"-":$8); secret=($12==""?self:$12); jump=(jumpval[$1]=="-"?inherited:jumpval[$1])
+       printf "%s", mark; printf h,$1,user,address,port,$2; printf "  "; printf d,tags,secret,jump; if($9!="") {printf "  "; printf desc,$9} printf "\n"}
+    ' "$stage/review-values" "$stage/review-index"
     if [ -f "$stage/key-refs" ] && [ -f "$stage/bindings" ]; then
       awk -F '\t' -v f="$(t import_review_key '%s' '%s')" 'FILENAME==ARGV[1] {path[$1]=$2; next} ($1 in path) {key=path[$1] SUBSEP $2; if(!seen[key]++) {printf f,path[$1],$2; print ""}}' "$stage/key-refs" "$stage/bindings"
     fi

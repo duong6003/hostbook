@@ -44,7 +44,7 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Single field | `ui_field` | rename, port, path, group name, secret name | rule shown before typing, inline error, preview of the change |
 | Multiline input | `ui_multiline` | paste or edit multiline text | native gum editor, breadcrumb and localized key hints; Ctrl-C cancels (Escape also cancels on gum 2) |
 | Multi-step | `ui_field` per step | add server, connect sync hub, vault setup | `step n/m` in the breadcrumb, finished steps as `✓` lines |
-| Review | `ui_menu` for add; `ui_fzf` for import | last step of add/import | import review scrolls through staged hosts, counts, skipped reasons and key actions; Enter accepts, Escape cancels |
+| Review | `ui_menu` for add; `ui_fzf` for import | last step of add/import | import review scrolls through saved directives, counts, skipped reasons and key actions; absent fields say SSH config, whose active settings can override saved values; Enter accepts, Escape cancels |
 | Confirm | `ui_confirm` | move project, undo, group open mode | the object's name, what changes, a primary button that names the action |
 | Danger | `ui_confirm --danger` or `UI_TONE=danger ui_field … equals:<name>` | delete server/group/secret, replace key | error-coloured frame, what is removed and what is kept, how to undo; PROD needs the name typed |
 | Progress | `title` + lines | check connections, find the sync hub, sync | elapsed / limit, a way to cancel |
