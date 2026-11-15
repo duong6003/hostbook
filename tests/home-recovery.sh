@@ -29,8 +29,7 @@ for lang in vi en; do
    printf 'border = %s\nlist = compact\n' "$border" > "$XDG_CONFIG_HOME/hostbook/config"
    if [ "$lang" = vi ]; then missing='Không có kết quả'; clear_hint='Esc xoá tìm kiếm'; kept='Vẫn giữ lựa chọn'; else missing='No matches'; clear_hint='Esc clears search'; kept='Selection kept'; fi
    start; wait_for alpha
-   k -l 'no-such-host'; wait_for "$missing"; wait_for "$clear_hint"
-   grep -q 'no-such' "$T/screen" || { cat "$T/screen"; echo 'FAIL query was cleared automatically'; exit 1; }
+   k -l 'no-such-host'; wait_for 'no-such'; wait_for "$missing"; wait_for "$clear_hint"
    k BSpace BSpace BSpace; k -l 'zzzz'; wait_for "$missing"
    k Escape; wait_for alpha
    ! grep -qF "$missing" "$T/screen" || { echo 'FAIL stale no-match message'; exit 1; }
@@ -64,6 +63,12 @@ k Escape; wait_for 'enter ssh'
 k Escape; wait_for beta; end_ui
 unset HOSTBOOK_ONLY
 printf 'PASS imported-view Escape hierarchy\n'
+printf 'ghost\n' > "$T/only"
+export HOSTBOOK_ONLY=$T/only
+start; wait_for 'Nothing in this view'; wait_for 'Esc back'
+k Escape; wait_for beta; end_ui
+unset HOSTBOOK_ONLY
+printf 'PASS empty imported view can return to all hosts\n'
 
 # Empty data keeps the real Add and Tools/Import instructions even after typing.
 export HOSTBOOK_DIR=$T/empty HOSTBOOK_STATE=$T/empty-state

@@ -1126,3 +1126,4 @@ L_controls_off='Tắt'
 
 L_home_no_matches='Không có kết quả · Esc xoá tìm kiếm'
 L_home_selection_kept='Vẫn giữ lựa chọn'
+L_home_empty_view='Danh sách này trống · Esc quay lại'

@@ -1126,3 +1126,4 @@ L_controls_off='Off'
 
 L_home_no_matches='No matches · Esc clears search'
 L_home_selection_kept='Selection kept'
+L_home_empty_view='Nothing in this view · Esc back'
