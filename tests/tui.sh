@@ -61,9 +61,9 @@ git -C "$HOSTBOOK_DIR" init -q; git -C "$HOSTBOOK_DIR" add -A; git -C "$HOSTBOOK
 fixture_commit=$(git -C "$HOSTBOOK_DIR" rev-parse HEAD)
 "$S" _index >/dev/null
 # Bounded wait for a real rendered state, rather than sleeping a fixed duration.
-wait_for(){
-  local i=0
-  while [ "$i" -lt 60 ]; do
+wait_for(){ # text [seconds, default 6]
+  local i=0 max=$(( ${2:-6} * 10 ))
+  while [ "$i" -lt "$max" ]; do
     tmux -L "$socket" capture-pane -p -t ui > "$T/screen" 2>/dev/null || :
     if grep -q "$1" "$T/screen"; then return 0; fi
     sleep .1; i=$((i+1))
@@ -160,7 +160,7 @@ wait_for 'Nhập thế nào?'
 tmux -L "$socket" send-keys -t ui Enter
 wait_for 'Xem lại trước khi nhập'
 tmux -L "$socket" send-keys -t ui Enter
-wait_for 'Tiếp theo'
+wait_for 'Tiếp theo' 20   # applying the import (git commit, index, ssh -G) can pass 6 s on a loaded CI runner
 grep -q '2 mới' "$T/screen"
 grep -q '192.0.2.10' "$T/screen"
 cp "$T/screen" "$ARTIFACTS/import-result.txt"
