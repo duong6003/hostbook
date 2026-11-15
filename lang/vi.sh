@@ -1123,3 +1123,8 @@ L_key_done='xong'
 L_controls_selected='đã chọn'
 L_controls_on='Bật'
 L_controls_off='Tắt'
+
+L_file_path_key='đường dẫn'
+L_file_path_label='Nhập đường dẫn file hoặc thư mục'
+L_file_path_invalid='Không đọc được đường dẫn · kiểm tra rồi thử lại'
+L_multiline_newline='xuống dòng'

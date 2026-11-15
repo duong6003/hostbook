@@ -131,13 +131,27 @@ SH
   rc=$?; [ $rc -le 1 ] || return 1   # enter on an empty list is "no match" (1) for fzf, esc is 130
   printf '%s\n' "${out%%$'\n'*}"
 }
+# ui_multiline LABEL VALUE → text on submit, nonzero on cancel.
+ui_multiline(){
+  local label=$1 value=$2 keys cols rows height header ga gt
+  keys=$(ui_keys "ctrl+j:$(t multiline_newline)" "enter:$(t key_continue)" "ctrl+c:$(t key_cancel)")
+  cols=$(term_cols); rows=$(term_rows); header="$(ui_label)$NL$(ui_head "$label")$NL$keys"
+  height=$((rows - 7)); [ "$height" -le 10 ] || height=10; [ "$height" -ge 1 ] || height=1
+  gum_color "$TH_ACCENT" ga; gum_color "$TH_TITLE" gt
+  printf '%s' "$value" | GUM_WRITE_STRIP_ANSI=false GUM_WRITE_PROMPT_FOREGROUND=$ga GUM_WRITE_CURSOR_FOREGROUND=$ga GUM_WRITE_HEADER_FOREGROUND=$gt \
+    gum write --width="$((cols > 4 ? cols - 4 : 1))" --height="$height" --char-limit=0 --header="$header" --placeholder=''
+}
 # ui_menu HEADER ITEM… → zero-based index of the chosen item. Items: "Label|description"; "#Name" starts a section
 # (not an item); "!Label" marks a destructive item, shown in the error colour. Prefix a call with UI_HEAD (lines above the
 # question, e.g. finished steps), UI_POS (row to start on), UI_EXPECT (extra keys that end it: the output is then the key,
 # a newline, the index) or UI_FOOT (replaces the key hints). UI_MULTI=1: tab marks items, the output is one index per line
 # (none when enter is pressed with nothing marked); UI_SELECT="1 3" marks those 1-based rows on start.
+# UI_QUERY enables query input/output; include esc in UI_EXPECT when cancellation must preserve it.
 ui_menu(){
   local header=$1; shift; local x lab desc sec= cols lw=0 sw=0 i=0 pad spad line list= danger
+  local -a query_opts; query_opts=()
+  local esc_bind='esc:abort'
+  if [ "${UI_QUERY+x}" ]; then query_opts=(--print-query --query="$UI_QUERY"); esc_bind=; fi
   cols=$(term_cols)
   for x in "$@"; do case $x in \#*) continue;; esac; x=${x#!}; x=${x%%|*}; [ ${#x} -gt $lw ] && lw=${#x}; done
   [ $lw -gt 34 ] && lw=34; for x in "$@"; do case $x in \#*) [ "$cols" -ge 70 ] && sw=12;; esac; done
@@ -152,7 +166,7 @@ ui_menu(){
   done
   printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
     --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" --highlight-line \
-    --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_back)}")}" --bind 'esc:abort' \
+    --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:${UI_ESC:-$(t key_back)}")}" ${esc_bind:+--bind "$esc_bind"} ${query_opts[@]+"${query_opts[@]}"} \
     ${UI_POS:+--bind "load:pos($UI_POS)"} ${UI_EXPECT:+--expect="$UI_EXPECT"} \
     ${UI_MULTI:+--multi --marker='✓' --bind 'tab:toggle+down' --bind 'enter:transform:[ "$FZF_SELECT_COUNT" = 0 ] && echo "become(true)" || echo accept'} \
     ${UI_SELECT:+--bind "load:$(local r=; for i in $UI_SELECT; do r="$r+pos($i)+select"; done; printf '%s' "${r#+}+first")"}
@@ -222,31 +236,59 @@ hsize(){ local b=$1; if [ "$b" -lt 1024 ]; then printf '%s B' "$b"; elif [ "$b" 
   elif [ "$b" -lt 1073741824 ]; then printf '%s.%s M' $((b/1048576)) $((b%1048576*10/1048576)); else printf '%s.%s G' $((b/1073741824)) $((b%1073741824*10/1073741824)); fi; }
 # File picker: one ui_menu per directory. Folders first, dot files hidden, sizes right-aligned; → opens a folder, ← goes up,
 # enter opens a folder or picks a file. Prints the file (as ~/… under the home directory); esc → status 1.
-file_pick(){ # start-dir header [enter-label] [dotfiles: 1 = start with hidden files shown]
-  local dir=${1:-$HOME} head=$2 enter=${3:-$(t key_pick)} dots=${4:-} base=$UI_AT H=${HOME%/} lines kind size name items names isdir out rc key i lab shown h2 ls_flags
-  dir=${dir%/}; [ -d "$dir/" ] || dir=$H   # the root directory is "" so that "$dir/" is always a valid path
+file_pick(){ # start-dir header [enter-label] [dotfiles] [session-dir]
+  local dir=${1:-$HOME} head=$2 enter=${3:-$(t key_pick)} dots=${4:-} session=${5:-} base=$UI_AT H=${HOME%/}
+  local lines kind size name items names isdir out rc key i lab shown h2 ls_flags query= path parent error= UI_AT=$UI_AT
+  if [ -n "$session" ] && [ -f "$session/dir" ]; then IFS= read -r dir < "$session/dir" || :; fi
+  if [ -n "$session" ] && [ -f "$session/query" ]; then IFS= read -r query < "$session/query" || :; fi
+  H=$(CDPATH= cd "$HOME" 2>/dev/null && pwd -P) || return 1
+  [ -d "$dir" ] || dir=$H
+  dir=$(CDPATH= cd "$dir" 2>/dev/null && pwd -P) || return 1; dir=${dir%/}
   while :; do
-    shown=$dir; case $dir in "$H"|"$H"/*) shown="~${dir#"$H"}";; esac; UI_AT="$base|${shown:-/}"
+    shown=$dir; case $dir in "$H"|"$H"/*) shown="~${dir#"$H"}";; esac
+    shown=$(printf '%s' "$shown" | LC_ALL=C tr -d '\000-\037\177'); UI_AT="$base|${shown:-/}"
     items=(); names=(); isdir=(); ls_flags=-lnL; [ -z "$dots" ] || ls_flags=-lnLA
-    # one ls: the name is everything after the 8th field and the single space that follows it, so it is kept exactly
     lines=$(LC_ALL=C ls $ls_flags "$dir/" 2>/dev/null | awk '{ k = substr($1, 1, 1); if (k != "d" && k != "-") next; n = $0; for (i = 1; i <= 8; i++) sub(/^[ \t]*[^ \t]+/, "", n); sub(/^ /, "", n); printf "%s\t%s\t%s\n", k, $5, n }' | sort -t "$TAB" -k1,1r -k3,3f)
     while IFS="$TAB" read -r kind size name; do
       [ -n "$name" ] || continue
-      lab=${name//|/¦}; case $lab in \#*|\!*) lab=" $lab";; esac
+      lab=$(printf '%s' "$name" | LC_ALL=C tr -d '\000-\037\177'); lab=${lab//|/¦}; case $lab in \#*|\!*) lab=" $lab";; esac
       if [ "$kind" = d ]; then items+=("$lab/"); isdir+=(1); else items+=("$lab|$(printf '%8s' "$(hsize "${size:-0}")")"); isdir+=(0); fi
       names+=("$name")
     done <<< "$lines"
     h2=$head; [ ${#items[@]} -gt 0 ] || h2="$head$NL$CD$(t file_empty)$C0"
-    out=$(UI_EXPECT=left,right,ctrl-o UI_FOOT=$(ui_keys "→:$(t key_open)" "←:$(t key_up)" "enter:$enter" "ctrl-o:$(t key_dots)" "esc:$(t key_cancel)") \
+    [ -z "$error" ] || h2="$h2$NL$CR$error$C0"; error=
+    out=$(UI_QUERY="$query" UI_EXPECT=left,right,ctrl-o,ctrl-l,esc UI_FOOT="$(ui_keys "→:$(t key_open)" "←:$(t key_up)" "enter:$enter")$NL$(ui_keys "ctrl-o:$(t key_dots)" "ctrl-l:$(t file_path_key)" "esc:$(t key_cancel)")" \
       ui_menu "$h2" ${items[@]+"${items[@]}"}); rc=$?
-    [ $rc -le 1 ] || { UI_AT=$base; return 1; }   # fzf exits 1 on an empty list or filter, even for the keys above: stay here
-    key=${out%%$NL*}; i=${out#*$NL}
-    if [ "$key" = left ]; then dir=${dir%/*}; continue; fi
-    if [ "$key" = ctrl-o ]; then if [ -n "$dots" ]; then dots=; else dots=1; fi; continue; fi
-    [ -n "$i" ] || continue
-    if [ "${isdir[$i]}" = 1 ]; then dir=$dir/${names[$i]}; continue; fi
+    [ $rc -le 1 ] || return 1
+    query=${out%%$NL*}; out=${out#*$NL}; key=${out%%$NL*}; i=${out#*$NL}
+    if [ -n "$session" ]; then printf '%s\n' "${dir:-/}" > "$session/dir"; printf '%s\n' "$query" > "$session/query"; fi
+    case $key in
+      esc) return 1;;
+      left) dir=${dir%/*}; query=; continue;;
+      ctrl-o) if [ -n "$dots" ]; then dots=; else dots=1; fi; continue;;
+      ctrl-l)
+        path=$(ui_field "$(t file_path_label)" '' any) || continue
+        [ -n "$path" ] || { error=$(t file_path_invalid); continue; }
+        case $path in '~') path=$HOME;; '~/'*) path=$HOME/${path#\~/};; esac
+        path=$(unix_path "$path") || { error=$(t file_path_invalid); continue; }
+        case $path in /*) ;; *) path=${dir:-/}/$path;; esac
+        if [ -d "$path" ] && [ -r "$path" ] && [ -x "$path" ]; then
+          dir=$(CDPATH= cd "$path" 2>/dev/null && pwd -P) || { error=$(t file_path_invalid); continue; }
+          dir=${dir%/}; query=; continue
+        fi
+        if [ -f "$path" ] && [ -r "$path" ]; then
+          parent=$(CDPATH= cd "$(dirname "$path")" 2>/dev/null && pwd -P) || { error=$(t file_path_invalid); continue; }
+          path=${parent%/}/${path##*/}; case $path in "$H"/*) path="~${path#"$H"}";; esac
+          printf '%s\n' "$path"; return 0
+        fi
+        error=$(t file_path_invalid); continue;;
+    esac
+    case $i in ''|*[!0-9]*) continue;; esac
+    [ "$i" -lt "${#names[@]}" ] || continue
+    if [ "${isdir[$i]}" = 1 ]; then dir=$dir/${names[$i]}; query=; continue; fi
     [ "$key" = right ] && continue
-    UI_AT=$base; case $dir in "$H"|"$H"/*) dir="~${dir#"$H"}";; esac; printf '%s/%s\n' "$dir" "${names[$i]}"; return 0
+    [ -r "$dir/${names[$i]}" ] || { error=$(t file_path_invalid); continue; }
+    case $dir in "$H"|"$H"/*) dir="~${dir#"$H"}";; esac; printf '%s/%s\n' "$dir" "${names[$i]}"; return 0
   done
 }
 pick_key_file(){ # → print a private-key path (as ~/… under the home directory)

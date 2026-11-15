@@ -1123,3 +1123,8 @@ L_key_done='done'
 L_controls_selected='selected'
 L_controls_on='On'
 L_controls_off='Off'
+
+L_file_path_key='path'
+L_file_path_label='Enter a file or folder path'
+L_file_path_invalid='Cannot read path · check it and try again'
+L_multiline_newline='new line'
