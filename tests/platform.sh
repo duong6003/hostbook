@@ -16,7 +16,7 @@ check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fai
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"
 check 'callback command safely quotes spaces and apostrophes' '[ "$(bash -c "$(self_cmd) _header")" = callback-ok ]'
-check 'all emitted fzf callbacks use the quoted command' 'fzf_opts | grep -F "$(self_cmd) _header" >/dev/null'
+check 'all emitted fzf callbacks use the quoted command' 'fzf_opts "$T" | grep -F "$(self_cmd) _header" >/dev/null'
 printf 'Host example\n%s\n' "$(login_lines "$T/a space.pub")" > "$T/ssh"
 check 'SSH key path preserves spaces through OpenSSH config parsing' 'ssh -F "$T/ssh" -G example 2>/dev/null | grep -F "identityfile $T/a space.pub" >/dev/null'
 mkdir -p "$DIR"
@@ -30,7 +30,7 @@ printf 'Include "%s/*.conf"\n' "$DIR" > "$T/crlf-ssh"
 SSHCFG=$T/crlf-ssh
 check 'CRLF Host lines remain discoverable' '[ "$(index_file "$DIR/crlf.conf" | cut -f1)" = crlf ]'
 mkdir -p "$CONF"; printf 'list = compact\r\n' > "$CFG"
-check 'CRLF settings preserve values' '[ "$(cfg list cards)" = compact ]'
+check 'CRLF settings preserve values' 'cfg_load; [ "$(cfg list cards)" = compact ]'
 printf 'fixture\ttabs\tcrlf example\r\n' > "$GRP"
 check 'CRLF groups preserve host names' '[ "$(group_field fixture 3)" = "crlf example" ]'
 check 'index notices edits when the host directory contains spaces' '(

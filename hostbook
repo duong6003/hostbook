@@ -9,15 +9,30 @@
 #
 # Requires git, fzf >= 0.63, gum >= 0.14, and tmux to open multiple servers. Bash 3.2 compatible; Windows uses the managed Git for Windows runtime.
 set -u
+# Closing the terminal must end hostbook and its gum/fzf (#4). "trap cleanup EXIT" makes bash defer SIGHUP until the
+# foreground child exits, and gum ignores a revoked terminal. So the terminal's process is this trap-free parent: it
+# dies on SIGHUP at once, the kernel then hangs up the whole foreground group, and the app below runs cleanup.
+# Only macOS and Linux use it: internal _* callbacks (hot paths), Windows (any other $OSTYPE) and sourced tests skip it.
+# Limit: SIGTERM sent to this parent alone (e.g. `timeout`) is not forwarded; signal the process group instead.
+if [ -z "${HOSTBOOK_APP:-}" ] && [ "${BASH_SOURCE:-}" = "$0" ]; then
+  case ${1:-}:$OSTYPE in _*:*) ;; *:darwin*|*:linux*) HOSTBOOK_APP=1 "$BASH" "$0" "$@"; exit;; esac
+fi
+unset HOSTBOOK_APP
 umask 077   # only the machine owner can read the server list and state
 VERSION=0.4.0
 FZF_MIN=0.63; GUM_MIN=0.14; AGE_MIN=1.3.0
 REPO_URL=https://github.com/duong6003/hostbook
 
-resolve_self(){ local p=$1 l; while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l;; *) p=$(dirname "$p")/$l;; esac; done
-  (cd "$(dirname "$p")" && printf '%s/%s\n' "$(pwd)" "$(basename "$p")"); }
-SELF=$(resolve_self "$0")
-is_windows(){ case $(uname -s) in MINGW*|MSYS*) return 0;; esac; return 1; }
+# Boot runs on every fzf callback: no forks here unless needed (#5).
+resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this shell instead of a subshell
+  local p=$1 l d o=$PWD
+  while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l;; *) case $p in */*) p=${p%/*}/$l;; *) p=$l;; esac;; esac; done
+  case $p in */*) d=${p%/*}; [ -n "$d" ] || d=/;; *) d=.;; esac
+  SELF=; CDPATH= cd -- "$d" 2>/dev/null && SELF=$PWD/${p##*/}; CDPATH= cd -- "$o" 2>/dev/null || :
+}
+resolve_self "$0"
+IS_WIN=; IS_MAC=; case $OSTYPE in darwin*) IS_MAC=1;; linux*) ;; *) case $(uname -s) in MINGW*|MSYS*) IS_WIN=1;; esac;; esac   # no fork on macOS/Linux; $OSTYPE varies on Windows runtimes, so ask uname there
+is_windows(){ [ -n "$IS_WIN" ]; }
 unix_path(){ if is_windows; then cygpath -u "$1"; else printf '%s\n' "$1"; fi; }
 native_path(){ if is_windows; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
 windows_tool(){ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "${HOSTBOOK_PLATFORM_HELPER:-$(dirname "$SELF")/windows/platform.ps1}")" "$@"; }
@@ -27,17 +42,22 @@ if is_windows; then
   # fzf's native command arguments are protected from MSYS conversion; its Bash callbacks need normal conversion again.
   unset MSYS2_ARG_CONV_EXCL MSYS_NO_PATHCONV
 fi
-DIR=$(unix_path "${HOSTBOOK_DIR:-$HOME/ssh-hosts}")
-STATE=$(unix_path "${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}")
-SSHCFG=${HOSTBOOK_SSH_CONFIG:-}; [ -z "$SSHCFG" ] || SSHCFG=$(unix_path "$SSHCFG")   # test override for ~/.ssh/config
+DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
+STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
+SSHCFG=${HOSTBOOK_SSH_CONFIG:-}   # test override for ~/.ssh/config
+if is_windows; then DIR=$(unix_path "$DIR"); STATE=$(unix_path "$STATE"); [ -z "$SSHCFG" ] || SSHCFG=$(unix_path "$SSHCFG"); fi
 IDX=$STATE/index.tsv; HIST=$STATE/history; ST=$STATE/status; FLASH=$STATE/flash
 GRP=$DIR/groups.tsv
-ME=$(id -un)
+ME=${USER:-$(id -un)}
 TAB=$'\t'
 # ${#string} counts accented characters correctly only in a UTF-8 locale; minimal Ubuntu has C.UTF-8, macOS has en_US.UTF-8
 case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in *[Uu][Tt][Ff]*8*) ;; *)
   for l in C.UTF-8 en_US.UTF-8; do locale -a 2>/dev/null | grep -qix "$l\|${l%UTF-8}utf8" && { export LC_CTYPE=$l; break; }; done;; esac
-if ! is_windows || [ "${HOSTBOOK_PRIVATE_STATE:-}" != "$STATE" ]; then
+# Commands a person runs re-apply 700 to the state dir; callbacks and --version only create a missing one (mkdir+chmod fork).
+private=1
+if is_windows; then [ "${HOSTBOOK_PRIVATE_STATE:-}" != "$STATE" ] || private=
+else case ${1:-} in _*|--version|-v|version) [ -d "$STATE" ] && [ -O "$STATE" ] && private=;; esac; fi
+if [ -n "$private" ]; then
   private_dir "$STATE" || { echo "Không bảo vệ được thư mục state của hostbook" >&2; exit 1; }
   if is_windows; then export HOSTBOOK_PRIVATE_STATE=$STATE; fi
 fi
@@ -47,8 +67,10 @@ E=$'\033'; C0="$E[0m"; CB="$E[1m"
 
 # ---------- helpers ----------
 LOCK_HELD=""
-cleanup(){ rm -rf "$STATE/tmp/$$".* 2>/dev/null; [ -n "$LOCK_HELD" ] && rmdir "$STATE/sync.lock" 2>/dev/null; return 0; }
-trap cleanup EXIT
+# A closing terminal can send SIGHUP twice. Bash's default handling of a second one kills it before the EXIT trap,
+# so trap HUP explicitly, and keep rm/rmdir from dying of it.
+cleanup(){ trap '' HUP; set -- "$STATE/tmp/$$".*; [ ! -e "$1" ] || rm -rf "$@" 2>/dev/null; [ -n "$LOCK_HELD" ] && rmdir "$STATE/sync.lock" 2>/dev/null; return 0; }
+trap cleanup EXIT; trap 'exit 129' HUP
 # Only the owner can read temporary directories; plaintext secrets must stay here. Removed automatically on exit.
 tmpd(){ private_dir "$STATE/tmp" || return 1; mktemp -d "$STATE/tmp/$$.XXXXXX"; }
 # Only ciphertext is shared with askpass children. Each top-level invocation gets a fresh DPAPI cache.
@@ -62,7 +84,7 @@ fzf(){ if is_windows; then MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 command fz
 clip_get(){ if is_windows; then windows_tool clipboard-get; elif have pbpaste; then pbpaste; elif have wl-paste; then wl-paste; elif have xclip; then xclip -o -selection clipboard; elif have xsel; then xsel -ob; else return 1; fi; }
 sha256(){ if have sha256sum; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 export GIT_OPTIONAL_LOCKS=0   # background git status must not contend for the index lock with another sync
-g(){ git -C "$(native_path "$DIR")" "$@"; }
+g(){ if is_windows; then git -C "$(native_path "$DIR")" "$@"; else git -C "$DIR" "$@"; fi; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
 scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
 git_ssh(){ printf 'ssh%s -o BatchMode=yes -o ConnectTimeout=%s' "${SSHCFG:+ -F $(printf %q "$SSHCFG")}" "${1:-4}"; }
@@ -70,7 +92,9 @@ ok(){ printf "%s${ICON_OK}%s %s\n" "$CG" "$C0" "$*"; }
 warn(){ printf '%s%s%s %s\n' "$CY" "$ICON_WARN" "$C0" "$*"; }
 err(){ printf "%s${ICON_ERR}%s %s\n" "$CR" "$C0" "$*"; }
 dim(){ printf '%s%s%s\n' "$CD" "$*" "$C0"; }
-term_cols(){ local c; c=$( { stty size </dev/tty; } 2>/dev/null | cut -d' ' -f2); echo "${c:-${COLUMNS:-80}}"; }
+term_cols(){ # [var]
+  local _tc; _tc=$(stty size 2>/dev/null </dev/tty); _tc=${_tc#* }; _tc=${_tc:-${COLUMNS:-80}}
+  if [ -n "${1:-}" ]; then printf -v "$1" '%s' "$_tc"; else echo "$_tc"; fi; }
 box(){ # color line... · wrap lines wider than the screen within the box
   local c=$1 l v max=0 cols; shift; cols=$(term_cols)
   case $c in err) c=$TH_ERR;; warn) c=$TH_WARN;; ok) c=$TH_OK;; title) c=$TH_TITLE;; dim) c=$TH_DIM;; esac
@@ -86,7 +110,7 @@ perm(){ stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 port_open(){ # host port [seconds]: check whether a TCP port is open; use Bash /dev/tcp on minimal Linux without nc
   if have nc; then if is_mac; then nc -z -G "${3:-1}" "$1" "$2" 2>/dev/null; else nc -z -w "${3:-1}" "$1" "$2" 2>/dev/null; fi
   else (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null; fi; }   # try GNU first: on Linux, "stat -f" is a different command that does not fail
-is_mac(){ [ "$(uname)" = Darwin ]; }
+is_mac(){ [ -n "$IS_MAC" ]; }
 copy(){ if is_windows; then windows_tool clipboard-set; elif have pbcopy; then pbcopy; elif have wl-copy; then wl-copy; elif have xclip; then xclip -selection clipboard; elif have xsel; then xsel -b; else return 1; fi; }
 has_remote(){ [ -n "$(g remote 2>/dev/null)" ]; }
 remote_url(){ g remote get-url origin 2>/dev/null; }
@@ -116,13 +140,31 @@ confirm(){ gum confirm --affirmative "Có" --negative "Không" "$@"; }   # Vietn
 ask(){ gum input --header "$1" --placeholder "${2:-}" --value "${3:-}"; }
 
 # ---------- machine-local configuration and theme ----------
-CONF=$(unix_path "${XDG_CONFIG_HOME:-$HOME/.config}/hostbook")
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/hostbook; if is_windows; then CONF=$(unix_path "$CONF"); fi
 CFG=$CONF/config
-cfg_raw(){ [ -f "$CFG" ] && awk -F= -v k="$1" '
-  {sub(/\r$/,"")}
-  /^[ \t]*#/ {next} {key=$1; gsub(/^[ \t]+|[ \t]+$/, "", key); if(key==k){v=substr($0,index($0,"=")+1); sub(/[ \t]+# .*/,"",v); gsub(/^[ \t]+|[ \t]+$/, "",v); found=1}}
-  END{if(found) print v}' "$CFG"; }
-duration(){ case $1 in *h) echo $(( ${1%h} * 3600 ));; *m) echo $(( ${1%m} * 60 ));; *) echo "$1";; esac; }
+# Helpers that take an optional trailing [var] assign the result to it with printf -v instead of printing (no subshell).
+kv_next(){ # read the next "key = value  # comment" line of stdin into KK and KV, skipping comment lines; 1 at EOF
+  local line ws=$' \t'
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}; KK=${line#"${line%%[!$ws]*}"}; case $KK in '#'*) continue;; esac
+    KK=${line%%=*}; KK=${KK#"${KK%%[!$ws]*}"}; KK=${KK%"${KK##*[!$ws]}"}
+    KV=${line#*=}; KV=${KV%%[$ws]'# '*}; KV=${KV#"${KV%%[!$ws]*}"}; KV=${KV%"${KV##*[!$ws]}"}
+    return 0
+  done; return 1
+}
+cfg_load(){ # parse $CFG into CFG_MEM ("\nkey=value" lines, last wins); cfg reloads when CFG changes, cfg_set after writing
+  local KK KV; CFG_SRC=$CFG; CFG_MEM=$'\n'
+  [ -f "$CFG" ] || return 0
+  while kv_next; do [ -z "$KK" ] || CFG_MEM="$CFG_MEM$KK=$KV"$'\n'; done < "$CFG"
+}
+cfg_raw(){ # key [var]: value as written, or nothing (status 1) when unset
+  local _cr; [ "${CFG_SRC-}" = "$CFG" ] || cfg_load
+  case $CFG_MEM in *$'\n'"$1="*) ;; *) return 1;; esac
+  _cr=${CFG_MEM##*$'\n'"$1="}; _cr=${_cr%%$'\n'*}
+  if [ -n "${2:-}" ]; then printf -v "$2" '%s' "$_cr"; else printf '%s\n' "$_cr"; fi
+}
+duration(){ local d; case $1 in *h) d=$(( ${1%h} * 3600 ));; *m) d=$(( ${1%m} * 60 ));; *) d=$1;; esac
+  if [ -n "${2:-}" ]; then printf -v "$2" '%s' "$d"; else echo "$d"; fi; }
 valid_theme_name(){ case $1 in ''|*[!a-zA-Z0-9_-]*) return 1;; esac; }
 cfg_valid(){
   case $1:$2 in list:cards|list:compact|list:minimal|border:rounded|border:sharp|border:bold|border:double|border:none|preview:right|preview:bottom|preview:hidden|separator:on|separator:off|icons:unicode|icons:ascii|icons:nerd) return 0;;
@@ -130,16 +172,20 @@ cfg_valid(){
     key_ttl:*|connect_timeout:*) [[ $2 =~ ^[1-9][0-9]*[hm]?$ ]] || return 1
       [ "$1" = key_ttl ] || [[ $2 =~ ^[1-9][0-9]*$ ]] || return 1
       [ ${#2} -le 10 ] || return 1
-      local n; n=$(duration "$2") 2>/dev/null || return 1; [ "$n" -gt 0 ] && [ "$n" -le 2147483647 ]; return;;
+      local n; duration "$2" n; [ "$n" -gt 0 ] && [ "$n" -le 2147483647 ]; return;;
   esac; return 1
 }
-cfg(){ local v; v=$(cfg_raw "$1"); if cfg_valid "$1" "$v"; then printf '%s\n' "$v"; else printf '%s\n' "$2"; fi; }
+cfg(){ # key default [var]
+  local _cv=; cfg_raw "$1" _cv || :; cfg_valid "$1" "$_cv" || _cv=$2
+  if [ -n "${3:-}" ]; then printf -v "$3" '%s' "$_cv"; else printf '%s\n' "$_cv"; fi
+}
 cfg_set(){
   cfg_valid "$1" "$2" || return 1
   mkdir -p "$CONF"; local t; t=$(mktemp "$CONF/config.XXXXXX") || return 1
   { [ ! -f "$CFG" ] || awk -F= -v k="$1" '{s=$1; gsub(/^[ \t]+|[ \t]+$/,"",s); if(s!=k)print}' "$CFG"; printf '%s = %s\n' "$1" "$2"; } > "$t"
-  mv "$t" "$CFG"
+  mv "$t" "$CFG" && cfg_load
 }
+cfg_mem(){ cfg_valid "$1" "$2" || return 1; [ "${CFG_SRC-}" = "$CFG" ] || cfg_load; CFG_MEM="$CFG_MEM$1=$2"$'\n'; }   # like cfg_set, in memory only
 cfg_init(){ [ -e "$CFG" ] || { [ ! -d "$DIR/.git" ] || cfg_set list compact; }; }
 cfg_errors(){
   [ -f "$CFG" ] || return 0
@@ -152,7 +198,7 @@ cfg_errors(){
   done < "$CFG"
 }
 theme_names(){ printf '%s\n' hostbook dracula nord gruvbox solarized-dark solarized-light light high-contrast terminal; }
-theme_builtin(){
+theme_builtin(){ # name [var]
   local palette
   # Palettes: draculatheme.com/contribute, nordtheme.com, ethanschoonover.com/solarized, github.com/morhetz/gruvbox.
   case $1 in
@@ -167,8 +213,8 @@ theme_builtin(){
     terminal) palette='magenta cyan bright-black green yellow red bright-black blue black 16|cyan yellow green magenta blue';;
     *) return 1;;
   esac
-  local chips=${palette#*|}; set -- ${palette%%|*}
-  printf 'accent = %s\ntitle = %s\ndim = %s\nok = %s\nwarn = %s\nerr = %s\nborder = %s\nsel_bg = %s\nchip_fg = %s\nbase = %s\nchips = %s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "$chips"
+  local chips=${palette#*|} var=${2:-}; set -- ${palette%%|*}
+  printf ${var:+-v "$var"} 'accent = %s\ntitle = %s\ndim = %s\nok = %s\nwarn = %s\nerr = %s\nborder = %s\nsel_bg = %s\nchip_fg = %s\nbase = %s\nchips = %s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "$chips"
 }
 valid_color(){ [[ $1 =~ ^([0-9]{1,3}|#[a-fA-F0-9]{6}|(bright-)?(black|red|green|yellow|blue|magenta|cyan|white))$ ]] || return 1
   case $1 in [0-9]*) [ "$1" -le 255 ] || return 1;; esac
@@ -193,35 +239,35 @@ theme_check(){ # never source/eval user-written files
     case $seen in *" $k "*) ;; *) printf '%s: thiếu %s\n' "$1" "$k" >&2; return 1;; esac
   done
 }
-esc_fg(){
+esc_fg(){ # color [var]
   local c=$1 n=30
-  case $c in \#*) printf '\033[38;2;%d;%d;%dm' "$((16#${c:1:2}))" "$((16#${c:3:2}))" "$((16#${c:5:2}))";;
-    [0-9]*) printf '\033[38;5;%sm' "$c";;
+  case $c in \#*) printf ${2:+-v "$2"} '\033[38;2;%d;%d;%dm' "$((16#${c:1:2}))" "$((16#${c:3:2}))" "$((16#${c:5:2}))";;
+    [0-9]*) printf ${2:+-v "$2"} '\033[38;5;%sm' "$c";;
     *) case $c in bright-*) n=90; c=${c#bright-};; esac
        case $c in black) ;; red) n=$((n+1));; green) n=$((n+2));; yellow) n=$((n+3));; blue) n=$((n+4));; magenta) n=$((n+5));; cyan) n=$((n+6));; white) n=$((n+7));; esac
-       printf '\033[%sm' "$n";;
+       printf ${2:+-v "$2"} '\033[%sm' "$n";;
   esac
 }
 apply_theme(){
-  local name data k v
-  name=$(cfg theme hostbook)
+  local name data KK KV ga gt
+  cfg theme hostbook name
   [ -z "${NO_COLOR:-}" ] || name=terminal
-  if data=$(theme_builtin "$name"); then :
-  elif theme_check "$CONF/themes/$name.theme" 2>/dev/null; then data=$(cat "$CONF/themes/$name.theme")
-  else data=$(theme_builtin hostbook); fi
-  while IFS="$TAB" read -r k v; do
-    case $k in accent) TH_ACCENT=$v;; title) TH_TITLE=$v;; dim) TH_DIM=$v;; ok) TH_OK=$v;; warn) TH_WARN=$v;; err) TH_ERR=$v;; border) TH_BORDER=$v;; sel_bg) TH_SEL_BG=$v;; chip_fg) TH_CHIP_FG=$v;; chips) TH_CHIPS=$v;; base) TH_BASE=$v;; esac
-  done < <(printf '%s\n' "$data" | awk -F= '
-    /^[ \t]*#/ {next} NF>=2 {k=$1; v=substr($0,index($0,"=")+1); sub(/[ \t]+# .*/,"",v);
-    gsub(/^[ \t]+|[ \t]+$/,"",k); gsub(/^[ \t]+|[ \t]+$/,"",v); printf "%s\t%s\n",k,v}')
-  CP=$(esc_fg "$TH_ACCENT"); CU=$(esc_fg "$TH_TITLE"); CD=$(esc_fg "$TH_DIM"); CG=$(esc_fg "$TH_OK"); CY=$(esc_fg "$TH_WARN"); CR=$(esc_fg "$TH_ERR")
-  CBORDER=$(esc_fg "$TH_BORDER"); CSEL=$(esc_fg "$TH_SEL_BG")
+  if theme_builtin "$name" data; then :
+  elif theme_check "$CONF/themes/$name.theme" 2>/dev/null; then IFS= read -r -d '' data < "$CONF/themes/$name.theme" || :
+  else theme_builtin hostbook data; fi
+  while kv_next; do
+    case $KK in accent) TH_ACCENT=$KV;; title) TH_TITLE=$KV;; dim) TH_DIM=$KV;; ok) TH_OK=$KV;; warn) TH_WARN=$KV;; err) TH_ERR=$KV;; border) TH_BORDER=$KV;; sel_bg) TH_SEL_BG=$KV;; chip_fg) TH_CHIP_FG=$KV;; chips) TH_CHIPS=$KV;; base) TH_BASE=$KV;; esac
+  done <<< "$data"
+  esc_fg "$TH_ACCENT" CP; esc_fg "$TH_TITLE" CU; esc_fg "$TH_DIM" CD; esc_fg "$TH_OK" CG; esc_fg "$TH_WARN" CY; esc_fg "$TH_ERR" CR
+  esc_fg "$TH_BORDER" CBORDER; esc_fg "$TH_SEL_BG" CSEL
   if [ -n "${NO_COLOR:-}" ]; then CP=''; CU=''; CD=''; CG=''; CY=''; CR=''; CBORDER=''; CSEL=''; TH_BASE=bw; fi
-  export GUM_CHOOSE_CURSOR_FOREGROUND=$(gum_color "$TH_ACCENT") GUM_CHOOSE_HEADER_FOREGROUND=$(gum_color "$TH_TITLE") GUM_CHOOSE_SELECTED_FOREGROUND=$(gum_color "$TH_ACCENT") \
-    GUM_INPUT_HEADER_FOREGROUND=$(gum_color "$TH_TITLE") GUM_INPUT_PROMPT_FOREGROUND=$(gum_color "$TH_ACCENT") GUM_INPUT_CURSOR_FOREGROUND=$(gum_color "$TH_ACCENT") \
-    GUM_CONFIRM_SELECTED_BACKGROUND=$(gum_color "$TH_ACCENT") GUM_SPIN_SPINNER_FOREGROUND=$(gum_color "$TH_ACCENT")
+  gum_color "$TH_ACCENT" ga; gum_color "$TH_TITLE" gt
+  export GUM_CHOOSE_CURSOR_FOREGROUND=$ga GUM_CHOOSE_HEADER_FOREGROUND=$gt GUM_CHOOSE_SELECTED_FOREGROUND=$ga \
+    GUM_INPUT_HEADER_FOREGROUND=$gt GUM_INPUT_PROMPT_FOREGROUND=$ga GUM_INPUT_CURSOR_FOREGROUND=$ga \
+    GUM_CONFIRM_SELECTED_BACKGROUND=$ga GUM_SPIN_SPINNER_FOREGROUND=$ga
   ICON_GROUP=▦; ICON_SESSION=↺; ICON_PROD=●; ICON_OK=✓; ICON_ERR=✗; ICON_WARN='!'; ICON_PTR=▌
-  case $(cfg icons unicode) in
+  cfg icons unicode name
+  case $name in
     ascii) ICON_GROUP='[g]'; ICON_SESSION='[s]'; ICON_PROD='*'; ICON_OK=ok; ICON_ERR=x; ICON_WARN='!'; ICON_PTR='>';;
     nerd) ICON_GROUP=$'\357\210\263'; ICON_SESSION=$'\357\200\241'; ICON_PROD=$'\357\204\221'; ICON_OK=$'\357\200\214'; ICON_ERR=$'\357\200\215'; ICON_WARN=$'\357\201\261'; ICON_PTR='▌';;
   esac
@@ -231,11 +277,11 @@ fzf_colors(){
   printf '%s,bg:-1,preview-bg:-1,gutter:-1,fg+:bold,hl:%s,hl+:%s,pointer:%s,marker:%s,prompt:%s,info:%s,border:%s,label:%s,ghost:%s,current-bg:%s,header:-1\n' \
     "$TH_BASE" "$TH_ACCENT" "$TH_ACCENT" "$TH_ACCENT" "$TH_ACCENT" "$TH_ACCENT" "$TH_DIM" "$TH_BORDER" "$TH_TITLE" "$TH_DIM" "$TH_SEL_BG"
 }
-gum_color(){ # gum accepts ANSI numbers or hex; fzf also accepts ANSI names
+gum_color(){ # color [var]: gum accepts ANSI numbers or hex; fzf also accepts ANSI names
   local c=$1 n=0
   case $c in bright-*) n=8; c=${c#bright-};; esac
-  case $c in black) ;; red) n=$((n+1));; green) n=$((n+2));; yellow) n=$((n+3));; blue) n=$((n+4));; magenta) n=$((n+5));; cyan) n=$((n+6));; white) n=$((n+7));; *) echo "$1"; return;; esac
-  echo "$n"
+  case $c in black) ;; red) n=$((n+1));; green) n=$((n+2));; yellow) n=$((n+3));; blue) n=$((n+4));; magenta) n=$((n+5));; cyan) n=$((n+6));; white) n=$((n+7));; *) n=$1;; esac
+  if [ -n "${2:-}" ]; then printf -v "$2" '%s' "$n"; else echo "$n"; fi
 }
 tmux_color(){ local c; c=$(gum_color "$1"); case $c in [0-9]*) echo "colour$c";; *) echo "$c";; esac; }
 
@@ -294,7 +340,8 @@ build_index(){ # [full]
 }
 ensure_index(){
   [ -d "$DIR" ] || { : > "$IDX"; return; }
-  [ -f "$IDX" ] && [ "$(conf_sums)" = "$(cat "$IDXD/sums" 2>/dev/null)" ] && return 0
+  local old=; IFS= read -r -d '' old 2>/dev/null < "$IDXD/sums" || :
+  [ -f "$IDX" ] && [ "$(conf_sums)" = "${old%$'\n'}" ] && return 0
   build_index
 }
 host_field(){ awk -F'\t' -v n="$1" -v c="$2" '{sub(/\r$/,"")} $1==n{print $c; exit}' "$IDX"; }   # 2 project 3 ip 4 user 5 port 6 jump 7 key 8 tags 9 desc 10 file 11 line 12 secret
@@ -315,15 +362,16 @@ set_group_mode(){ awk -F'\t' -v OFS='\t' -v n="$1" -v m="$2" '{sub(/\r$/,"")} $1
 # ---------- fzf list ----------
 mode_label(){ case $1 in sync) echo 'chạy đồng loạt';; split) echo 'chia ô';; tabs) echo 'mỗi server một tab';; *) echo 'hỏi khi mở';; esac; }
 # Width available for list content, accounting for preview position and borders.
-list_width(){
-  local c w preview; c=$(term_cols); w=$((c - 6)); preview=$(cfg preview right)
+list_width(){ # [var]
+  local c w preview border; term_cols c; w=$((c - 6)); cfg preview right preview
   # fzf callbacks expose the actual preview dimensions; these variables are absent when the preview is hidden.
   if [ -n "${FZF_COLUMNS:-}" ]; then
     if [ "${FZF_PREVIEW_LEFT:-0}" -gt $((c / 2)) ]; then preview=right; else preview=hidden; fi
   fi
   if [ "$preview" = right ] && [ $((c * 38 / 100)) -ge 36 ]; then w=$((c - c * 38 / 100 - 8)); fi
-  [ "$(cfg border rounded)" != none ] || w=$((w + 2))
-  [ "$w" -ge 12 ] || w=12; echo "$w"
+  cfg border rounded border; [ "$border" != none ] || w=$((w + 2))
+  [ "$w" -ge 12 ] || w=12
+  if [ -n "${1:-}" ]; then printf -v "$1" '%s' "$w"; else echo "$w"; fi
 }
 list_data(){ # key, name, project, IP, user, tags, description, secret, last use / secondary line
   local s alive line only=${HOSTBOOK_ONLY:-} IDX=$IDX GRP=$GRP
@@ -347,15 +395,20 @@ list_data(){ # key, name, project, IP, user, tags, description, secret, last use
     {printf "%010.2f\th:%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",score[$1],$1,$1,$2,$3,$4,$8,$9,$12,ago(last[$1])}
   ' "$HIST" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
 }
-esc_bg(){ local fg; fg=$(esc_fg "$1"); printf '%s' "$fg" | sed $'s/\033\\[38;/\033[48;/;s/\033\\[3/\033[4/;s/\033\\[9/\033[10/'; }
+esc_bg(){ # color [var]
+  local fg; esc_fg "$1" fg
+  case $fg in "$E[38;"*) fg="$E[48;${fg#"$E[38;"}";; "$E[3"*) fg="$E[4${fg#"$E[3"}";; "$E[9"*) fg="$E[10${fg#"$E[9"}";; esac
+  printf ${2:+-v "$2"} '%s' "$fg"
+}
 list_rows(){ # style, width; field 2 contains visible content only, field 3 preserves all searchable data
-  local chips='' c chipmap='' p i n=0
-  for c in $TH_CHIPS; do n=$((n+1)); [ -n "${NO_COLOR:-}" ] || chips="$chips$(esc_bg "$c"),"; done
+  local chips='' c chipmap='' p i n=0 b chipfg=''
+  for c in $TH_CHIPS; do n=$((n+1)); [ -n "${NO_COLOR:-}" ] || { esc_bg "$c" b; chips="$chips$b,"; }; done
+  [ -n "${NO_COLOR:-}" ] || esc_fg "$TH_CHIP_FG" chipfg
   if [ -f "$IDX" ]; then
     while IFS= read -r p; do i=$(printf '%s' "$p" | cksum | cut -d' ' -f1); chipmap="$chipmap$p:$((i % n + 1))\n"; done < <(cut -f2 "$IDX" | sort -u)
   fi
   LC_ALL=C awk -F'\t' -v style="$1" -v W="$2" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" \
-    -v group="$ICON_GROUP" -v session="$ICON_SESSION" -v prod="$ICON_PROD" -v chips="$chips" -v chipfg="$( [ -n "${NO_COLOR:-}" ] || esc_fg "$TH_CHIP_FG")" -v chipmap="$chipmap" '
+    -v group="$ICON_GROUP" -v session="$ICON_SESSION" -v prod="$ICON_PROD" -v chips="$chips" -v chipfg="$chipfg" -v chipmap="$chipmap" '
     function vlen(s, t){t=s; gsub(/\033\[[0-9;]*m/,"",t); gsub(/[\200-\277]/,"",t); return length(t)}
     function fit(s,w, o,i,c,esc,ch){
       if(w<1)return ""; if(vlen(s)<=w)return s
@@ -409,13 +462,29 @@ list_rows_minimal(){ list_rows minimal "$1"; }
 cmd_list(){ ensure_index; local style=${1:-$(cfg list cards)}; list_data | "list_rows_$style" "$(list_width)"; }
 # The CLI always uses single-line rows, regardless of the selected display style.
 search_hosts(){ cmd_list compact | grep '^h:' | fzf --filter "$*" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 | sed 's/^h://'; }
-fzf_opts(){ # one argument per line for a Bash array, without eval
+# After a width change only the list reload runs at once. The header is recomputed in the background. The footer files are
+# rewritten by $fd/bgfoot, started from $fd/relayout, which numbers each run synchronously (no forks): an older run that
+# finishes late sees a newer number and drops its files and its transform-footer (#6). bg-transform needs fzf 0.63 (FZF_MIN).
+relayout_actions(){ # footer-dir
+  printf '%s' "reload($(self_cmd) _list)+bg-transform-header($(self_cmd) _header)+transform:. $(printf %q "$1")/relayout"
+}
+write_relayout(){ # footer-dir: the two POSIX scripts behind relayout_actions. Paths are quoted for sh, then for single quotes.
+  local d=$1 q qb qf sq="'" bq="'\\''"
+  q=$(printf %q "$d"); qb=$(printf %q "$d/bgfoot"); qf=$(printf %q "$d/foot")
+  printf '%s\n' "IFS= read -r g < $q/gen 2>/dev/null || g=0; g=\$((g+1)); echo \$g > $q/gen" \
+    "printf 'bg-transform:sh %s %s\\n' '${qb//$sq/$bq}' \$g" > "$d/relayout"
+  printf '%s\n' "D=$q; g=\$1" "mkdir -p \"\$D/n\$g\" && $(self_cmd) _footers \"\$D/n\$g\" >/dev/null" \
+    'IFS= read -r c < "$D/gen"' \
+    "if [ \"\$c\" = \"\$g\" ]; then mv -f \"\$D/n\$g\"/f-* \"\$D\"/ && printf 'transform-footer:. %s\\n' '${qf//$sq/$bq}'; fi" \
+    'rm -rf "$D/n$g"' > "$d/bgfoot"
+}
+fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eval
   local border preview
   border=$(cfg border rounded); preview=$(cfg preview right)
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
   else printf '%s\n' "--style=full:$border" '--input-label= Tìm ' "--list-label= $(wc -l < "$IDX" | tr -d ' ') server " '--preview-label= Chi tiết '; fi
   case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
-  printf '%s\n' "--bind=ctrl-/:toggle-preview+reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footer {1})" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
+  printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
     echo --read0
     if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=╌'; fi
@@ -426,27 +495,46 @@ cmd_preview(){
   local t=${1%%:*} n=${1#*:}
   case $t in
     h) ensure_index
-       awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" -v iprod="$ICON_PROD" '$1==n {
-         prod=(" " $8 " " ~ / prod /)
-         printf "%s%s%s%s\n", cb, $1, c0, (prod? "  " cr cb iprod " PROD" c0 : "")
-         printf "%s%s%s\n", cd, ($9==""?"(chưa có mô tả)":$9), c0
-         t=$8; gsub(/ /," #",t); printf "%s%s%s\n\n", cu, ($8==""?"(chưa có tag)":"#" t), c0
-         printf "%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, $1, cd, c0, $3, cd, c0, $4
-         if ($5!="22") printf "  %sPort%s %s\n", cd, c0, $5
-         if ($6!="") printf "  %sProxyJump%s %s\n", cd, c0, $6
-         if ($12=="" && $7!="") printf "  %sIdentityFile%s %s\n", cd, c0, $7
-         printf "\n%s%s:%s%s\n", cd, $10, $11, c0 }' "$IDX" | sed "s|$HOME|~|g"
-       local psc; psc=$(host_field "$n" 12)
-       if [ -n "$psc" ]; then if secret_exists "$psc"; then printf '%sĐăng nhập:%s %s %s(%s)%s\n' "$CD" "$C0" "$psc" "$CD" "$(secret_label "$psc")" "$C0"; else printf '%sĐăng nhập: secret %s không còn trong kho secret%s\n' "$CR" "$psc" "$C0"; fi
-       elif [ -n "$(host_field "$n" 7)" ] && [ -f "$(host_field "$n" 7 | sed "s|^~|$HOME|")" ]; then printf '%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n' "$CY" "$C0"; fi
-       awk -F'\t' -v n="$n" -v now="$(date +%s)" -v cd="$CD" -v c0="$C0" '$2==n{c++; if($1>l)l=$1} END{
-         if (!c) { printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0; exit }
-         d=now-l; a=(d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày")
-         printf "%sLần gần nhất: %s trước · %d lần%s\n", cd, a, c, c0 }' "$HIST"
-       local ip po jp; ip=$(host_field "$n" 3); po=$(host_field "$n" 5); jp=$(host_field "$n" 6)
-       if [ -n "$jp" ]; then printf '%sĐi qua %s, không kiểm tra trực tiếp%s\n' "$CD" "$jp" "$C0"
-       elif port_open "$ip" "${po:-22}" 1; then printf "%s${ICON_PROD} mở cổng %s%s\n" "$CG" "${po:-22}" "$C0"
-       else printf "%s${ICON_PROD} không thấy cổng %s từ máy này%s\n" "$CY" "${po:-22}" "$C0"; fi ;;
+       # One awk does everything and no network I/O: host row, secret meta, history and the cached result of the last check.
+       local lc=$STATE/last-check.tsv kx=0 l r i
+       while IFS= read -r l; do [ "${l%%$TAB*}" = "$n" ] && { r=$l; break; }; done < "$IDX"   # key path: test it here, never read it in awk (directory/FIFO)
+       if [ -n "${r:-}" ]; then for i in 1 2 3 4 5 6; do r=${r#*$TAB}; done; r=${r%%$TAB*}; [ -n "$r" ] && [ -f "${r/#\~/$HOME}" ] && kx=1; fi
+       awk -F'\t' -v n="$n" -v cb="$CB" -v c0="$C0" -v cd="$CD" -v cu="$CU" -v cr="$CR" -v cy="$CY" -v cg="$CG" -v iprod="$ICON_PROD" \
+         -v iok="$ICON_OK" -v ierr="$ICON_ERR" -v kx="$kx" -v home="$HOME" -v sec="$SEC" -v hist="$HIST" -v lc="$lc" '
+         function tilde(s,  o, i) { if (home=="") return s; while ((i=index(s,home))) { o=o substr(s,1,i-1) "~"; s=substr(s,i+length(home)) } return o s }
+         function ago(d) { if (d<0) d=0; return d<3600? int(d/60) " phút" : d<86400? int(d/3600) " giờ" : int(d/86400) " ngày" }
+         function meta(f, k,  l, v) { while ((getline l < f) > 0) if (index(l, k "=")==1) { v=substr(l, length(k)+2); break }; close(f); return v }
+         BEGIN { srand(); now=srand() }   # srand() returns the previous seed, which is the current time: no date fork
+         { sub(/\r$/,"") } $1==n { r=$0; split($0, f, "\t"); exit }
+         END {
+           if (r=="") exit
+           prod=(" " f[8] " " ~ / prod /)
+           o=sprintf("%s%s%s%s\n", cb, f[1], c0, (prod? "  " cr cb iprod " PROD" c0 : ""))
+           o=o sprintf("%s%s%s\n", cd, (f[9]==""?"(chưa có mô tả)":f[9]), c0)
+           t=f[8]; gsub(/ /," #",t); o=o sprintf("%s%s%s\n\n", cu, (f[8]==""?"(chưa có tag)":"#" t), c0)
+           o=o sprintf("%sHost%s %s\n  %sHostName%s %s\n  %sUser%s %s\n", cu, c0, f[1], cd, c0, f[3], cd, c0, f[4])
+           if (f[5]!="22") o=o sprintf("  %sPort%s %s\n", cd, c0, f[5])
+           if (f[6]!="") o=o sprintf("  %sProxyJump%s %s\n", cd, c0, f[6])
+           if (f[12]=="" && f[7]!="") o=o sprintf("  %sIdentityFile%s %s\n", cd, c0, f[7])
+           o=o sprintf("\n%s%s:%s%s\n", cd, f[10], f[11], c0)
+           printf "%s", tilde(o)
+           ps=f[12]
+           if (ps!="") {
+             mf=sec "/" ps ".meta"
+             if ((getline x < mf) >= 0) { close(mf); ty=meta(mf, "type"); lb=(ty=="password" ? "mật khẩu" : "key " meta(mf, "keytype"))
+               printf "%sĐăng nhập:%s %s %s(%s)%s\n", cd, c0, ps, cd, lb, c0 }
+             else printf "%sĐăng nhập: secret %s không còn trong kho secret%s\n", cr, ps, c0
+           } else if (kx) printf "%sĐăng nhập: key trên máy này (chưa vào kho secret)%s\n", cy, c0
+           while ((getline l < hist) > 0) { split(l, h, "\t"); if (h[2]==n) { c++; if (h[1]>last) last=h[1] } }
+           if (!c) printf "%sChưa kết nối lần nào từ máy này%s\n", cd, c0
+           else printf "%sLần gần nhất: %s · %d lần%s\n", cd, ago(now-last) " trước", c, c0
+           while ((getline l < lc) > 0) { split(l, h, "\t"); if (h[1]==n) { st=h[2]; why=h[3]; ep=h[4]; break } }
+           when=(ep=="" ? "" : " · " (now-ep<60 ? "vừa xong" : ago(now-ep) " trước"))   # old 3-column rows have no time
+           if (st=="") printf "%s→ Kiểm tra kết nối%s\n", cd, c0
+           else if (st=="ok") printf "%s%s Kiểm tra lần cuối: vào được%s%s\n", cg, iok, when, c0
+           else if (st=="skip") { sub(/^bỏ qua: /, "", why); printf "%s· Kiểm tra lần cuối: bỏ qua, %s%s%s\n", cd, why, when, c0 }
+           else printf "%s%s Kiểm tra lần cuối: không vào được (%s)%s%s\n", cy, ierr, why, when, c0
+         }' "$IDX" ;;
     g) local h; ensure_index
        printf '%s%s%s\n%sNhóm · mở bằng: %s%s\n\n' "$CU$CB" "$n" "$C0" "$CD" "$(mode_label "$(group_field "$n" 2)")" "$C0"
        for h in $(group_field "$n" 3); do
@@ -460,14 +548,21 @@ cmd_preview(){
   esac
 }
 
-strip_ansi(){ printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g'; }
+strip_ansi(){ # text var: remove SGR codes (ESC [ digits/; m), as sed 's/\033\[[0-9;]*m//g' did
+  local s=$1 o= r
+  while :; do case $s in *"$E["*) ;; *) break;; esac
+    o=$o${s%%"$E["*}; s=${s#*"$E["}; r=${s%%[!0-9;]*}
+    case ${s#"$r"} in m*) s=${s#"$r"m};; *) o=$o$E[;; esac
+  done
+  printf -v "$2" '%s' "$o$s"
+}
 cmd_header(){
   local n state long="" short="" t f fl="" cols line1 p1 pl
   ensure_index
-  n=$( [ -s "$IDX" ] && wc -l < "$IDX" | tr -d ' ' || echo 0); cols=$(( $(list_width) + 2 ))   # keep the header inside the list column, without overflowing into the preview
+  n=0; [ ! -s "$IDX" ] || { n=$(wc -l < "$IDX"); n=$((n)); }; list_width cols; cols=$((cols + 2))   # keep the header inside the list column, without overflowing into the preview
   if [ -f "$FLASH" ]; then IFS="$TAB" read -r t f < "$FLASH"; [ $(( $(date +%s) - t )) -lt 30 ] && fl=$f; fi
   # each state has a long and short version; use the short one on narrow screens
-  state=$(sed -n 1p "$ST" 2>/dev/null); f=$(sed -n 2p "$ST" 2>/dev/null)
+  state=; f=; { IFS= read -r state; IFS= read -r f; } 2>/dev/null < "$ST" || :
   if [ "$state" = invalid ]; then long="${CR}${ICON_ERR} File lỗi, chưa đồng bộ: $f${C0}"; short="${CR}${ICON_ERR} File lỗi: ${f%%:*}${C0}"   # report errors even without a shared repository
   elif ! has_remote; then long="${CY}${ICON_PROD} Chưa có kho, danh sách chỉ nằm trên máy này${C0}${CD} · ^o kết nối kho${C0}"; short="${CY}${ICON_PROD} Chưa có kho${C0}${CD} · ^o${C0}"
   else
@@ -482,10 +577,10 @@ cmd_header(){
       *) long="${CD}kho ở $(kho_addr) · chưa kiểm tra${C0}"; short="${CD}chưa kiểm tra kho${C0}";;
     esac
   fi
-  local hn ps room; hn=$(hostname -s); room=$(( cols - ${#n} - 22 ))   # truncate long machine names (CI or corporate machines)
+  local hn ps room; hn=${HOSTNAME%%.*}; room=$(( cols - ${#n} - 22 ))   # truncate long machine names (CI or corporate machines)
   [ ${#hn} -gt $room ] && { [ $room -gt 4 ] && hn="${hn:0:$((room - 1))}…" || hn=""; }
-  line1="${CU}${CB}hostbook${C0} ${CD}${hn:+$hn · }$n server${C0}"; p1=$(strip_ansi "$line1")
-  pl=$(strip_ansi "$long"); ps=$(strip_ansi "$short")
+  line1="${CU}${CB}hostbook${C0} ${CD}${hn:+$hn · }$n server${C0}"; strip_ansi "$line1" p1
+  strip_ansi "$long" pl; strip_ansi "$short" ps
   if [ $(( ${#p1} + ${#pl} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$long"
   elif [ $(( ${#pl} + 4 )) -le "$cols" ]; then printf '%s\n%s\n' "$line1" "$long"
   elif [ $(( ${#p1} + ${#ps} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$short"
@@ -502,9 +597,20 @@ cmd_header(){
 }
 
 cmd_footer(){
-  local t=${1%%:*} c=${FZF_SELECT_COUNT:-0}
-  [ -n "${1:-}" ] && printf '%s\n' "$1" > "$STATE/current"   # current row for → and ^e (fzf returns selected rows only)
-  local cols used=2; cols=$(list_width)
+  [ -z "${1:-}" ] || printf '%s\n' "$1" > "$STATE/current"   # current row for → and ^e (fzf returns selected rows only)
+  local cols; list_width cols; footer_line "${1%%:*}" "${FZF_SELECT_COUNT:-0}" "$cols"
+}
+# The focus/multi binds read these files inline: booting hostbook there blocked every cursor move ~100 ms (#1).
+cmd_footers(){ # dir [row]: write f-h f-g f-s f-x and f-m<digits> (printf format, %s = count); with row, print its footer
+  local cols t n o; list_width cols
+  for t in h g s x; do footer_line "$t" 0 "$cols" > "$1/f-$t"; done
+  for n in 1 10 100 1000; do   # the count's digits change which keys fit
+    o=$(footer_line '' "$n" "$cols"); o=${o//\%/%%}; printf '%s\n' "${o/"mở $n server"/mở %s server}" > "$1/f-m${#n}"
+  done
+  [ $# -lt 2 ] || { [ -z "$2" ] || printf '%s\n' "$2" > "$STATE/current"; footer_line "${2%%:*}" "${FZF_SELECT_COUNT:-0}" "$cols"; }
+}
+footer_line(){ # row-type select-count list-width
+  local t=$1 c=$2 cols=$3 used=2
   k(){ local w=$(( ${#1} + ${#2} + 4 )); [ $(( used + w )) -gt "$cols" ] && return 0; used=$(( used + w )); printf '%s%s%s %s%s%s   ' "$CP" "$1" "$C0" "$CD" "$2" "$C0"; }   # omit lower-priority keys at the end when space runs out
   if [ "$c" -gt 0 ]; then k enter "mở $c server"; k '→' 'thao tác khác'; k '^y' 'chia sẻ'; k esc 'bỏ chọn'; k '^g' 'lưu thành nhóm'; k tab 'chọn thêm'
   else case $t in
@@ -581,7 +687,12 @@ ensure_merge_setup(){ # register the merger for the data repo (git config is mac
 
 # ---------- shared repository sync ----------
 set_status(){ printf '%s\n%s\n%s\n' "$1" "${2:-}" "$(date +%s)" > "$ST"; }
-notify_fzf(){ [ -n "${FZF_PORT:-}" ] && have curl && curl -s -m 2 -XPOST -H "x-api-key: ${FZF_API_KEY:-}" "localhost:$FZF_PORT" -d "reload($(self_cmd) _list)+transform-header($(self_cmd) _header)" >/dev/null 2>&1; return 0; }
+notify_fzf(){ # [reload]: refresh the header (and the list when asked) without blocking input
+  [ -n "${FZF_PORT:-}" ] && have curl && curl -s -m 2 -XPOST -H "x-api-key: ${FZF_API_KEY:-}" "localhost:$FZF_PORT" -d "${1:+reload($(self_cmd) _list)+}bg-transform-header($(self_cmd) _header)" >/dev/null 2>&1; return 0; }
+# What the header and list show: status state+text (not its timestamp), flash, index. Notify fzf only when this changes (#6).
+# tmux session rows (s:) are not covered: listing them costs several tmux/grep forks, and a sync never changes them.
+list_sig(){ { cksum < "$IDX"; cksum < "$DIR/groups.tsv"; } 2>/dev/null; }
+visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; list_sig; } 2>/dev/null; }
 # Allow only one sync at a time (mkdir is atomic). Treat locks older than two minutes as abandoned.
 lock(){ local w=${1:-0} i=0
   while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
@@ -599,7 +710,11 @@ commit_all(){ local msg=$1 e
 # Pull, push, and record status. Never prompt, so this can run in the background.
 sync_quiet(){
   lock "${1:-0}" || return 0
-  sync_locked; local rc=$?; unlock; notify_fzf; return $rc
+  local sig rows rc; sig=$(visible_sig); rows=$(list_sig); PULLED=""
+  sync_locked; rc=$?; unlock
+  if [ -n "$PULLED" ] || [ "$(list_sig)" != "$rows" ]; then notify_fzf reload   # a pull always refreshes, even when the status text repeats
+  elif [ "$(visible_sig)" != "$sig" ]; then notify_fzf; fi
+  return $rc
 }
 sync_locked(){
   local before after behind ahead new
@@ -621,6 +736,7 @@ sync_locked(){
     if ! g pull -q --rebase >/dev/null 2>&1; then g rebase --abort 2>/dev/null; set_status conflict; return 1; fi
     build_index; after=$(cut -f1 "$IDX" | sort)
     new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -5 | tr '\n' ' ')
+    PULLED=1
     if [ -n "$new" ]; then set_status pulled "Server mới từ máy khác: $new"; else set_status pulled "Đã nhận $behind thay đổi từ máy khác"; fi
   else set_status ok; fi
   if [ "$ahead" -gt 0 ] || [ "$behind" -gt 0 ]; then g push -q 2>/dev/null || set_status pending "$ahead"; fi
@@ -647,7 +763,7 @@ save_and_sync(){ # $1 = change description
 # a master password (vault.key.age) and a recovery code (vault.recovery.age). After the first unlock, the operating system
 # stores the identity (Keychain / secret-service); Windows keeps only a per-invocation DPAPI-encrypted cache.
 SEC=$DIR/secrets
-KEY_TTL=${HOSTBOOK_KEY_TTL:-$(duration "$(cfg key_ttl 8h)")}
+KEY_TTL=${HOSTBOOK_KEY_TTL:-}; [ -n "$KEY_TTL" ] || { cfg key_ttl 8h KEY_TTL; duration "$KEY_TTL" KEY_TTL; }
 vault_exists(){ [ -f "$SEC/vault.pub" ]; }
 vault_id(){ sha256 < "$SEC/vault.pub" | cut -c1-8; }
 kc_backend(){
@@ -1112,26 +1228,31 @@ secret_delete(){
 }
 
 # ---------- connections and error reporting ----------
-CTO=${HOSTBOOK_CONNECT_TIMEOUT:-$(cfg connect_timeout 15)}   # maximum connection wait in seconds (the system default can be as long as 75 seconds)
+CTO=${HOSTBOOK_CONNECT_TIMEOUT:-}; [ -n "$CTO" ] || cfg connect_timeout 15 CTO   # maximum connection wait in seconds (the system default can be as long as 75 seconds)
 # Watch "ssh -v" logs and show a single progress line with the current stage and elapsed time.
 # The progress line sits above the cursor and is updated using cursor save/restore (ESC 7 / ESC 8),
 # so it cannot overwrite password or host-key prompts that SSH has already printed below.
 conn_line(){ printf '\0337\033[1A\r\033[K%s\0338' "$1" >/dev/tty; }
 conn_progress(){ # log ip port jump-host name
-  local log=$1 ip=$2 port=$3 jump=$4 n=$5 t0 el k=0 sp='⣾⣽⣻⢿⡿⣟⣯⣷' need=1 msg tail cols
+  local log=$1 ip=$2 port=$3 jump=$4 n=$5 t0 el k=0 sp='⣾⣽⣻⢿⡿⣟⣯⣷' need=1 msg tail cols rp au ce
   cols=$(term_cols)   # progress must fit on one line; wrapping would make "move up one line to update" print duplicates
+  trap 'cols=$(term_cols)' WINCH   # tmux resizes the pane: refresh the width on SIGWINCH instead of forking stty every tick
   [ -n "$jump" ] && need=2   # a jump host means two "server responded" events: the jump host, then the destination
-  t0=$(date +%s); sleep 0.3   # wait for tmux to finish arranging panes before drawing the first box
+  t0=$SECONDS; sleep 0.3   # wait for tmux to finish arranging panes before drawing the first box
   while :; do
-    el=$(( $(date +%s) - t0 )); cols=$(term_cols)   # measure each time: tmux may have just resized the pane
-    if [ "$(grep -c 'Remote protocol version' "$log" 2>/dev/null)" -ge $need ]; then
+    el=$(( SECONDS - t0 ))
+    # One awk pass per tick: counts of "Remote protocol version", "Authenticated to" and "Connection established"
+    read -r rp au ce <<EOF
+$(awk '/Remote protocol version/{r++} /Authenticated to/{a++} /Connection established/{c++} END{print r+0, a+0, c+0}' "$log" 2>/dev/null)
+EOF
+    if [ "${rp:-0}" -ge $need ]; then
       msg="$n trả lời sau ${el}s · đang đăng nhập"; [ $(( ${#msg} + 3 )) -gt "$cols" ] && msg="$n trả lời sau ${el}s"
       conn_line "$(printf "%s${ICON_OK}%s %s" "$CG" "$C0" "$msg")"; : > "$log.done"; return 0; fi
     if [ "$el" -ge $((CTO + 3)) ]; then   # fallback deadline: SSH does not apply its timeout while connecting through the jump host
       echo "hostbook: hết $CTO giây chờ" >> "$log"; pkill -TERM -P $$ -x ssh 2>/dev/null; return 0; fi
     if [ -n "$jump" ]; then
-      if grep -q 'Authenticated to' "$log" 2>/dev/null; then msg="Đã vào $jump, đang nối tới $ip:$port"; else msg="Đang vào máy trung gian $jump"; fi
-    elif grep -q 'Connection established' "$log" 2>/dev/null; then msg="Đã thông mạng tới $ip:$port, chờ SSH trả lời"
+      if [ "${au:-0}" -gt 0 ]; then msg="Đã vào $jump, đang nối tới $ip:$port"; else msg="Đang vào máy trung gian $jump"; fi
+    elif [ "${ce:-0}" -gt 0 ]; then msg="Đã thông mạng tới $ip:$port, chờ SSH trả lời"
     else msg="Đang mở kết nối tới $ip:$port"; fi
     tail=" · ${el}s / tối đa ${CTO}s · ctrl-c để huỷ"
     [ $(( ${#msg} + ${#tail} + 3 )) -gt "$cols" ] && tail=" · ${el}s/${CTO}s"
@@ -1778,17 +1899,18 @@ check_one(){ # name directory → write <directory>/<name>.res = "ok|fail<TAB>re
   if kill -0 $pid 2>/dev/null; then kill $pid 2>/dev/null; echo "hostbook: hết 8 giây chờ" >> "$d/$h.log"; rc=124; else wait $pid; rc=$?; fi
   if [ $rc -eq 0 ]; then printf 'ok\tđăng nhập được%s\n' "${sc:+ bằng $sc}" > "$d/$h.res"; else printf 'fail\t%s\n' "$(classify_log "$h" "$d/$h.log")" > "$d/$h.res"; fi
 }
+check_rec(){ printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date +%s)" >> "$4/run.tsv"; }   # name result reason dir; the epoch is the per-host check time
 # Check servers by jump-host depth, eight in parallel per batch. Write results to $STATE/last-check.tsv.
 check_run(){ # name…
   local d=$STATE/check all="$*" h j pending done_ok=" " done_bad=" " batch n=0 total=$# lvl st why res
-  [ -d "$d" ] && rm -rf "${d:?}"; mkdir -p "$d"; : > "$STATE/last-check.tsv"
+  [ -d "$d" ] && rm -rf "${d:?}"; mkdir -p "$d"; : > "$d/run.tsv"
   prepare_login "$@" || return 1
   [ -f "$STATE/askpass" ] || { printf '#!/bin/sh\nexec %s _askpass "$@"\n' "$(printf %q "$SELF")" > "$STATE/askpass"; chmod 700 "$STATE/askpass"; }
   pending=" $all "
   while [ -n "${pending// /}" ]; do
     lvl=""
     for h in $pending; do j=$(host_field "$h" 6 | cut -d, -f1)
-      case $done_bad in *" $j "*) [ -n "$j" ] && { printf '%s\tskip\tbỏ qua: máy trung gian %s không vào được\n' "$h" "$j" >> "$STATE/last-check.tsv"; done_bad="$done_bad$h "; pending=${pending/ $h / }; n=$((n+1)); [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K  %s·%s %s  %sbỏ qua: máy trung gian %s không vào được%s\n' "$CD" "$C0" "$h" "$CD" "$j" "$C0"; continue; };; esac
+      case $done_bad in *" $j "*) [ -n "$j" ] && { check_rec "$h" skip "bỏ qua: máy trung gian $j không vào được" "$d"; done_bad="$done_bad$h "; pending=${pending/ $h / }; n=$((n+1)); [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K  %s·%s %s  %sbỏ qua: máy trung gian %s không vào được%s\n' "$CD" "$C0" "$h" "$CD" "$j" "$C0"; continue; };; esac
       case " $pending " in *" $j "*) [ -n "$j" ] && continue;; esac   # jump host still awaiting a check: defer this server to the next batch
       lvl="$lvl $h"; done
     [ -n "$lvl" ] || break
@@ -1797,13 +1919,15 @@ check_run(){ # name…
       batch=""; for h in "$1" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"; do [ -n "$h" ] && { batch="$batch $h"; check_one "$h" "$d" & }; done
       [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K  %s… đang kiểm tra %s/%s%s' "$CD" "$n" "$total" "$C0"
       wait
-      for h in $batch; do IFS="$TAB" read -r st why < "$d/$h.res"; printf '%s\t%s\t%s\n' "$h" "$st" "$why" >> "$STATE/last-check.tsv"; n=$((n+1)); pending=${pending/ $h / }
+      for h in $batch; do IFS="$TAB" read -r st why < "$d/$h.res"; check_rec "$h" "$st" "$why" "$d"; n=$((n+1)); pending=${pending/ $h / }
         if [ "$st" = ok ]; then done_ok="$done_ok$h "; [ -z "${HB_PLAIN:-}" ] && printf "\r\033[K  %s${ICON_OK}%s %s  %s%s%s\n" "$CG" "$C0" "$h" "$CD" "$why" "$C0"
         else done_bad="$done_bad$h "; [ -z "${HB_PLAIN:-}" ] && printf "\r\033[K  %s${ICON_ERR}%s %s  %s\n" "$CR" "$C0" "$h" "$why"; fi; done
       shift $(( $# < 8 ? $# : 8 ))
     done
   done
   [ -z "${HB_PLAIN:-}" ] && printf '\r\033[K'
+  # last-check.tsv keeps the latest result of every host: replace only the rows of hosts checked now
+  { [ -f "$STATE/last-check.tsv" ] && awk -F'\t' 'NR==FNR{r[$1]=1; next} !($1 in r)' "$d/run.tsv" "$STATE/last-check.tsv"; cat "$d/run.tsv"; } > "$STATE/last-check.tsv.new" && mv "$STATE/last-check.tsv.new" "$STATE/last-check.tsv"
   return 0
 }
 check_hosts(){ # name…
@@ -1812,12 +1936,12 @@ check_hosts(){ # name…
   while :; do
     clear; title "Kiểm tra kết nối · $# server"; dim "Mỗi server thử đăng nhập rồi thoát ngay, không chạy lệnh nào."; echo
     check_run "$@" || { pause; return 1; }
-    nok=$(awk -F'\t' '$2=="ok"' "$STATE/last-check.tsv" | grep -c .); nbad=$(awk -F'\t' '$2!="ok"' "$STATE/last-check.tsv" | grep -c .)
+    nok=$(awk -F'\t' '$2=="ok"' "$STATE/check/run.tsv" | grep -c .); nbad=$(awk -F'\t' '$2!="ok"' "$STATE/check/run.tsv" | grep -c .)
     echo; printf "%s${ICON_OK} %s vào được%s%s\n" "$CG" "$nok" "$C0" "$( [ "$nbad" -gt 0 ] && printf " · %s${ICON_ERR} %s không vào được%s" "$CR" "$nbad" "$C0")"; echo
     [ "$nbad" -gt 0 ] || { pause; return 0; }
     case $(pick "" "Xem chi tiết lỗi" "Thử lại các server lỗi" "Xong") in
-      0) h=$(awk -F'\t' '$2=="fail"{print $1}' "$STATE/last-check.tsv" | gum choose --header "Server nào?") && { clear; explain "$h" "$STATE/check/$h.log" pane; pause; };;
-      1) set -- $(awk -F'\t' '$2!="ok"{print $1}' "$STATE/last-check.tsv");;
+      0) h=$(awk -F'\t' '$2=="fail"{print $1}' "$STATE/check/run.tsv" | gum choose --header "Server nào?") && { clear; explain "$h" "$STATE/check/$h.log" pane; pause; };;
+      1) set -- $(awk -F'\t' '$2!="ok"{print $1}' "$STATE/check/run.tsv");;
       *) return 0;;
     esac
   done
@@ -2414,7 +2538,8 @@ preset_data(){
 }
 apply_preset(){
   local values; values=$(preset_data "$1") || return 1; set -- $values
-  cfg_set list "$1" && cfg_set border "$2" && cfg_set preview "$3" && cfg_set separator "$4" && cfg_set icons "$5" && cfg_set theme "$6"
+  local put=${PRESET_SET:-cfg_set}   # _demo swaps in cfg_mem so previews never touch the file
+  $put list "$1" && $put border "$2" && $put preview "$3" && $put separator "$4" && $put icons "$5" && $put theme "$6"
 }
 setting_options(){
   case $1 in
@@ -2487,55 +2612,91 @@ demo_rows(){
     'g:booking-prod|booking-prod|||||nhóm · 3 server · chia ô||booking-api booking-web booking-db' | tr '|' '\t'
 }
 cmd_demo(){ # fixed sample data; no network checks or changes to real configuration
-  local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record rule IDX CFG
-  d=$(tmpd) || return 1; CFG=$d/config; IDX=$d/index
-  [ ! -f "$CONF/config" ] || cp "$CONF/config" "$CFG"
+  local arg=${1:-preset=cards} d key value cols border preview width left right body rendered record rule style sep theme IDX
+  d=$(tmpd) || return 1; IDX=$d/index
   key=${arg%%=*}; value=${arg#*=}
-  if [ "$key" = preset ]; then apply_preset "$value" || return 1; else cfg_set "$key" "$value" || return 1; fi
+  if [ "$key" = preset ]; then PRESET_SET=cfg_mem apply_preset "$value" || return 1; else cfg_mem "$key" "$value" || return 1; fi
   apply_theme
   demo_rows | awk -F'\t' '$1~/^h:/ {print $2 "\t" $3}' > "$IDX"
   cols=${FZF_PREVIEW_COLUMNS:-80}; [[ $cols =~ ^[0-9]+$ ]] || cols=80; [ "$cols" -ge 20 ] || cols=20
-  border=$(cfg border rounded); preview=$(cfg preview right); width=$((cols - 6))
+  cfg border rounded border; cfg preview right preview; cfg list cards style; cfg separator on sep; cfg theme hostbook theme; width=$((cols - 6))
   if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then width=$((cols * 60 / 100 - 6)); fi
-  demo_rows | list_rows "$(cfg list cards)" "$width" > "$d/rows"
-  if [ "$(cfg list cards)" = cards ]; then
+  demo_rows | list_rows "$style" "$width" > "$d/rows"
+  if [ "$style" = cards ]; then
     rule=$(printf '%*s' "$width" '' | tr ' ' '-')
     rendered=$(while IFS= read -r -d '' record; do
       record=${record#*"$TAB"}; printf '%s\n' "${record%"$TAB"*}"
-      [ "$(cfg separator on)" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
+      [ "$sep" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
     done < "$d/rows")
   else rendered=$(cut -f2 "$d/rows"); fi
   left=$(printf '%sTìm > booking%s\n\n%s\n\n%senter ssh · tab chọn · ^t đổi kiểu%s' "$CP" "$C0" "$rendered" "$CD" "$C0")
   right=$(printf '%sbooking-api  %sprod%s\n10.0.1.11 · @ubuntu\nĐăng nhập: key-prod\nLần dùng: 2 giờ trước' "$CU$CB" "$CR" "$C0")
-  if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then
+  local split=0; [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ] && split=1
+  if [ $split = 0 ]; then
+    if [ "$preview" = bottom ]; then left=$(printf '%s\n\n%sChi tiết%s\n%s' "$left" "$CU" "$C0" "$right"); fi
+    right=
+  fi
+  printf '%s%s · %s · %s%s\n' "$CU" "$style" "$theme" "$preview" "$C0"
+  # Piped output (fzf preview) makes gum drop all colour unless CLICOLOR_FORCE is set, so a single awk draws the same
+  # plain box instead of three gum processes. A tty, forced colour, or any line wider than its column falls back to gum.
+  if [ ! -t 1 ] && { [ -z "${CLICOLOR_FORCE:-}" ] || [ "$CLICOLOR_FORCE" = 0 ]; } && demo_box "$left" "$right" "$((width + 2))" "$((cols - width - 8))" "$((cols - 2))" "$border"; then return 0; fi
+  if [ $split = 1 ]; then
     body=$(gum join --horizontal --align top "$(gum style --width "$((width + 2))" "$left")" "$(gum style --width "$((cols - width - 8))" "$right")")
-  elif [ "$preview" = bottom ]; then body=$(printf '%s\n\n%sChi tiết%s\n%s' "$left" "$CU" "$C0" "$right")
   else body=$left; fi
-  printf '%s%s · %s · %s%s\n' "$CU" "$(cfg list cards)" "$(cfg theme hostbook)" "$preview" "$C0"
   case $border in sharp) border=normal;; bold) border=thick;; esac
   gum style --border "$border" --border-foreground "$(gum_color "$TH_BORDER")" --width "$((cols - 2))" "$body"
+}
+demo_box(){ # left right wl wr total border; plain box like "gum join | gum style --border"; status 1 when a line would wrap
+  L=$1 R=$2 LC_ALL=C awk -v wl="$3" -v wr="$4" -v tw="$5" -v border="$6" '
+    function vlen(s){gsub(/\033\[[0-9;]*m/,"",s); gsub(/[\200-\277]/,"",s); return length(s)}
+    function strip(s){gsub(/\033\[[0-9;]*m/,"",s); return s}
+    function sp(n, o){o=sprintf("%" (n>0?n:1) "s",""); return n>0?o:""}
+    function pad(s,w){if(vlen(s)>w)bad=1; return s sp(w-vlen(s))}
+    BEGIN {
+      nl=split(ENVIRON["L"],l,"\n"); nr=(ENVIRON["R"]=="")?0:split(ENVIRON["R"],r,"\n"); n=nl>nr?nl:nr
+      for(i=1;i<=n;i++) line[i]=nr?pad(strip(l[i]),wl) pad(strip(r[i]),wr):strip(l[i])
+      if(border=="none"){for(i=1;i<=n;i++)out=out pad(line[i],tw) "\n"; if(bad)exit 1; printf "%s",out; exit}
+      if(border=="sharp"){tl="┌";tr="┐";bl="└";br="┘";h="─";v="│"}
+      else if(border=="bold"){tl="┏";tr="┓";bl="┗";br="┛";h="━";v="┃"}
+      else if(border=="double"){tl="╔";tr="╗";bl="╚";br="╝";h="═";v="║"}
+      else {tl="╭";tr="╮";bl="╰";br="╯";h="─";v="│"}
+      rule=sp(tw-2); gsub(/ /,h,rule)
+      out=tl rule tr "\n"
+      for(i=1;i<=n;i++)out=out v pad(line[i],tw-2) v "\n"
+      if(bad)exit 1; printf "%s%s\n",out,bl rule br
+    }'
 }
 
 # ---------- main screen ----------
 home(){
-  local q=${1:-} out rc key sel first t n hosts opt opts=()
+  local q=${1:-} out rc key sel first t n hosts opt opts=() fd foot ft
   # fzf control-port token: only child processes of this invocation may send commands
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err 'Không tạo được khoá cho ô tìm'; return 1; }; export FZF_API_KEY
   clip_offer
+  fd=$(tmpd) || return 1
+  # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
+  foot="c=\${FZF_SELECT_COUNT:-0}
+    if [ \"\$c\" -gt 0 ]; then n=\${#c}; [ \$n -lt 4 ] || n=4; IFS= read -r f < $(printf %q "$fd")/f-m\$n; printf \"\$f\\n\" \"\$c\"
+    else case \$t in [hgs]:*) n=\${t%%:*};; *) n=x;; esac; IFS= read -r f < $(printf %q "$fd")/f-\$n; printf '%s\n' \"\$f\"; fi"
+  fwrite="t={1}; [ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$STATE/current"); "
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }
     ADDED=""; rm -f "$STATE/current" "$STATE/share-request"
-    opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts)
+    cmd_footers "$fd"; IFS= read -r ft < "$fd/f-x"
+    # After a resize: same footer for the current row. Read-only on purpose: only the focus bind writes current, since a
+    # write-back here could put a stale row there while focus moves, and → / ^e would open the wrong server.
+    printf 'IFS= read -r t < %q 2>/dev/null || t=\n%s\n' "$STATE/current" "$foot" > "$fd/foot"; write_relayout "$fd"
+    opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts "$fd")
     out=$(cmd_list | fzf "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost='Tìm theo tên, #tag, @user, IP, mô tả…' --marker='+' \
-      --header "$(cmd_header)" --footer "$(cmd_footer)" \
+      --header "$(cmd_header)" --footer "$ft" \
       --preview "$(self_cmd) _preview {1}" --gutter=' ' --ellipsis='' --no-hscroll \
-      --bind "resize:reload($(self_cmd) _list)+transform-header($(self_cmd) _header)+transform-footer($(self_cmd) _footer {1})" \
+      --bind "resize:$(relayout_actions "$fd")" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
       --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
-      --bind "focus:transform-footer($(self_cmd) _footer {1})" --bind "multi:transform-footer($(self_cmd) _footer {1})" \
+      --bind "focus:transform-footer:$fwrite$foot" --bind "multi:transform-footer:$fwrite$foot" \
       --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list
@@ -2582,8 +2743,20 @@ install_hint(){
   else printf 'Cài lại: curl -fsSL %s/raw/main/install.sh | bash\n' "$REPO_URL"; fi
 }
 check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "Cần age >= $AGE_MIN cho kho secret" >&2; install_hint >&2; return 1; }; }
+# A passing check is cached in $STATE/deps: line 1 is the key, the rest are the tool paths. It stays valid while PATH and
+# the minimum versions are unchanged and the stamp is strictly newer than every tool binary and PATH directory (a tool
+# added, removed or replaced changes one of them; equal times count as changed, as -nt may have 1 s precision) (#5).
+deps_cached(){
+  local s=$STATE/deps p
+  [ -r "$s" ] || return 1
+  { IFS= read -r p && [ "$p" = "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN" ] || return 1
+    while IFS= read -r p; do [ -x "$p" ] && [ "$s" -nt "$p" ] || return 1; done; } < "$s"   # -x: a symlink whose target is gone fails
+  local IFS=:; for p in $PATH; do [ -z "$p" ] || [ "$s" -nt "$p" ] || return 1; done
+  return 0
+}
 check_deps(){ # report: print each item; otherwise return 1 and print instructions if dependencies are missing
   local bad=0 v
+  [ "${1:-}" = report ] || ! deps_cached || return 0
   have git || { err "Thiếu git"; bad=1; }
   if have age && have age-plugin-batchpass; then v=$(age --version | sed 's/^v//'); if ver_ge "$v" "$AGE_MIN"; then [ "${1:-}" = report ] && ok "age $v"; else err "age $v quá cũ, cần >= $AGE_MIN"; bad=1; fi
   else err "Thiếu age (kèm age-plugin-batchpass)"; bad=1; fi
@@ -2593,7 +2766,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   if have gum; then v=$(gum --version | awk '{print $3}' | sed 's/^v//')
     if ver_ge "$v" "$GUM_MIN"; then [ "${1:-}" = report ] && ok "gum $v"; else err "gum $v quá cũ, cần >= $GUM_MIN"; bad=1; fi
   else err "Thiếu gum"; bad=1; fi
-  [ $bad = 0 ] && return 0
+  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN"; type -P git age age-plugin-batchpass fzf gum; } 2>/dev/null > "$STATE/deps"; return 0; }
   [ "${1:-}" = report ] || dim "$(install_hint)"
   return 1
 }
@@ -2672,10 +2845,22 @@ first_run(){ # ~/ssh-hosts does not exist yet
 cfg_init
 apply_theme
 
+# A killed run leaves $STATE/tmp/<pid>.* behind, and those can hold decrypted secrets: remove the ones whose pid is gone.
+sweep_tmp(){
+  local d p
+  for d in "$STATE/tmp"/*; do
+    [ -e "$d" ] || continue
+    p=${d##*/}; p=${p%%.*}
+    case $p in ''|*[!0-9]*) continue;; esac
+    kill -0 "$p" 2>/dev/null || rm -rf "$d"   # a live pid (including ours) keeps its entries
+  done
+}
+
 # ---------- entry point ----------
+case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
-  _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";;
+  _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
              printf '\n%senter: thử lại · q rồi enter: đóng ô%s ' "$CD" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _explain) ensure_index; explain "$2" "$3" pane;;
@@ -2694,7 +2879,7 @@ case ${1:-} in
   _import_classify) x=$(pack_open "$2") && pack_classify "$x";;
   _import_apply) ensure_index; x=$(pack_open "$2") || exit 1; { ls "$x"/secrets/*.meta >/dev/null 2>&1 && ! vault_exists; } && { vault_create "$HOSTBOOK_MASTER" >/dev/null; }
                  pack_classify "$x" > "$x/classes"; pack_decide "$x" "$3" > "$x/decisions"; apply_change "Nhập gói" pack_apply_raw "$x" "$x/decisions";;
-  _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/last-check.tsv";;
+  _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/check/run.tsv";;
   share) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then share_flow $(search_hosts "$*"); else share_flow $(cut -f1 "$IDX"); fi;;
   check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
