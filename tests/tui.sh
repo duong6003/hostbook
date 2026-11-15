@@ -68,13 +68,15 @@ wait_for(){ # text [seconds, default 6]
     if grep -q "$1" "$T/screen"; then return 0; fi
     sleep .1; i=$((i+1))
   done
-  cat "$T/screen"; echo "FAIL TUI: không thấy $1"; exit 1
+  cat "$T/screen"; tmux -L "$socket" display -p -t ui 'pane_dead=#{pane_dead} exit_status=#{pane_dead_status}' 2>&1 || :
+  echo "FAIL TUI: không thấy $1"; exit 1
 }
 start(){
   local cmd
   printf -v cmd 'env HOSTBOOK_LIB_DIR=%q HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=%q HOME=%q XDG_CONFIG_HOME=%q HOSTBOOK_DIR=%q HOSTBOOK_STATE=%q HOSTBOOK_SSH_CONFIG=%q PATH=%q SHELL=/bin/bash COLORFGBG=%q /bin/bash %q %s' \
     "$HERE/../lib" "$HERE/../lang" "$HOME" "$XDG_CONFIG_HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$HOSTBOOK_SSH_CONFIG" "$PATH" "${COLORFGBG:-}" "$S" "${2:-}"
   tmux -L "$socket" new-session -d -x "$1" -y 36 -s ui "$cmd"
+  tmux -L "$socket" set-option -t ui remain-on-exit on 2>/dev/null || :   # if the app exits early, keep its last screen for the failure report
 }
 # Public import opens the package picker directly and can be canceled without an editor.
 printf '#!/bin/sh\nprintf called > "%s/editor-called"\nexit 1\n' "$T" > "$T/bin/editor"; chmod +x "$T/bin/editor"

@@ -85,11 +85,15 @@ Run-Check 'Native clipboard, vault and first-machine setup' {
     Assert ($LASTEXITCODE -eq 0) 'native Windows clipboard, private temps and vault checks'
 }
 Run-Check 'Isolated vault onboarding' {
+    # Windows runs the checks that touch the file system and vault creation; the choice/menu logic is platform-neutral and runs on Unix
+    $env:ONBOARDING_ONLY = 'new_install partial_vault symlink_vault_rejected failed_vault_creation canceled_first_import real_first_import_with_key'
     & $bash --noprofile --norc (Join-Path $source 'tests\onboarding.sh')
+    Remove-Item Env:ONBOARDING_ONLY
     Assert ($LASTEXITCODE -eq 0) 'vault onboarding and canceled imports preserve fixture data'
 }
 Run-Check 'Import transactions and key handling' {
-    foreach ($suite in @('hosts-module', 'settings-module', 'import', 'import-keys', 'import-input', 'import-review')) {
+    # import-input/import-review (parsing and review logic, platform-neutral) run on Unix only
+    foreach ($suite in @('hosts-module', 'settings-module', 'import', 'import-keys')) {
         & $bash --noprofile --norc (Join-Path $source "tests\$suite.sh")
         Assert ($LASTEXITCODE -eq 0) "$suite isolated regressions"
     }

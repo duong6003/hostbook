@@ -198,6 +198,8 @@ for i in 1 2 3 4 5; do printf '\nHost race%s\n  HostName 10.7.0.%s\n' $i $i >> "
 "$S" _sync_now
 check "đồng bộ chạy đồng thời không gây lỗi khoá git" '! grep -q "index.lock" "$T/race.err"'
 check "sau đó máy và kho khớp nhau" '[ "$(git -C "$HOSTBOOK_DIR" rev-parse HEAD)" = "$(git -C "$T/kho.git" rev-parse HEAD)" ] && [ -z "$(git -C "$HOSTBOOK_DIR" status --porcelain)" ]'
+(exit 0) & dead=$!; wait "$dead"; mkdir "$HOSTBOOK_STATE/sync.lock"; echo "$dead" > "$HOSTBOOK_STATE/sync.lock/pid"; SECONDS=0; "$S" _sync_now
+check "khoá đồng bộ của tiến trình đã chết được gỡ ngay, không chờ 2 phút" '[ "$SECONDS" -lt 5 ] && [ ! -d "$HOSTBOOK_STATE/sync.lock" ] && [ -s "$HOSTBOOK_STATE/status" ]'
 
 check "thư mục trạng thái chỉ chủ máy đọc được" '[ "$(stat -c %a "$HOSTBOOK_STATE" 2>/dev/null || stat -f %Lp "$HOSTBOOK_STATE")" = 700 ]'
 

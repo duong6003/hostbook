@@ -724,9 +724,11 @@ notify_fzf(){ # [reload]: refresh the header (and the list when asked) without b
 list_sig(){ { cksum < "$IDX"; cksum < "$DIR/groups.tsv"; } 2>/dev/null; }
 visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; list_sig; } 2>/dev/null; }
 # Allow only one sync at a time (mkdir is atomic). Treat locks older than two minutes as abandoned.
-lock(){ local w=${1:-0} i=0
+lock(){ local w=${1:-0} i=0 o
   while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
     if [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rm -rf "$STATE/sync.lock" 2>/dev/null; continue; fi
+    # a sync killed outright (closed terminal, SIGKILL) leaves its lock: a recorded owner that is gone frees it now, not in 2 min
+    o=$(cat "$STATE/sync.lock/pid" 2>/dev/null); if [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; then rm -rf "$STATE/sync.lock" 2>/dev/null; continue; fi
     [ $i -ge "$w" ] && return 1; sleep 1; i=$((i+1)); done
   echo $$ > "$STATE/sync.lock/pid"; LOCK_HELD=1; }   # the owner's pid: a screen that kills a sync may release only its own lock
 unlock(){ rm -rf "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
