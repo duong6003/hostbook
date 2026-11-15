@@ -36,11 +36,15 @@ jobs:
           bash tests/settings-module.sh
           bash tests/ui.sh
           bash tests/file-input.sh
+          bash tests/menu-empty.sh
           bash tests/controls.sh
           bash tests/open-mode.sh
           bash tests/home-recovery.sh
           bash tests/import.sh
           bash tests/import-keys.sh
+          bash tests/import-input.sh
+          bash tests/import-review.sh
+          bash tests/import-tui.sh
           bash tests/onboarding.sh
           bash tests/tui.sh
           bash tests/screens.sh
