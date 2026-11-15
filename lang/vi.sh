@@ -785,8 +785,6 @@ L_done_vault_created='Đã tạo kho secret'
 L_rec_title='Mã khôi phục'
 L_rec_note='Dùng khi quên mật khẩu chính. Cất vào trình quản lý mật khẩu hoặc ghi ra giấy.'
 L_rec_once='Mã này chỉ hiện một lần.'
-L_act_rec_saved='Đã cất, tiếp tục'
-L_act_rec_copy='Copy mã vào clipboard'
 L_rec_copied='Đã copy mã'
 L_vault_unlock_title='Mở kho secret'
 L_vault_unlock_head='Mật khẩu chính của kho secret'
@@ -931,3 +929,8 @@ L_secret_delete_type_rule='Secret đang dùng cho server PROD · gõ đúng tên
 L_undo_merge='Là lần gộp thay đổi từ máy khác, hoàn tác bỏ phần được gộp vào'
 L_undo_edited='Sửa server: %s'
 L_err_undo_moved='Vừa có thay đổi mới (đồng bộ nền) · mở lại Hoàn tác để xem thay đổi mới nhất'
+
+# sửa theo review
+L_sync_busy='Đang có một lần đồng bộ khác · thử lại sau'
+L_key_continue='tiếp tục'
+L_key_copy_code='copy mã'

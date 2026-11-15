@@ -69,7 +69,7 @@ E=$'\033'; C0="$E[0m"; CB="$E[1m"
 LOCK_HELD=""
 # A closing terminal can send SIGHUP twice. Bash's default handling of a second one kills it before the EXIT trap,
 # so trap HUP explicitly, and keep rm/rmdir from dying of it.
-cleanup(){ trap '' HUP; set -- "$STATE/tmp/$$".*; [ ! -e "$1" ] || rm -rf "$@" 2>/dev/null; [ -n "$LOCK_HELD" ] && rmdir "$STATE/sync.lock" 2>/dev/null; return 0; }
+cleanup(){ trap '' HUP; set -- "$STATE/tmp/$$".*; [ ! -e "$1" ] || rm -rf "$@" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$STATE/sync.lock" 2>/dev/null; return 0; }
 trap cleanup EXIT; trap 'exit 129' HUP
 # Only the owner can read temporary directories; plaintext secrets must stay here. Removed automatically on exit.
 tmpd(){ private_dir "$STATE/tmp" || return 1; mktemp -d "$STATE/tmp/$$.XXXXXX"; }
@@ -284,6 +284,13 @@ prog_line(){ # message elapsed limit tick → that one line, redrawn in place (o
   [ $(( ${#m} + ${#tail} + 6 )) -le "$PROG_COLS" ] || m="${m:0:$(( PROG_COLS - ${#tail} - 7 ))}…"
   printf '\r\033[K  %s%s%s %s%s%s%s' "$CP" "${sp[$(( $4 % 8 ))]}" "$C0" "$m" "$CD" "$tail" "$C0" >&2
 }
+kill_tree(){ # pid… → TERM each process and all its descendants (found first, so nothing is reparented away), KILL what is left
+  local all="" new="$*" c p
+  while [ -n "$new" ]; do all="$all $new"; c=""
+    if have pgrep; then for p in $new; do c="$c $(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')"; done; fi
+    new=$(echo $c); done
+  kill -TERM $all 2>/dev/null || :; sleep 0.3; kill -KILL $all 2>/dev/null || :; return 0
+}
 # run_progress MESSAGE LIMIT OUTFILE CMD… → CMD runs in the background (stdout in OUTFILE) under a progress line. Status: CMD's
 # own; 130 after ctrl-c; 124 when the limit passed. In both of the last two cases CMD is stopped.
 run_progress(){
@@ -295,7 +302,7 @@ run_progress(){
     prog_line "$msg" "$el" "$lim" "$k"; k=$((k+1)); sleep 0.2
   done
   trap - INT; printf '\r\033[K' >&2
-  if [ -n "$stop" ]; then pkill -TERM -P $pid 2>/dev/null; kill $pid 2>/dev/null; wait $pid 2>/dev/null; return "$stop"; fi
+  if [ -n "$stop" ]; then kill_tree $pid; { wait $pid; } 2>/dev/null; return "$stop"; fi
   wait $pid
 }
 ask_pw(){ # header [error] → print what was typed. Password fields stay gum input (fzf cannot mask): the breadcrumb first, the rule in gum's
@@ -865,10 +872,10 @@ visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; list_sig; } 2>/dev/null; }
 # Allow only one sync at a time (mkdir is atomic). Treat locks older than two minutes as abandoned.
 lock(){ local w=${1:-0} i=0
   while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
-    if [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$STATE/sync.lock" 2>/dev/null; continue; fi
+    if [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rm -rf "$STATE/sync.lock" 2>/dev/null; continue; fi
     [ $i -ge "$w" ] && return 1; sleep 1; i=$((i+1)); done
-  LOCK_HELD=1; }
-unlock(){ rmdir "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
+  echo $$ > "$STATE/sync.lock/pid"; LOCK_HELD=1; }   # the owner's pid: a screen that kills a sync may release only its own lock
+unlock(){ rm -rf "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
 # Commit all changes in ~/ssh-hosts if the config is valid.
 commit_all(){ local msg=$1 e
   [ -z "$(g status --porcelain)" ] && return 0
@@ -931,16 +938,19 @@ sync_text(){ # → one line about the last sync outcome, from the status file
   case $st in ok) t sync_ok;; pulled) t sync_pulled;; pending) t sync_pending "${f:-0}";; offline) t sync_offline;; conflict) t sync_conflict;; invalid) t sync_invalid "$f";; *) t sync_unknown;; esac
 }
 sync_ui(){ # ^s and Tools → Sync now: a progress screen, then a flash with the outcome
-  local d rc c=$CG i=$ICON_OK st; at "$(t sync_title)"
+  local d rc c=$CG i=$ICON_OK st o; at "$(t sync_title)"
   if ! has_remote; then   # nothing to wait for: save local edits and say so
     sync_quiet 10 >/dev/null 2>&1; flash "${CG}${ICON_OK} $(t sync_norepo)${C0}"; return 0; fi
   d=$(tmpd) || return 1; rm -f "$ST"; clear; title "$UI_AT"; dimw "$(t sync_intro)"; echo
   run_progress "$(t sync_running)" 30 "$d/out" bash "$SELF" _sync_now; rc=$?
   if [ $rc -ge 124 ]; then   # stopped half-way: leave no rebase or lock behind
-    [ -d "$DIR/.git/rebase-merge" ] || [ -d "$DIR/.git/rebase-apply" ] && g rebase --abort >/dev/null 2>&1; rmdir "$STATE/sync.lock" 2>/dev/null
+    o=$(cat "$STATE/sync.lock/pid" 2>/dev/null)   # a lock whose owner is dead was ours (or abandoned); a live owner is another sync
+    if [ -z "$o" ] || ! kill -0 "$o" 2>/dev/null; then
+      { [ -d "$DIR/.git/rebase-merge" ] || [ -d "$DIR/.git/rebase-apply" ]; } && g rebase --abort >/dev/null 2>&1; rm -rf "$STATE/sync.lock"; fi
     if [ $rc = 130 ]; then flash "${CD}$(t sync_cancelled)${C0}"; else flash "${CY}${ICON_WARN} $(t sync_timeout 30)${C0}"; fi
     rm -rf "${d:?}"; return 0; fi
   st=$(sed -n 1p "$ST" 2>/dev/null)
+  if [ -z "$st" ] && [ -d "$STATE/sync.lock" ]; then flash "${CY}${ICON_WARN} $(t sync_busy)${C0}"; rm -rf "${d:?}"; return 0; fi
   case $st in ok|pulled) ;; invalid|conflict) c=$CR; i=$ICON_ERR;; *) c=$CY; i=$ICON_WARN;; esac
   flash "$c$i $(sync_text)$C0"; rm -rf "${d:?}"
 }
@@ -1023,14 +1033,14 @@ ask_new_pw(){ # heading minimum-length [intro] → print the password (the calle
     b=$(gum input --password --placeholder "" --header "$(t pw_again)") || return 1
     [ "$a" = "$b" ] && { printf '%s' "$a"; return 0; }; e=$(t err_pw_mismatch); done
 }
-show_recovery(){ # code [finished-step line]: a Result screen; the code is alone on an indented line so it can be selected and copied
-  local head note=
-  head="${2:+$2$NL $NL}$CB$(t rec_title)$C0$NL  $CG$CB$1$C0$NL$CD$(t rec_note)$C0$NL$CD$(t rec_once)$C0"
+show_recovery(){ # code [finished-step line]: a plain text screen, not a frame, so selecting the code with the mouse takes nothing else
+  local note= k
   while :; do
-    case $(UI_HEAD=$head${note:+$NL $NL$note} ui_menu "" "$(t act_rec_saved)" "$(t act_rec_copy)") in
-      1) printf '%s' "$1" | copy && note="$CG$ICON_OK$C0 $(t rec_copied)";;
-      *) return 0;;
-    esac
+    { clear; title "${UI_AT:-$(t rec_title)}"; [ -z "${2:-}" ] || printf '%s\n\n' "$2"
+      printf '%s%s%s\n\n  %s%s%s\n\n' "$CB" "$(t rec_title)" "$C0" "$CG$CB" "$1" "$C0"; dimw "$(t rec_note)"; dimw "$(t rec_once)"
+      [ -z "$note" ] || printf '\n%s\n' "$note"; printf '\n'; ui_keys "enter:$(t key_continue)" "c:$(t key_copy_code)"; printf '\n'; } >&2
+    IFS= read -rsn1 k </dev/tty || return 0
+    case $k in c|C) printf '%s' "$1" | copy && note="$CG$ICON_OK$C0 $(t rec_copied)";; *) return 0;; esac
   done
 }
 # Create the secret vault if absent. Print everything to stderr because this is often called inside $(...).
@@ -2275,8 +2285,8 @@ check_run(){ # name… → results in $STATE/check/run.tsv; a progress line (ela
         [ -n "$alive" ] && [ -z "$stop" ] || break
         if [ -z "${HB_PLAIN:-}" ]; then tv m chk_running "$n" "$total"; prog_line "$m" $(( SECONDS - t0 )) 8 "$k"; fi
         k=$((k+1)); sleep 0.2; done
-      if [ -n "$stop" ]; then for p in $pids; do pkill -TERM -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; fi
-      wait
+      if [ -n "$stop" ]; then printf '\r\033[K' >&2; fi
+      { [ -z "$stop" ] || kill_tree $pids; wait; } 2>/dev/null   # bash reports killed jobs on stderr: keep that out of the screen
       [ -z "$stop" ] || break
       for h in $batch; do IFS="$TAB" read -r st why < "$d/$h.res"; check_rec "$h" "$st" "$why" "$d"; n=$((n+1)); pending=${pending/ $h / }
         [ "$st" = ok ] || done_bad="$done_bad$h "; done
@@ -2298,7 +2308,7 @@ check_hosts(){ # name…
     if [ -n "$redo" ]; then   # not after "Show error details": the results are still the ones on screen
       clear; title "$UI_AT"; dimw "$(t chk_intro)"; echo
       check_run "$@"; rc=$?
-      [ $rc = 130 ] && { flash "${CD}$(t chk_cancelled)${C0}"; return 0; }
+      [ $rc = 130 ] && { flash "${CD}$(t chk_cancelled)${C0}"; dim "$(t chk_cancelled)"; return 130; }
       [ $rc = 0 ] || { pause; return 1; }
     fi
     redo=1
@@ -3403,7 +3413,7 @@ case ${1:-} in
                  pack_classify "$x" > "$x/classes"; pack_decide "$x" "$3" > "$x/decisions"; apply_change "Nhập gói" pack_apply_raw "$x" "$x/decisions";;
   _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/check/run.tsv";;
   share) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then share_flow $(search_hosts "$*"); else share_flow $(cut -f1 "$IDX"); fi;;
-  check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi;;
+  check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi; exit $?;;
   _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
   _suggest_host) suggest "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-}";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;

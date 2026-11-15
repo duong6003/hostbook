@@ -14,7 +14,8 @@ trap 'cleanup; rm -rf "$T"' EXIT
 # Replace terminal input only; parsing, writes, validation, commits and indexing remain real.
 clear(){ :; }; pause(){ :; }; confirm(){ return 0; }; pick(){ echo 0; }
 # Screens: the result menu prints its header lines (summary and list) to stderr and picks the first item; a flash prints its text there too.
-ui_menu(){ printf '%s\n' "${UI_HEAD:-}" >&2; echo 0; }; flash(){ printf '%s\n' "$*" >&2; }
+# ui_menu answers from $T/picks, one choice per call (default 0); it counts in a file because it runs inside $(...).
+ui_menu(){ local n; printf '%s\n' "${UI_HEAD:-}" >&2; n=$(cat "$T/pn" 2>/dev/null || echo 0); echo $((n+1)) > "$T/pn"; sed -n "$((n+1))p" "$T/picks" 2>/dev/null | grep . || echo 0; }; flash(){ printf '%s\n' "$*" >&2; }
 gum(){ if [ "$1" = choose ]; then echo dev; else command gum "$@"; fi; }
 printf 'Host existing\n  HostName 192.0.2.1\n  User original\n' > "$DIR/old.conf"
 g init -q; g add -A; g commit -qm fixture
@@ -59,5 +60,12 @@ check 'invalid config rolls back without showing a success result' '! import_flo
 printf 'Host existing dev-shared dev-shared\n  HostName 192.0.2.14\n  User shared\n' > "$T/shared.conf"
 import_flow "$T/shared.conf" > "$T/shared-result" 2>&1
 check 'shared Host blocks retain fresh aliases without reimporting existing aliases' '[ "$(host_field dev-shared 3)" = 192.0.2.14 ] && [ "$(host_field existing 3)" = 192.0.2.1 ] && [ "$(cat "$STATE/last-import")" = dev-shared ] && grep -q "1 mới · 0 cập nhật · 2 bỏ qua" "$T/shared-result"'
+# import_done's other next steps: "check connections" (1) and "undo" (3) run the matching action
+check_hosts(){ echo "$*" > "$T/chk"; }; undo_last(){ : > "$T/undone"; }
+printf 'dev-shared\n' > "$STATE/last-import"
+printf '1\n' > "$T/picks"; echo 0 > "$T/pn"; import_done 1 0 0 >/dev/null 2>&1
+check 'import result: "check connections" checks the imported servers' '[ "$(cat "$T/chk")" = dev-shared ]'
+printf '3\n' > "$T/picks"; echo 0 > "$T/pn"; import_done 1 0 0 >/dev/null 2>&1
+check 'import result: "undo" undoes the import' '[ -f "$T/undone" ]'
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

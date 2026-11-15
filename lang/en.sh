@@ -785,8 +785,6 @@ L_done_vault_created='Created the secret vault'
 L_rec_title='Recovery code'
 L_rec_note='Use it if you forget the master password. Keep it in a password manager or write it on paper.'
 L_rec_once='This code is shown only once.'
-L_act_rec_saved='Saved it, continue'
-L_act_rec_copy='Copy the code to the clipboard'
 L_rec_copied='Code copied'
 L_vault_unlock_title='Unlock the vault'
 L_vault_unlock_head='Master password of the secret vault'
@@ -931,3 +929,8 @@ L_secret_delete_type_rule='Used by a PROD server · type the exact name %s, then
 L_undo_merge='A merge of changes from another machine; undoing removes what it brought in'
 L_undo_edited='Edited servers: %s'
 L_err_undo_moved='A new change just arrived (background sync) · open Undo again to see the latest'
+
+# review fixes
+L_sync_busy='Another sync is running · try again later'
+L_key_continue='continue'
+L_key_copy_code='copy the code'
