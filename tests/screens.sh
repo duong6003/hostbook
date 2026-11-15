@@ -136,7 +136,7 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   tmux -L "$socket" capture-pane -e -p -t ui > "$W/menu-e"
   grep -qF -- "${CR}$L_act_delete" "$W/menu-e" || die "S6: '$L_act_delete' không có màu lỗi của theme"
   snap; last=$(grep -nF "$L_act_delete" "$cap" | tail -1 | cut -d: -f1)
-  after=$(sed -n "$((last+1)),\$p" "$cap" | sed '/^╰/,$d' | grep -v '^│ *│$' | grep -vF 'esc ' | grep -vE '^(─)*$' | grep -c '[^ ]' || :)   # border=none has no ╰ line: the footer follows the list
+  after=$(sed -n "$((last+1)),\$p" "$cap" | sed '/^╰/,$d' | grep -v '^│ *│$' | grep -vF 'esc ' | grep -vF "$L_menu_search_recovery" | grep -vE '^(─)*$' | grep -c '[^ ]' || :)   # border=none has no ╰ line: the footer follows the list
   [ "$after" = 0 ] || die "S6: sau '$L_act_delete' còn $after dòng khác trong menu"
   # ---- danger, normal server (same menu)
   menu_pick "$L_act_delete"; wait_for "$(fmt "$L_delete_yes" shop-web)"; check danger-normal; fin
