@@ -63,6 +63,13 @@ wait_text '2 selected'; k Space Down Space Enter; wait_done
 [ "$(cat "$T/status")" = 0 ] && [ ! -s "$T/result" ] || { echo 'FAIL clearing all tags'; exit 1; }
 end_ui
 echo 'PASS tags custom cancel and clear all'
+start 'need_tmux(){ :; }; host_exists(){ :; }; open_many "" one two'
+wait_text 'Split panes'; wait_text '[ 1 ][ 2 ]'
+[ -z "${HOSTBOOK_TEST_ARTIFACTS:-}" ] || cp "$T/screen" "$HOSTBOOK_TEST_ARTIFACTS/mode-${CONTROL_WIDTH:-60}.txt"
+k Down; wait_text 'send to every pane'; k Escape; wait_done
+[ "$(cat "$T/status")" = 1 ] && [ ! -f "$HOSTBOOK_STATE/lastmode" ] || { echo 'FAIL mode cancellation'; exit 1; }
+end_ui
+echo 'PASS mode diagram and cancellation'
 start 'setting_pick separator'
 wait_text '[On]'; wait_text 'booking-api'; k Right; wait_text '[Off]'; k Escape; wait_done
 [ "$(cat "$T/status")" = 1 ] && ! grep -q 'separator = off' "$XDG_CONFIG_HOME/hostbook/config" 2>/dev/null || { echo 'FAIL setting cancelled'; exit 1; }

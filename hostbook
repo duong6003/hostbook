@@ -2173,7 +2173,7 @@ need_tmux(){
 }
 open_many(){ # group-name-or-empty host...
   local grp=$1; shift
-  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh
+  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh diagram d0 d1 d2
   need_tmux || return 1
   for h in "$@"; do if valid_name "$h" && host_exists "$h"; then ok_hosts="$ok_hosts $h"; else missing="$missing $h"; fi; done
   set -- $ok_hosts; [ $# -gt 0 ] || { flash "${CR}${ICON_ERR} $(t err_open_none)${C0}"; return 1; }
@@ -2185,10 +2185,14 @@ open_many(){ # group-name-or-empty host...
     mode=tabs
   fi
   if [ -z "$mode" ]; then
-    last=$(cat "$STATE/lastmode" 2>/dev/null || echo sync)
-    case $last in split) mode=1;; tabs) mode=3;; *) mode=2;; esac
+    last=$(cat "$STATE/lastmode" 2>/dev/null || :)
+    case $last in sync) mode=2;; tabs) mode=3;; *) mode=1;; esac
     at "$(t open_title "$#")"
-    mode=$(UI_POS=$mode UI_HEAD="$CD$*$C0" ui_menu "$(t open_how)$( [ -n "$grp" ] && echo " · $(t open_remember "$grp")")" "$(t act_open_split)|$(t act_open_split_hint)" "$(t act_open_sync)|$(t act_open_sync_hint)" "$(t act_open_tabs)|$(t act_open_tabs_hint)") || return 1
+    printf -v d0 '%q' "[ 1 ][ 2 ]$NL[ 3 ][ 4 ]$NL$(t act_open_split_hint)"
+    printf -v d1 '%q' "[ 1 ][ 2 ]$NL[ 3 ][ 4 ]$NL$(t act_open_sync_hint)"
+    printf -v d2 '%q' "[ 1 | 2 | 3 ]$NL$(t act_open_tabs_hint)"
+    diagram="case {1} in 0) printf '%s\\n' $d0;; 1) printf '%s\\n' $d1;; 2) printf '%s\\n' $d2;; esac"
+    mode=$(UI_POS=$mode UI_HEAD="$CD$*$C0" UI_PREVIEW="$diagram" UI_PREVIEW_WINDOW='right,45%,wrap,<75(down,40%,wrap)' ui_choice "$(t open_how)$( [ -n "$grp" ] && echo " · $(t open_remember "$grp")")" "$(t act_open_split)" "$(t act_open_sync)" "$(t act_open_tabs)") || return 1
     case $mode in 0) mode=split;; 1) mode=sync;; *) mode=tabs;; esac
     echo "$mode" > "$STATE/lastmode"
     [ -n "$grp" ] && { set_group_mode "$grp" "$mode"; save_and_sync "$(t done_group_mode "$grp" "$(mode_label "$mode")")"; }
