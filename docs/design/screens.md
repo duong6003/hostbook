@@ -42,6 +42,7 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Toggle | `ui_toggle` | binary settings | horizontal on/off, current value and explicit apply/cancel |
 | Checklist | `ui_checklist` | tags | Space toggles, selected count and empty selection accepted |
 | Single field | `ui_field` | rename, port, path, group name, secret name | rule shown before typing, inline error, preview of the change |
+| Multiline input | `ui_multiline` | paste or edit multiline text | native gum editor, breadcrumb and localized key hints; Ctrl-C cancels (Escape also cancels on gum 2) |
 | Multi-step | `ui_field` per step | add server, connect sync hub, vault setup | `step n/m` in the breadcrumb, finished steps as `✓` lines |
 | Review | `ui_menu` with header lines | last step of add/import | label → value table, `← source` for every suggestion |
 | Confirm | `ui_confirm` | move project, undo, group open mode | the object's name, what changes, a primary button that names the action |
@@ -50,6 +51,8 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Result | `ui_menu` | after check, share, import (only when there is a next step) | one summary line first, one line per object |
 | Report | `title` + lines | doctor, help | grouped sections, `→ fix` on every problem line |
 | File picker | `ui_menu` per directory | send a file, key from file | starts in `~`, folders first, dot files hidden, sizes right-aligned |
+
+Multiline input is a native `gum write` screen: gum does not expose a live outer-border or footer option. It uses the same breadcrumb, theme roles and key-hint words, with the hints above the editor. Ctrl-J inserts a newline and Enter submits in the supported gum versions.
 
 When a screen only reports that something finished, it does not stay open: it returns to the search screen and calls
 `flash` (shown in the header there).
@@ -69,7 +72,7 @@ The home search distinguishes an empty host list from a query with no matches. A
 | Menu options | `UI_HEAD`, `UI_POS`, `UI_EXPECT`, `UI_FOOT` | prefix a `ui_menu`/`ui_confirm` call: lines above the question (finished steps), row to start on, extra ending keys (`←` `→` in the file picker), replacement key hints |
 | Compact controls | `ui_choice`, `ui_toggle`, `ui_checklist` | no search input; `UI_POS`, `UI_HEAD`, `UI_FOOT` and preview options carry context |
 | Step line | `ui_done label value [source]` | `✓ Label  value  ← source` for a finished step of a multi-step flow |
-| File picker | `file_pick start-dir header [enter-label]` | `ui_menu` per directory; used by send file and key from file |
+| File picker | `file_pick start-dir header [enter-label] [dotfiles] [session-dir]` | `ui_menu` per directory; Ctrl-L enters a literal path, optional session stores folder and query |
 
 ## Colour roles
 
