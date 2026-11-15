@@ -40,6 +40,9 @@ $runtime = (Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | Con
 $bash = Join-Path $runtime 'bin\bash.exe'
 $env:PATH = "$root\bin;$runtime\usr\bin;$runtime\mingw64\bin;$runtime\cmd;$env:PATH"
 Assert ((& $launcher --version) -match '^hostbook ') 'native launcher supports version under spaced Unicode path'
+foreach ($module in @('ui', 'import')) {
+    Assert ((Get-Item -LiteralPath (Join-Path $root "app\lib\$module.sh")).Length -gt 0) "installed $module module is present"
+}
 Push-Location $testRoot
 try { Assert ((& $launcher _header | Out-String).Trim().Length -gt 0) 'installed callback works outside the app directory' }
 finally { Pop-Location }
@@ -88,6 +91,12 @@ Run-Check 'Update' {
     Write-Host "Update (warm cache): $($updateTime.Elapsed.TotalSeconds) seconds"
     Assert ((Get-Item -LiteralPath $ageArchive).LastWriteTimeUtc -eq $ageWriteTime) 'update reuses the verified age archive'
     Assert ($LASTEXITCODE -eq 0) 'hostbook update uses the same Windows installation'
+    foreach ($module in @('ui', 'import')) {
+        Assert ((Get-Item -LiteralPath (Join-Path $root "app\lib\$module.sh")).Length -gt 0) "updated $module module is present"
+    }
+    Push-Location $testRoot
+    try { Assert ((& $launcher _header | Out-String).Trim().Length -gt 0) 'updated callback works outside the app directory' }
+    finally { Pop-Location }
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User') -split ';'
     Assert (@($userPath | Where-Object { $_ -eq (Join-Path $root 'bin') }).Count -eq 1) 'update keeps one user PATH entry'
 }
