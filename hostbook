@@ -868,7 +868,7 @@ vault_recover(){ # [code] [new password] (both arguments are for tests only)
 vault_recovery_code(){ local id new; id=$(vault_identity) || return 1; new=$(printf '%s\n' "$id" | vault_new_recovery) && save_and_sync "Mã khôi phục mới" && show_recovery "$new"; }
 
 # ---------- secrets ----------
-valid_secret_name(){ case $1 in vault|"") return 1;; esac; printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9._-]{0,39}$'; }
+valid_secret_name(){ case $1 in vault|vault.*|"") return 1;; esac; printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9._-]{0,39}$'; }
 secret_exists(){ [ -f "$SEC/$1.meta" ]; }
 secret_meta(){ sed -n "s/^$2=//p" "$SEC/$1.meta" 2>/dev/null | head -1; }
 secret_names(){ local f; for f in "$SEC"/*.meta; do [ -f "$f" ] && basename "$f" .meta; done; return 0; }
@@ -2043,16 +2043,17 @@ pack_index(){ # package-directory → package index (same format as index.tsv)
 }
 # Map package secrets to the local vault. Print "package-name<TAB>local-name<TAB>new|existing|renamed".
 pack_secret_map(){ # package-directory
-  local x=$1 m n fp loc t
+  local x=$1 m n s fp loc t
   for m in "$x"/secrets/*.meta; do [ -f "$m" ] || continue; n=$(basename "$m" .meta)
+    s=$n; valid_secret_name "$s" || s=imported   # a package must never name a secret after the vault's own files
     if grep -q '^type=password' "$m"; then
-      if secret_exists "$n"; then if [ "$(secret_meta "$n" type)" = password ] && [ "$(secret_get "$n")" = "$(cat "$x/secrets/$n.pass")" ]; then printf '%s\t%s\tcó sẵn\n' "$n" "$n"; continue; fi
-        t=$n-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
-      else printf '%s\t%s\tmới\n' "$n" "$n"; fi
+      if secret_exists "$s"; then if [ "$(secret_meta "$s" type)" = password ] && [ "$(secret_get "$s")" = "$(cat "$x/secrets/$n.pass")" ]; then printf '%s\t%s\tcó sẵn\n' "$n" "$s"; continue; fi
+        t=$s-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
+      else printf '%s\t%s\tmới\n' "$n" "$s"; fi
     else fp=$(sed -n 's/^fp=//p' "$m"); loc=$(grep -lxF "fp=$fp" "$SEC"/*.meta 2>/dev/null | head -1)
       if [ -n "$loc" ]; then printf '%s\t%s\tcó sẵn\n' "$n" "$(basename "$loc" .meta)"
-      elif secret_exists "$n"; then t=$n-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
-      else printf '%s\t%s\tmới\n' "$n" "$n"; fi; fi
+      elif secret_exists "$s"; then t=$s-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
+      else printf '%s\t%s\tmới\n' "$n" "$s"; fi; fi
   done
 }
 # Classify package servers as new | same | diff | ipdup. Print "name<TAB>type<TAB>details".
