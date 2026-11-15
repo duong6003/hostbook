@@ -637,7 +637,7 @@ apply_import_package(){ # package and decisions; preserve unrelated and staged f
 }
 # Apply a decisions file: "name<TAB>add|skip|update|both|replace:<existing name>". Record added/updated names in last-import.
 pack_apply_raw(){ # package-directory decisions-file
-  local x=$1 dec=$2 n act p blk line t st new loc m needed work=$IMPORT_ROLLBACK/work
+  local x=$1 dec=$2 n act p blk line t st new loc m needed i=0 work=$IMPORT_ROLLBACK/work
   : > "$x/applied"; blk=$work/blk
   needed=$(awk -F '\t' 'FILENAME==ARGV[1] {if($2!="skip") act[$1]=1; next} ($1 in act) && $12!="" {print $12}' "$dec" "$x/index" | sort -u | tr '\n' ' ')
   while IFS="$TAB" read -r n loc st; do
@@ -660,8 +660,9 @@ pack_apply_raw(){ # package-directory decisions-file
       replace:*) build_index && pack_delete_host "${act#replace:}" || return 1;;
       both:*) t=${act#both:};;
     esac
+    i=$((i+1))
     if [ -f "$x/preview-decisions" ]; then
-      [ -f "$x/review-blocks.d/$n.conf" ] && cp "$x/review-blocks.d/$n.conf" "$blk" || return 1
+      [ -f "$x/review-blocks.d/$i.conf" ] && cp "$x/review-blocks.d/$i.conf" "$blk" || return 1
     else pack_block "$x" "$n" "$t" "$dec" > "$blk" || return 1; fi
     pack_write_host "$p" "$blk" || return 1
     printf '%s\n' "$t" >> "$x/applied" || return 1
@@ -750,7 +751,7 @@ import_review_values(){ # concatenated concrete Host blocks → name, hostname, 
     } END {emit()}' "$@"
 }
 import_review_package(){ # package directory decisions source → final read-only review
-  local x=$1 decisions=$2 source=$3 new updated skipped n act target
+  local x=$1 decisions=$2 source=$3 new updated skipped n act target i=0
   pack_normalize_decisions "$decisions" > "$x/preview-decisions" || return 1
   new=$(grep -cE "${TAB}(add|both:.*)$" "$x/preview-decisions")
   updated=$(grep -cE "${TAB}(update|replace:.*)$" "$x/preview-decisions")
@@ -758,7 +759,8 @@ import_review_package(){ # package directory decisions source → final read-onl
   mkdir -p "$x/review-blocks.d" && : > "$x/review-blocks" || return 1
   while IFS="$TAB" read -r n act; do
     case $act in skip) continue;; both:*) target=${act#both:};; *) target=$n;; esac
-    pack_block "$x" "$n" "$target" "$x/preview-decisions" > "$x/review-blocks.d/$n.conf" && cat "$x/review-blocks.d/$n.conf" >> "$x/review-blocks" || return 1
+    i=$((i+1))
+    pack_block "$x" "$n" "$target" "$x/preview-decisions" > "$x/review-blocks.d/$i.conf" && cat "$x/review-blocks.d/$i.conf" >> "$x/review-blocks" || return 1
   done < "$x/preview-decisions"
   import_review_values "$x/review-blocks" > "$x/review-values" || return 1
   awk -F '\t' -v h="$(t import_review_host '%s' '%s' '%s' '%s' '%s')" -v d="$(t import_review_details '%s' '%s' '%s')" -v desc="$(t import_review_description '%s')" -v sk="$(t import_review_skipped '%s' '%s')" -v keep="$(t import_skip_kept)" -v keyfmt="$(t import_review_secret '%s' '%s' '%s')" -v newlabel="$(t imp_sc_new)" -v oldlabel="$(t imp_sc_existing)" -v renamedlabel="$(t imp_sc_renamed)" -v prod="$ICON_PROD" -v self="$(t card_ssh_self)" -v inherited="$(t import_review_inherited)" '

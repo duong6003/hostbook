@@ -93,10 +93,30 @@ package_applies_exact_reviewed_block(){ (
   printf 'same\tupdate\n' > "$pkg/decisions"
   ui_fzf(){ cat > /dev/null; return 0; }
   import_review_package "$pkg" "$pkg/decisions" fixture || exit 1
-  grep -q '^  Port 22$' "$pkg/review-blocks.d/same.conf" || exit 1
+  grep -q '^  Port 22$' "$pkg/review-blocks.d/1.conf" || exit 1
   apply_import_package "$pkg" "$pkg/decisions" >/dev/null 2>&1 || exit 1
   range=$(block_range same); sed -n "${range% *},${range#* }p" "$DIR/proj.conf" > "$T/exact-actual"
-  cmp -s "$pkg/review-blocks.d/same.conf" "$T/exact-actual"
+  cmp -s "$pkg/review-blocks.d/1.conf" "$T/exact-actual"
+); }
+case_distinct_package_blocks_remain_distinct(){ (
+  local pkg="$T/case-package" range
+  DIR="$T/case-repo"; STATE="$T/case-state"; SSHCFG="$T/case-ssh"; IDX="$STATE/index.tsv"; IDXD="$STATE/idx2"; ST="$STATE/status"; GRP="$DIR/groups.tsv"; SEC="$DIR/secrets"
+  mkdir -p "$DIR" "$STATE" "$pkg/conf" "$pkg/secrets"
+  printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  printf 'Host same\n  HostName 203.0.113.1\n' > "$DIR/proj.conf"
+  git -C "$DIR" init -q; git -C "$DIR" add .; git -C "$DIR" commit -qm initial; build_index full
+  printf 'version=1\nfrom=fixture\n' > "$pkg/manifest"; : > "$pkg/groups.tsv"
+  printf 'Host skipped\n  HostName 192.0.2.3\nHost same\n  HostName 192.0.2.1\nHost Same\n  HostName 192.0.2.2\n' > "$pkg/conf/proj.conf"
+  pack_classify "$pkg" > "$pkg/classes" || exit 1
+  cp "$IDX" "$pkg/base-index"; pack_state_signature > "$pkg/base-state" || exit 1
+  printf 'skipped\tskip\nsame\tboth\nSame\tadd\n' > "$pkg/decisions"
+  ui_fzf(){ cat > /dev/null; return 0; }
+  import_review_package "$pkg" "$pkg/decisions" fixture || exit 1
+  [ -f "$pkg/review-blocks.d/1.conf" ] && [ -f "$pkg/review-blocks.d/2.conf" ] || exit 1
+  apply_import_package "$pkg" "$pkg/decisions" >/dev/null 2>&1 || exit 1
+  range=$(block_range same-2); sed -n "${range% *},${range#* }p" "$DIR/proj.conf" > "$T/case-actual-1"
+  range=$(block_range Same); sed -n "${range% *},${range#* }p" "$DIR/proj.conf" > "$T/case-actual-2"
+  cmp -s "$pkg/review-blocks.d/1.conf" "$T/case-actual-1" && cmp -s "$pkg/review-blocks.d/2.conf" "$T/case-actual-2" && sshx -G same-2 2>/dev/null | grep -q '^hostname 192.0.2.1$' && sshx -G Same 2>/dev/null | grep -q '^hostname 192.0.2.2$' && ! grep -q '^Host skipped$' "$DIR/proj.conf"
 ); }
 prod_update_requires_explicit_confirmation(){ (
   printf 'protected\tupdate\n' > "$T/prod-decisions"
@@ -146,6 +166,7 @@ check review_shows_saved_directives_not_effective_defaults
 check all_skipped_review_accepts_no_stage_files
 check package_review_shows_final_remapped_values
 check package_applies_exact_reviewed_block
+check case_distinct_package_blocks_remain_distinct
 check prod_update_requires_explicit_confirmation
 check package_choice_cancel_aborts
 check result_actions_stay_visible
