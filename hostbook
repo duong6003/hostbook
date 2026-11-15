@@ -1566,28 +1566,6 @@ read_suggest(){ # address name user port [project]
   src_user=$(sug_why "$f" user); src_jump=$(sug_why "$f" jump); src_secret=$(sug_why "$f" secret); src_tags=$(sug_why "$f" tags)
   src_group=$(awk -F'\t' -v g="$group" '$1=="project" && $2==g {print $5}' "$f")
 }
-pick_project(){ # suggestions-file → print the project name (call with UI_HEAD for the finished steps)
-  local f=$1 items=() keys=() p sc dt why i
-  while IFS="$TAB" read -r _ p sc dt why; do items+=("$p|$dt $why"); keys+=("$p"); done < <(grep '^project' "$f")
-  for p in $(cut -f2 "$IDX" | sort -u); do case " ${keys[*]:-} " in *" $p "*) ;; *) items+=("$p"); keys+=("$p");; esac; done
-  [ ${#keys[@]} -eq 0 ] || items=("#$(t sec_projects)" "${items[@]}")
-  items+=("#$(t sec_new)" "$(t move_new)"); keys+=("+")
-  i=$(ui_menu "$(t proj_head)" "${items[@]}") || return 1
-  if [ "${keys[$i]}" = "+" ]; then ui_field "$(t move_new_label)" "" project "$(t move_rule)"$'\n'"$(t example project-d)" "" "$UI_HEAD"
-  else echo "${keys[$i]}"; fi
-}
-pick_tags(){ # project current-tags → print new tags
-  local g=$1 cur=$2 all sel other; other=$(t tags_other)
-  all=$( { printf '%s\n' $cur; awk -F'\t' -v g="$g" '$2==g{print $8}' "$IDX" | tr ' ' '\n'; } | grep . | awk '!s[$0]++')
-  local items=() on= t i=0 idx
-  while IFS= read -r t; do [ -n "$t" ] || continue; items+=("$t"); i=$((i+1)); case " $cur " in *" $t "*) on="$on $i";; esac; done <<< "$all"
-  items+=("$other")
-  idx=$(UI_MULTI=1 UI_SELECT=$on UI_FOOT=$(ui_keys "↑↓:$(t key_move)" "tab:$(t key_mark)" "enter:$(t key_done)" "esc:$(t key_cancel)") ui_menu "$(t tags_head)" "${items[@]}") || return 1
-  sel=; for i in $idx; do sel="$sel${items[$i]}"$'\n'; done
-  if printf '%s\n' "$sel" | grep -qxF "$other"; then
-    sel=$(printf '%s\n' "$sel" | grep -vxF "$other"; ui_field "$(t tags_add_label)" "" any "$(t tags_add_rule)"$'\n'"$(t example 'prod web')" | tr ' ' '\n'); fi
-  printf '%s\n' "$sel" | grep . | tr -cd 'A-Za-z0-9._\n-' | tr '\n' ' ' | sed 's/ $//'
-}
 parse_addr(){ # "user@host:port" → print user, host, and port on three lines
   local s=$1 u="" p=""
   case $s in *@*) u=${s%%@*}; s=${s#*@};; esac
@@ -1639,146 +1617,6 @@ write_host(){ # project block-file
     awk -v blk="$2" 'BEGIN{ while ((getline l < blk) > 0) b=b l "\n" } !done && /^[ \t]*[Hh][Oo][Ss][Tt][ \t].*[*?]/ { printf "%s\n", b; done=1 } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   else { [ -s "$f" ] && echo; cat "$2"; } >> "$f"; fi
 }
-add_addr_ask(){ # [value] [intro] → print the address once parse_addr reads it
-  local v=${1:-} intro=${2:-} e= raw
-  while :; do
-    raw=$(ui_field "$(t add_addr_label)" "$v" addr "$(t add_addr_rule)"$'\n'"$(t example '10.0.1.13, ubuntu@10.0.1.13, 10.0.1.13:2222')" "" "$intro${e:+${intro:+$NL}$e}") || return 1
-    if parse_addr "$raw" >/dev/null; then printf '%s\n' "$raw"; return 0; fi
-    v=$raw; e="$CR$ICON_ERR $(t err_addr_read "$raw")$C0"
-  done
-}
-add_name_ask(){ # value suggestion-reason intro own-name → print a complete, unused server name
-  local v=${1:-} why=${2:-} intro=${3:-} d n rule e=
-  d=$(tmpd) || return 1; { [ -f "$IDX" ] && cut -f1 "$IDX"; } | awk -v x="${4:-}" '$0!=x' > "$d/taken"
-  while :; do
-    rule=$(t rename_rule); if [ -n "$why" ]; then rule=$rule$'\n'$(t add_name_filled "$v" "$why"); elif [ -z "$v" ]; then rule=$rule$'\n'$(t example web3); fi
-    n=$(ui_field "$(t f_name)" "$v" "name:$d/taken" "$rule" "$(t add_name_prev "$CP$CB%s$C0")" "$intro${e:+${intro:+$NL}$e}") || return 1
-    case $n in *-) e="$CR$ICON_ERR $(t err_name_unfinished "$n")$C0"; v=$n; why=;; *) printf '%s\n' "$n"; return 0;; esac
-  done
-}
-# Steps of add_host: addr, name, peer, proj, login, review. A step that shows a screen is pushed on "hist"; esc goes back to the
-# previous one (keeping what was typed), and leaves the flow only from the first screen. The functions below see add_host's locals.
-add_push(){ case $hist in *"$st ") ;; *) hist="$hist$st ";; esac; escl=$(t key_back); [ "$hist" != "$st " ] || escl=$(t key_cancel); }
-add_back(){ local l; hist=${hist%"$st "}; [ -n "$hist" ] || return 1; l=${hist% }; st=${l##* }
-  case $st in addr) x=$raw; raw=""; pre=$name; prewhy=""; name="";; name) pre=$name; prewhy=""; name="";; peer) cloned="";; login) secret="";; esac; }
-add_fin(){ # [withproj] → finished steps as check lines
-  fin=""; [ -z "$raw" ] || fin=$(ui_done "$(t f_addr)" "$raw"); [ -z "$name" ] || fin="${fin:+$fin$NL}$(ui_done "$(t f_name)" "$name")"
-  [ -z "${1:-}" ] || fin="${fin:+$fin$NL}$(ui_done "$(t f_project)" "$group" "$src_group")"; }
-add_host(){ # [address] [name]: ask only what is needed, infer the rest, allow review, then save
-  local raw=${1:-} name=${2:-} u h p pre="" prewhy="" line i blk f dup fin="" e="" sug peer peerwhy cloned="" x="" via login has tbl rc st=addr hist="" escl
-  local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" secret="" src_secret="" desc="" lines=()
-  ensure_index; sug=$(tmpd) || return 1; sug=$sug/sug
-  if [ -n "$raw" ] && ! parse_addr "$raw" >/dev/null; then e="$CR$ICON_ERR $(t err_addr_read "$raw")$C0"; x=$raw; raw=""; fi
-  while :; do
-    case $st in
-    addr)
-      at "$(t add_title)|$(t add_step 1 4)"   # address, name, project, login: a step that is already known still counts
-      if [ -z "$raw" ]; then add_push; raw=$(UI_ESC=$escl add_addr_ask "$x" "$e") || { add_back || return 1; continue; }; fi
-      e=""; x=""; line=$(parse_addr "$raw")
-      u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p)
-      suggest "$h" "" "$u" "$p" > "$sug"
-      if [ -z "$pre" ]; then pre=$(sug_val "$sug" prefix); prewhy=$(sug_why "$sug" prefix); fi
-      st=name;;
-    name)
-      at "$(t add_title)|$(t add_step 2 4)"
-      if [ -n "$name" ]; then   # given on the command line
-        case $name in *-) e="$CR$ICON_ERR $(t err_name_unfinished "$name")$C0"; pre=$name; prewhy=""; name="";;
-          *) if ! valid_name "$name"; then e="$CR$ICON_ERR $(t err_name_chars)$C0"; name=""
-             elif host_exists "$name"; then e="$CR$ICON_ERR $(t err_name_taken "$name")$C0"; name=""; fi;; esac
-      fi
-      if [ -z "$name" ]; then add_push; add_fin; name=$(UI_ESC=$escl add_name_ask "$pre" "$prewhy" "$fin${e:+$NL$e}") || { add_back || return 1; continue; }; fi
-      e=""; st=peer;;
-    peer)
-      at "$(t add_title)|$(t add_step 3 4)"; cloned=""
-      suggest "$h" "$name" "$u" "$p" > "$sug"
-      peer=$(awk -F'\t' '$1=="peer"{print $2}' "$sug"); peerwhy=$(awk -F'\t' '$1=="peer"{print $4}' "$sug")
-      if [ -n "$peer" ]; then   # a very similar server exists: offer to copy its settings
-        add_push; add_fin
-        login=$(host_field "$peer" 12); via=$(host_field "$peer" 6)
-        has="$(t add_peer_user "$(host_field "$peer" 4)")${login:+ · $login}${via:+ · $(t add_peer_via "$via")} · $(t add_peer_proj "$(host_field "$peer" 2)")"
-        lines=("$CD$(t add_peer_why)$C0")
-        while IFS= read -r x; do [ -z "$x" ] || lines+=("  • $x"); done <<< "${peerwhy// · /$'\n'}"
-        lines+=(" " "$(t add_peer_has "$peer" "$has")")
-        UI_ESC=$escl UI_HEAD=$fin$NL ui_confirm --affirmative "$(t add_peer_yes "$peer")" --negative "$(t add_peer_no)" "$(t add_peer_q "$peer")" "${lines[@]}"; rc=$?
-        case $rc in 0) cloned=1;; 1) ;; *) add_back || return 1; continue;; esac
-      fi
-      st=proj;;
-    proj)
-      at "$(t add_title)|$(t add_step 3 4)"
-      if [ -n "$cloned" ]; then group=$(host_field "$peer" 2)
-      elif [ "$(awk -F'\t' '$1=="auto"{print $2}' "$sug")" = 1 ]; then group=$(awk -F'\t' '$1=="group"{print $2}' "$sug")
-      elif [ ! -s "$IDX" ]; then group=servers
-      else add_push; add_fin; group=$(UI_ESC=$escl UI_HEAD=$fin$NL pick_project "$sug") || { add_back || return 1; continue; }; fi
-      read_suggest "$h" "$name" "$u" "$p" "$group"
-      if [ -n "$cloned" ]; then
-        [ -n "$u" ] || { user=$(host_field "$peer" 4); src_user=$(t add_same_as "$peer"); }
-        jump=$(host_field "$peer" 6); src_jump=${jump:+$(t add_same_as "$peer")}; secret=$(host_field "$peer" 12); src_secret=${secret:+$(t add_same_as "$peer")}; src_group=$(t add_same_as "$peer")
-      fi
-      st=login;;
-    login)
-      at "$(t add_title)|$(t add_step 4 4)"
-      if [ -z "$secret" ]; then   # nothing to suggest: ask for the login method now
-        add_push; add_fin withproj; secret=$(UI_ESC=$escl UI_HEAD=$fin$NL pick_login) || { add_back || return 1; continue; }
-      fi
-      st=review;;
-    review)
-      at "$(t add_title)|$(t add_review)"; add_push
-      dup=$(awk -F'\t' -v ip="$h" '$3==ip{print $1; exit}' "$IDX")
-      tbl=$(row "$(t f_name)" "$name"
-        row "$(t f_addr)" "$user@$h$( [ "$port" != 22 ] && echo ":$port")" "$src_user"
-        row "$(t f_project)" "$group" "$src_group"
-        row "$(t f_tags)" "${tags:-—}" "$src_tags"
-        row "$(t f_jump)" "${jump:-$(t f_no_jump)}" "$src_jump"
-        row "$(t f_login)" "$( [ -n "$secret" ] && echo "$secret ($(secret_label "$secret"))" || t card_ssh_self)" "$src_secret"
-        row "$(t f_desc)" "${desc:-$(t add_empty)}"
-        [ -n "$dup" ] && printf '%s%s%s %s\n' "$CY" "$ICON_WARN" "$C0" "$(t add_dup "$dup")")
-      i=$(UI_ESC=$escl UI_HEAD=$tbl ui_menu "" "$(t act_add_save)|$(t act_add_save_hint)" "$(t act_add_edit)" "$(t cancel)") || { add_back || return 1; continue; }
-      case $i in
-        0) break;;
-        1) case $(ui_menu "$(t add_edit_head)" "$(t f_name)|$name" "$(t f_addr)|$user@$h:$port" "$(t f_project)|$group" "$(t f_tags)|${tags:-—}" "$(t f_jump)|${jump:-$(t f_no_jump)}" "$(t f_login)|${secret:-$(t card_ssh_self)}" "$(t f_desc)|${desc:-$(t add_empty)}") in
-             0) i=$(add_name_ask "$name" "" "" "$name") && name=$i;;
-             1) i=$(add_addr_ask "${user:+$user@}$h:$port") && line=$(parse_addr "$i") && { u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p); user=${u:-$user}; port=${p:-22}; src_user=""; };;
-             2) i=$(pick_project "$sug") && { group=$i; src_group=""; };;
-             3) i=$(pick_tags "$group" "$tags") && { tags=$i; src_tags=""; };;
-             4) x=(); while IFS= read -r i; do x+=("$i"); done < <(awk -F'\t' '$8 ~ /(^| )bastion( |$)/ {print $1}' "$IDX")
-                i=$(ui_menu "$(t add_jump_head)" "$(t add_jump_none)" ${x[@]+"${x[@]}"}) && { if [ "$i" = 0 ]; then jump=""; else jump=${x[$((i-1))]}; fi; src_jump=""; };;
-             5) i=$(pick_login "$secret" "$src_secret") && { secret=$i; src_secret=""; };;
-             6) i=$(ui_field "$(t f_desc)" "$desc" any "$(t add_desc_rule)"$'\n'"$(t example "$(t add_desc_example)")") && desc=$(printf '%s' "$i" | tr -d '\t\n\r');;
-           esac;;
-        *) return 1;;
-      esac;;
-    esac
-  done
-  blk=$(mktemp); host_block "$name" "$h" "$user" "$port" "$jump" "$secret" "$tags" "$desc" > "$blk"
-  f=$DIR/$group.conf; [ -f "$f" ] && cp "$f" "$blk.bak"
-  write_host "$group" "$blk"
-  if ! i=$(validate); then
-    if [ -f "$blk.bak" ]; then mv "$blk.bak" "$f"; else rm -f "$f"; fi
-    at "$(t add_title)"; shown; err "$(t add_err_invalid)"; dim "$i"; rm -f "$blk"; pause; return 1
-  fi
-  rm -f "$blk" "$blk.bak"; build_index
-  save_and_sync "$(t done_added "$name")"
-  ADDED=$name
-}
-edit_host(){ # open the file at the correct line, validate on close, and prompt again if invalid
-  local n=$1 f l ed e bak
-  f=$(host_field "$n" 10); l=$(host_field "$n" 11); [ -n "$f" ] || return 1
-  ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
-  bak=$(mktemp); cp "$f" "$bak"
-  while :; do
-    case $ed in code*|cursor*) $ed -g "$f:$l" --wait;; *) $ed "+$l" "$f";; esac
-    cmp -s "$f" "$bak" && { rm -f "$bak"; return 0; }
-    if e=$(validate); then rm -f "$bak"; build_index; save_and_sync "$(t done_edited "$n")"; return 0; fi
-    echo; box err "${CR}$(t eh_unsynced)${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
-    l=$(printf '%s' "$e" | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -1); l=${l:-1}
-    case $(pick "$(t eh_next)" "$(t eh_reopen)|$(t eh_reopen_h "$l")" "$(t eh_revert)|$(t eh_revert_h)") in
-      1) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ $(t done_restored "$(basename "$f")")${C0}"; return 0;;
-      *) ;;   # the first item and esc both go back to the editor: esc never drops the edit
-    esac
-  done
-}
-
-
 # ---------- deleting, renaming, and moving projects ----------
 # block_range name → "start end": the Host block, including preceding "# tags:"/"# desc:" lines, excluding trailing blank lines
 block_range(){ local f l; f=$(host_field "$1" 10); l=$(host_field "$1" 11)
@@ -1841,47 +1679,6 @@ host_where(){ # server → "file.conf line N · groups g1, g2" for previews
   local f l gs; f=$(host_field "$1" 10); l=$(host_field "$1" 11)
   gs=$(awk -F'\t' -v n="$1" 'index(" " $3 " ", " " n " ") {printf "%s%s", (c++ ? ", " : ""), $1}' "$GRP" 2>/dev/null)
   printf '%s' "$(t where_line "${f##*/}" "$l")${gs:+ · $(t card_groups) $gs}"; }
-delete_server(){
-  local n=$1 users gs lines=() d
-  at "$n|$(t act_delete)" "$n"; users=$(jump_users "$n")
-  gs=$(awk -F'\t' -v n="$n" 'index(" " $3 " ", " " n " ") {printf "%s%s", (c++ ? ", " : ""), $1}' "$GRP" 2>/dev/null)
-  lines+=("$CB$(t delete_removes)$C0" "  • $(t delete_block "$(t where_line "$(basename "$(host_field "$n" 10)")" "$(host_field "$n" 11)")")")
-  [ -n "$gs" ] && lines+=("  • $(t delete_groups "$gs")")
-  [ -n "$users" ] && lines+=("  ${CR}• $(t delete_jump_users "$users")$C0")
-  lines+=("" "$CD$(t delete_undo)$C0")
-  if is_prod "$n"; then   # PROD: type the name, so enter alone can never delete it
-    UI_TONE=danger UI_ENTER=$(t key_delete) ui_field "$(t delete_type_label "$n")" "" "equals:$n" "$(t delete_type_rule "$n")" "" "$(printf '%s\n' "${lines[@]}")" >/dev/null || return 1
-  else
-    confirm --danger --default=false --affirmative "$(t delete_yes "$n")" --negative "$(t cancel)" "$(t delete_question "$n")" "${lines[@]}" || return 1
-  fi
-  apply_change "$(t done_deleted "$n")" delete_host_raw "$n"
-}
-rename_server(){
-  local n=$1 m d
-  at "$n|$(t act_rename)" "$n"
-  d=$(tmpd) || return 1; awk -F'\t' -v n="$n" '$1!=n {print $1}' "$IDX" > "$d/taken"
-  m=$(ui_field "$(t rename_label)" "$n" "name:$d/taken" "$(t rename_rule)" \
-      "$n ${CD}→$C0 $CP$CB%s$C0"$'\n'"$CD$(host_where "$n") · ssh %s$C0") || return 1
-  [ "$m" = "$n" ] && return 0
-  apply_change "$(t done_renamed "$n" "$m")" rename_host_raw "$n" "$m"
-}
-move_server(){
-  local n=$1 cur to p c d i items=() projs=() lines=() f nf
-  at "$n|$(t act_move)" "$n"; cur=$(host_field "$n" 2)
-  host_shared "$n" && { shown; err "$(t err_shared "$n")"; pause; return 1; }
-  while IFS="$TAB" read -r p c; do projs+=("$p"); items+=("$p|$(t sc_users "$c")"); done < <(awk -F'\t' -v c="$cur" '$2!=c {k[$2]++} END {for (p in k) print p "\t" k[p]}' "$IDX" | sort)
-  [ ${#projs[@]} -eq 0 ] || items=("#$(t sec_projects)" "${items[@]}")
-  items+=("#$(t sec_new)" "$(t move_new)")
-  i=$(ui_menu "$(t move_head "$n")" "${items[@]}") || return 1
-  if [ "$i" -ge ${#projs[@]} ]; then
-    to=$(ui_field "$(t move_new_label)" "" project "$(t move_rule)"$'\n'"$(t example project-d)" "$(t move_to "$n" "$CP$CB%s$C0")") || return 1
-  else to=${projs[$i]}; fi
-  f=$(host_field "$n" 10); nf=$DIR/$to.conf
-  lines=("$CB$(t move_will)$C0" "  • $(t move_line_project "$cur" "$to")" "  • $(t move_line_file "$(t where_line "${f##*/}" "$(host_field "$n" 11)")" "$to.conf")$([ -f "$nf" ] || t move_file_new)" "" "$CD$(t move_same)$C0")
-  ui_confirm --affirmative "$(t move_yes "$n")" --negative "$(t cancel)" "$(t move_question "$n" "$to")" "${lines[@]}" || return 1
-  apply_change "$(t done_moved "$n" "$to")" move_host_raw "$n" "$to"
-}
-
 # ---------- shared repository conflicts ----------
 # Merge rather than rebase to preserve nonconflicting changes from both sides.
 resolve_conflict(){ # [ours|theirs] for noninteractive operation (tests)
@@ -2175,7 +1972,7 @@ need_tmux(){
 }
 open_many(){ # group-name-or-empty host...
   local grp=$1; shift
-  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh
+  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh diagram d0 d1 d2
   need_tmux || return 1
   for h in "$@"; do if valid_name "$h" && host_exists "$h"; then ok_hosts="$ok_hosts $h"; else missing="$missing $h"; fi; done
   set -- $ok_hosts; [ $# -gt 0 ] || { flash "${CR}${ICON_ERR} $(t err_open_none)${C0}"; return 1; }
@@ -2187,10 +1984,14 @@ open_many(){ # group-name-or-empty host...
     mode=tabs
   fi
   if [ -z "$mode" ]; then
-    last=$(cat "$STATE/lastmode" 2>/dev/null || echo sync)
-    case $last in split) mode=1;; tabs) mode=3;; *) mode=2;; esac
+    last=$(cat "$STATE/lastmode" 2>/dev/null || :)
+    case $last in sync) mode=2;; tabs) mode=3;; *) mode=1;; esac
     at "$(t open_title "$#")"
-    mode=$(UI_POS=$mode UI_HEAD="$CD$*$C0" ui_menu "$(t open_how)$( [ -n "$grp" ] && echo " · $(t open_remember "$grp")")" "$(t act_open_split)|$(t act_open_split_hint)" "$(t act_open_sync)|$(t act_open_sync_hint)" "$(t act_open_tabs)|$(t act_open_tabs_hint)") || return 1
+    printf -v d0 '%q' "[ 1 ][ 2 ]$NL[ 3 ][ 4 ]$NL$(t act_open_split_hint)"
+    printf -v d1 '%q' "[ 1 ][ 2 ]$NL[ 3 ][ 4 ]$NL$(t act_open_sync_hint)"
+    printf -v d2 '%q' "[ 1 | 2 | 3 ]$NL$(t act_open_tabs_hint)"
+    diagram="case {1} in 0) printf '%s\\n' $d0;; 1) printf '%s\\n' $d1;; 2) printf '%s\\n' $d2;; esac"
+    mode=$(UI_POS=$mode UI_HEAD="$CD$*$C0" UI_PREVIEW="$diagram" UI_PREVIEW_WINDOW='right,45%,wrap,<75(down,40%,wrap)' ui_choice "$(t open_how)$( [ -n "$grp" ] && echo " · $(t open_remember "$grp")")" "$(t act_open_split)" "$(t act_open_sync)" "$(t act_open_tabs)") || return 1
     case $mode in 0) mode=split;; 1) mode=sync;; *) mode=tabs;; esac
     echo "$mode" > "$STATE/lastmode"
     [ -n "$grp" ] && { set_group_mode "$grp" "$mode"; save_and_sync "$(t done_group_mode "$grp" "$(mode_label "$mode")")"; }
@@ -2589,83 +2390,6 @@ apply_preset(){
   local put=${PRESET_SET:-cfg_set}   # _demo swaps in cfg_mem so previews never touch the file
   $put list "$1" && $put border "$2" && $put preview "$3" && $put separator "$4" && $put icons "$5" && $put theme "$6"
 }
-setting_options(){
-  local k
-  case $1 in
-    preset) for k in cards compact minimal dracula nord light high-contrast; do printf '%s\t%s\n' "$k" "$(t "set_o_preset_${k//-/_}")"; done;;
-    list) for k in cards compact minimal; do printf '%s\t%s\n' "$k" "$(t "set_o_list_$k")"; done;;
-    border) printf '%s\n' rounded sharp bold double none;;
-    preview) for k in right bottom hidden; do printf '%s\t%s\n' "$k" "$(t "set_o_preview_$k")"; done;;
-    separator) printf 'on\t%s\noff\t%s\n' "$(t yes)" "$(t no)";;
-    icons) for k in unicode ascii nerd; do printf '%s\t%s\n' "$k" "$(t "set_o_icons_$k")"; done;;
-    theme) theme_names; local f n; for f in "$CONF"/themes/*.theme; do [ -f "$f" ] || continue; n=$(basename "$f" .theme); valid_theme_name "$n" && { theme_builtin "$n" >/dev/null || echo "$n"; }; done;;
-  esac
-}
-setting_pick(){ # key [heading] [row number to start on]; its own fzf because the preview is the live _demo
-  local key=$1 heading=${2:-} selected=${3:-} out
-  [ -n "$heading" ] || heading=$(t "set_k_$key")
-  at "$(t settings_title)|$(t "set_k_$key")"
-  if [ -z "$selected" ] && [ "$key" != preset ]; then
-    selected=$(setting_options "$key" | awk -F'\t' -v v="$(cfg_raw "$key")" '$1==v {print NR; exit}')
-  fi
-  # The picker always uses single-line rows; --read0 is only for the server card list.
-  out=$(setting_options "$key" | awk -F'\t' '{if(NF==1) print $0 "\t" $0; else print}' |
-    ui_fzf "$(ui_head "$CB$heading$C0")" --delimiter="$TAB" --with-nth=2 --accept-nth=1 --highlight-line \
-      --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" \
-      --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_save)" "esc:$(t key_cancel)")" --bind 'esc:abort' \
-      --preview "$(self_cmd) _demo '$key='{1}" --preview-window='right,65%,wrap,<80(down,55%,wrap)' \
-      ${selected:+--bind="load:pos($selected)"}) || return 1
-  if [ "$key" = preset ]; then apply_preset "$out"; else cfg_set "$key" "$out"; fi
-  apply_theme
-}
-set_language(){ # [breadcrumb] Language / Ngôn ngữ: save lang, then reload the texts so the next screen is already in it
-  local i l; at "${1:-$(t settings_title)|$(t set_language)}"
-  i=$(UI_POS=$([ "$UI_LANG" = vi ] && echo 1 || echo 2) ui_menu "$(t set_lang_head)" "$(t lang_vi)|$([ "$UI_LANG" = vi ] && t current)" "$(t lang_en)|$([ "$UI_LANG" = en ] && t current)") || return 1
-  case $i in 0) l=vi;; *) l=en;; esac
-  cfg_set lang "$l" || return 1
-  HOSTBOOK_LANG=; lang_load   # a one-run HOSTBOOK_LANG would hide the choice just made, here and in child processes
-}
-custom_theme(){
-  local n="" f current d e=""
-  at "$(t settings_title)|$(t set_custom)"
-  d=$(tmpd) || return 1; theme_names > "$d/taken"
-  while :; do
-    n=$(UI_TAKEN=err_theme_taken ui_field "$(t theme_label)" "$n" "name:$d/taken" "$(t theme_rule)" "" "$e") || return 1
-    valid_theme_name "$n" && break; e="$CR$ICON_ERR $(t err_theme_name)$C0"
-  done
-  f=$CONF/themes/$n.theme; mkdir -p "$CONF/themes"
-  if [ -f "$f" ]; then ui_confirm --default=false --affirmative "$(t theme_edit_yes)" --negative "$(t cancel)" "$(t theme_exists_q "$n")" || return 1
-  else current=$(cfg theme hostbook)
-    { printf '# Colors: 0–255, #rrggbb, or ANSI names. base: dark, light, 16.\n# accent: emphasis; title: headings; dim: secondary text; ok/warn/err: status.\n# border: borders; sel_bg: selection background; chip_fg/chips: project chip foreground/backgrounds.\n'
-      theme_builtin "$current" || cat "$CONF/themes/$current.theme"; } > "$f"
-  fi
-  while :; do
-    ${EDITOR:-vi} "$f"
-    theme_check "$f" && break
-    ui_confirm --affirmative "$(t theme_fix_yes)" --negative "$(t cancel)" "$(t theme_bad_q)" || return 1
-  done
-  "$SELF" _demo "theme=$n"
-  confirm "$(t theme_use_q)" && cfg_set theme "$n"
-  apply_theme
-}
-settings(){
-  local i k
-  while :; do
-    at "$(t settings_title)"
-    i=$(ui_menu "$(t settings_head)" \
-      "#$(t sec_display)" "$(t set_k_preset)|$(t set_h_preset)" "$(t set_k_list)|$(cfg list cards)" "$(t set_k_border)|$(cfg border rounded)" \
-      "$(t set_k_preview)|$(cfg preview right)" "$(t set_k_separator)|$(cfg separator on)" "$(t set_k_icons)|$(cfg icons unicode)" "$(t set_k_theme)|$(cfg theme hostbook)" \
-      "#$(t sec_lang)" "$(t set_language)|$(t "lang_$UI_LANG")" \
-      "#$(t sec_advanced)" "$(t set_custom)|$(t set_custom_hint)" "#$(t sec_reset)" "!$(t set_reset)|$(t set_reset_hint)") || return 0
-    case $i in
-      0) k=preset;; 1) k=list;; 2) k=border;; 3) k=preview;; 4) k=separator;; 5) k=icons;; 6) k=theme;;
-      7) set_language || :; continue;;
-      8) custom_theme; continue;;
-      9) ui_confirm --default=false "$(t set_reset_q)" && apply_preset cards; apply_theme; continue;;
-    esac
-    setting_pick "$k" || :
-  done
-}
 demo_rows(){
   printf '%s\n' \
     "h:booking-api|booking-api|booking|10.0.1.11|ubuntu|prod api|$L_dm_d1|key-prod|2h" \
@@ -2740,29 +2464,34 @@ home(){
   clip_offer
   fd=$(tmpd) || return 1
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
-  foot="c=\${FZF_SELECT_COUNT:-0}
+  foot="if [ \"\${FZF_TOTAL_COUNT:-0}\" -gt 0 ] && [ \"\${FZF_MATCH_COUNT:-0}\" -eq 0 ] && [ -n \"\$FZF_QUERY\" ]; then printf '%s\\n' \"\$HB_HOME_NO_MATCH\"; [ \"\${FZF_SELECT_COUNT:-0}\" -eq 0 ] || printf '%s\\n' \"\$HB_HOME_SELECTION_KEPT\"; elif [ \"\${FZF_TOTAL_COUNT:-0}\" -eq 0 ] && [ -n \"\${HOSTBOOK_ONLY:-}\" ]; then printf '%s\\n' \"\$HB_HOME_EMPTY_VIEW\"; fi
+    c=\${FZF_SELECT_COUNT:-0}
     if [ \"\$c\" -gt 0 ]; then n=\${#c}; [ \$n -lt 4 ] || n=4; IFS= read -r f < $(printf %q "$fd")/f-m\$n; printf \"\$f\\n\" \"\$c\"
     else case \$t in [hgs]:*) n=\${t%%:*};; *) n=x;; esac; IFS= read -r f < $(printf %q "$fd")/f-\$n; printf '%s\n' \"\$f\"; fi"
   fwrite="t={1}; [ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$STATE/current"); "
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }
     ADDED=""; rm -f "$STATE/current" "$STATE/share-request"
+    export HB_HOME_NO_MATCH="$(t home_no_matches)" HB_HOME_SELECTION_KEPT="$(t home_selection_kept)" HB_HOME_EMPTY_VIEW="$(t home_empty_view)"
     cmd_footers "$fd"; IFS= read -r ft < "$fd/f-x"
     # After a resize: same footer for the current row. Read-only on purpose: only the focus bind writes current, since a
     # write-back here could put a stale row there while focus moves, and → / ^e would open the wrong server.
     printf 'IFS= read -r t < %q 2>/dev/null || t=\n%s\n' "$STATE/current" "$foot" > "$fd/foot"; write_relayout "$fd"
     opts=(); while IFS= read -r opt; do opts+=("$opt"); done < <(fzf_opts "$fd")
-    out=$(cmd_list | fzf "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
+    ui_gutter
+    out=$(cmd_list | fzf ${FZF_GUTTER[@]+"${FZF_GUTTER[@]}"} "${opts[@]}" --ansi --multi --layout=reverse --height=100% --no-separator \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --tiebreak=index --info=inline-right \
       --prompt='> ' --ghost="$(t home_ghost)" --marker='+' \
       --header "$(cmd_header)" --footer "$ft" \
-      --preview "$(self_cmd) _preview {1}" --gutter=' ' --ellipsis='' --no-hscroll \
+      --preview "$(self_cmd) _preview {1}" --ellipsis='' --no-hscroll \
       --bind "resize:$(relayout_actions "$fd")" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
-      --bind 'tab:transform:case {1} in h:*) echo toggle+down;; *) echo down;; esac' \
+      --bind "tab:transform~case {1} in h:*) echo toggle+down;; *) echo down;; esac~+transform-footer:$fwrite$foot" \
+      --bind "btab:toggle-up+transform-footer:$fwrite$foot" \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$STATE/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
-      --bind "focus:transform-footer:$fwrite$foot" --bind "multi:transform-footer:$fwrite$foot" \
-      --bind 'esc:transform:if [ -n "$FZF_QUERY" ]; then echo clear-query; elif [ "${FZF_SELECT_COUNT:-0}" -gt 0 ]; then echo clear-selection; else echo abort; fi' \
+      --bind "focus:transform-footer:$fwrite$foot" \
+      --bind "result:transform-footer:$fwrite$foot" \
+      --bind "esc:transform~if [ -n \"\$FZF_QUERY\" ]; then echo clear-query; elif [ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ]; then echo clear-selection; else echo abort; fi~+transform-footer:$fwrite$foot" \
       --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list
     [ $rc -eq 130 ] || [ $rc -eq 2 ] && return 0
@@ -2949,11 +2678,13 @@ sweep_tmp(){
 
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   . "$LIBDIR/import.sh" || exit 1
+  . "$LIBDIR/settings.sh" || exit 1
+  . "$LIBDIR/hosts.sh" || exit 1
 else
   case ${1:-} in
     _import_parse|_import_write|_import_classify|_import_apply|_split) . "$LIBDIR/import.sh" || exit 1;;
     _*) ;;
-    *) . "$LIBDIR/import.sh" || exit 1;;
+    *) . "$LIBDIR/import.sh" || exit 1; . "$LIBDIR/settings.sh" || exit 1; . "$LIBDIR/hosts.sh" || exit 1;;
   esac
 fi
 
@@ -2999,7 +2730,7 @@ case ${1:-} in
   sync) "$SELF" _sync_now; "$SELF" _header | sed -n 1p;;
   import) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || { vault_init && home; };;
   doctor) doctor;; setup) setup;; update) update;; kho) check_deps || exit 1; connect_kho;; help|-h|--help) show_help;;
-  *) case ${1:-} in _*) . "$LIBDIR/import.sh" || exit 1;; esac
+  *) case ${1:-} in _*) . "$LIBDIR/import.sh" || exit 1; . "$LIBDIR/settings.sh" || exit 1; . "$LIBDIR/hosts.sh" || exit 1;; esac
      check_deps || exit 1
      if [ ! -d "$DIR/.git" ]; then first_run || exit 1; fi
      vault_init || exit 1

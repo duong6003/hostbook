@@ -1,0 +1,39 @@
+{
+  "method": "Twenty synthetic hosts, tmux 100x24, start add until address screen visible. Includes process/terminal startup and 5ms capture polling; first fresh dependency cache separately from five warm entries.",
+  "results": [
+    {
+      "revision": "5bf4af4",
+      "first_ms": 232.415,
+      "warm_samples_ms": [
+        127.877,
+        137.973,
+        116.248,
+        134.712,
+        134.526
+      ],
+      "warm_summary": {
+        "median_ms": 134.526,
+        "p95_ms": 137.973,
+        "min_ms": 116.248,
+        "max_ms": 137.973
+      }
+    },
+    {
+      "revision": "6d3400d",
+      "first_ms": 180.826,
+      "warm_samples_ms": [
+        200.133,
+        142.051,
+        142.8,
+        141.677,
+        148.93
+      ],
+      "warm_summary": {
+        "median_ms": 142.8,
+        "p95_ms": 200.133,
+        "min_ms": 141.677,
+        "max_ms": 200.133
+      }
+    }
+  ]
+}

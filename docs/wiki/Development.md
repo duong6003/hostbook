@@ -4,8 +4,7 @@
 
 `hostbook` is a Bash 3.2-compatible executable shared by macOS, Linux, and Windows
 (Git for Windows runtime). The UI uses fzf and gum; tmux handles multi-host sessions, Git synchronizes host files, and age
-protects vault credentials. The app interface is currently Vietnamese; documentation
-and code comments are English.
+protects vault credentials. The interface supports Vietnamese and English; documentation and code comments are English.
 
 Core files:
 
@@ -14,6 +13,8 @@ Core files:
 | `hostbook` | Bootstrap, configuration, index, rendering, SSH flows, vault, sync, and dispatch. |
 | `lib/ui.sh` | Shared UI helpers, loaded eagerly. |
 | `lib/import.sh` | Bulk and share-package import, loaded for human flows and import callbacks. |
+| `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
+| `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads. |
 | `install.ps1`, `windows/` | Managed Windows runtime, native launcher, and OS boundaries. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and Git identity regressions. |
@@ -22,6 +23,7 @@ Core files:
 | `tests/test.sh` | Core regression tests with isolated data. |
 | `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
 | `tests/tui.sh` | Real fzf interaction in isolated tmux sessions. |
+| `tests/controls.sh`, `tests/home-recovery.sh` | Compact controls, selection and home recovery in private tmux sessions. |
 | `tests/screens.sh` | Screen-system rules S1-S11 on one screen of each type, at 60, 100 and 200 columns, in vi and en. |
 | `tests/e2e.sh` | Real SSH tests using a Docker fixture. |
 | `docs/wiki/` | Versioned source for this wiki. |

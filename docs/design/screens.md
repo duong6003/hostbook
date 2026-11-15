@@ -6,7 +6,7 @@ The interactive prototype that this page was approved from lives outside the rep
 
 ## Layout: the full-screen frame
 
-A screen is one fzf window (`ui_fzf`), drawn in the same boxes as the search screen:
+A screen is one fzf window (`ui_fzf`), drawn in the same boxes as the search screen. Compact choices, toggles and checklists use the same frame at a height capped by the terminal:
 
 ```
 ╭ hostbook › shop-api › Rename ────────────────────────────╮   header box: breadcrumb label (S1)
@@ -38,6 +38,9 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 | Type | Helper | Use for | Must have |
 | --- | --- | --- | --- |
 | Action menu | `ui_menu` | → on a server or group, Tools, Secrets | sections (`#Name`), descriptions, destructive items last (`!Label`) |
+| Compact choice | `ui_choice` | short choices and opening modes | no filter, visible current choice and explicit apply/cancel |
+| Toggle | `ui_toggle` | binary settings | horizontal on/off, current value and explicit apply/cancel |
+| Checklist | `ui_checklist` | tags | Space toggles, selected count and empty selection accepted |
 | Single field | `ui_field` | rename, port, path, group name, secret name | rule shown before typing, inline error, preview of the change |
 | Multi-step | `ui_field` per step | add server, connect sync hub, vault setup | `step n/m` in the breadcrumb, finished steps as `✓` lines |
 | Review | `ui_menu` with header lines | last step of add/import | label → value table, `← source` for every suggestion |
@@ -51,6 +54,8 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 When a screen only reports that something finished, it does not stay open: it returns to the search screen and calls
 `flash` (shown in the header there).
 
+The home search distinguishes an empty host list from a query with no matches. An empty list points to Add and Tools/Import. A no-match message explains that Escape clears the query, keeps the normal shortcut footer visible, and says when selections remain. Escape clears query, then selection, then an imported-only view.
+
 ## Pieces
 
 | Piece | Function | Notes |
@@ -62,6 +67,7 @@ When a screen only reports that something finished, it does not stay open: it re
 | Field checks | `ui_field LABEL VALUE CHECK [RULE] [PREVIEW] [INTRO]` | CHECK: `name:<taken-file>`, `port`, `project`, `text`, `equals:<word>`, `any`; runs inside fzf's shell with builtins only, so typing never boots hostbook |
 | Tone | `UI_TONE=danger`, `UI_ENTER=<verb>` | prefix a single call; never set globally |
 | Menu options | `UI_HEAD`, `UI_POS`, `UI_EXPECT`, `UI_FOOT` | prefix a `ui_menu`/`ui_confirm` call: lines above the question (finished steps), row to start on, extra ending keys (`←` `→` in the file picker), replacement key hints |
+| Compact controls | `ui_choice`, `ui_toggle`, `ui_checklist` | no search input; `UI_POS`, `UI_HEAD`, `UI_FOOT` and preview options carry context |
 | Step line | `ui_done label value [source]` | `✓ Label  value  ← source` for a finished step of a multi-step flow |
 | File picker | `file_pick start-dir header [enter-label]` | `ui_menu` per directory; used by send file and key from file |
 

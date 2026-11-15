@@ -1,0 +1,715 @@
+{
+  "method": "Single Down, immediate capture, then 5 ms sleeps between captures until visible \u258c selection changes. Timing includes send-keys and capture subprocess overhead. Up resets selection outside the interval; 80 ms settling. Compact/right-preview/rounded/vi at 100x24; index built before launch. No pure render-time or universal latency guarantee.",
+  "warmups": 3,
+  "samples": 9,
+  "fixtures": [
+    {
+      "revision": "a07d017fb402ae8994c21fa094ae200fbba031b6",
+      "hosts": 20,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.518,
+          "send_ms": 6.896,
+          "capture_ms": [
+            6.605
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.579,
+          "send_ms": 6.772,
+          "capture_ms": [
+            6.794
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.508,
+          "send_ms": 6.878,
+          "capture_ms": [
+            6.612
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.032,
+          "send_ms": 7.345,
+          "capture_ms": [
+            6.673
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.455,
+          "send_ms": 7.172,
+          "capture_ms": [
+            7.263
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.684,
+          "send_ms": 6.96,
+          "capture_ms": [
+            6.707
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.339,
+          "send_ms": 6.784,
+          "capture_ms": [
+            7.539
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.831,
+          "send_ms": 6.98,
+          "capture_ms": [
+            6.834
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.643,
+          "send_ms": 7.022,
+          "capture_ms": [
+            6.601
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 13.684,
+        "p95_ms": 14.455,
+        "min_ms": 13.508,
+        "max_ms": 14.455
+      },
+      "send_summary": {
+        "median_ms": 6.96,
+        "p95_ms": 7.345,
+        "min_ms": 6.772,
+        "max_ms": 7.345
+      },
+      "owned_process_survivors": []
+    },
+    {
+      "revision": "d482121ffc8ab73bdc2a138b2ba5e4118d002a82",
+      "hosts": 20,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.299,
+          "send_ms": 7.175,
+          "capture_ms": [
+            7.107
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.425,
+          "send_ms": 6.834,
+          "capture_ms": [
+            6.573
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.66,
+          "send_ms": 7.11,
+          "capture_ms": [
+            6.535
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.782,
+          "send_ms": 6.853,
+          "capture_ms": [
+            6.913
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.922,
+          "send_ms": 6.328,
+          "capture_ms": [
+            6.579
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 15.485,
+          "send_ms": 8.04,
+          "capture_ms": [
+            7.429
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.357,
+          "send_ms": 6.871,
+          "capture_ms": [
+            6.471
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.376,
+          "send_ms": 6.785,
+          "capture_ms": [
+            6.578
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.281,
+          "send_ms": 6.957,
+          "capture_ms": [
+            6.311
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 13.425,
+        "p95_ms": 15.485,
+        "min_ms": 12.922,
+        "max_ms": 15.485
+      },
+      "send_summary": {
+        "median_ms": 6.871,
+        "p95_ms": 8.04,
+        "min_ms": 6.328,
+        "max_ms": 8.04
+      },
+      "owned_process_survivors": []
+    },
+    {
+      "revision": "a07d017fb402ae8994c21fa094ae200fbba031b6",
+      "hosts": 500,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.747,
+          "send_ms": 6.881,
+          "capture_ms": [
+            6.853
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.713,
+          "send_ms": 7.09,
+          "capture_ms": [
+            6.61
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.828,
+          "send_ms": 6.875,
+          "capture_ms": [
+            6.941
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.578,
+          "send_ms": 7.067,
+          "capture_ms": [
+            6.498
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.426,
+          "send_ms": 6.826,
+          "capture_ms": [
+            6.582
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.227,
+          "send_ms": 6.833,
+          "capture_ms": [
+            6.381
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.382,
+          "send_ms": 7.291,
+          "capture_ms": [
+            7.078
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.923,
+          "send_ms": 7.215,
+          "capture_ms": [
+            6.694
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.956,
+          "send_ms": 7.262,
+          "capture_ms": [
+            6.682
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 13.747,
+        "p95_ms": 14.382,
+        "min_ms": 13.227,
+        "max_ms": 14.382
+      },
+      "send_summary": {
+        "median_ms": 7.067,
+        "p95_ms": 7.291,
+        "min_ms": 6.826,
+        "max_ms": 7.291
+      },
+      "owned_process_survivors": []
+    },
+    {
+      "revision": "d482121ffc8ab73bdc2a138b2ba5e4118d002a82",
+      "hosts": 500,
+      "style": "compact",
+      "terminal": "100x24",
+      "samples": [
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.441,
+          "send_ms": 6.752,
+          "capture_ms": [
+            6.671
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.641,
+          "send_ms": 7.011,
+          "capture_ms": [
+            6.615
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.975,
+          "send_ms": 6.723,
+          "capture_ms": [
+            7.235
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.077,
+          "send_ms": 6.708,
+          "capture_ms": [
+            6.355
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 14.831,
+          "send_ms": 7.143,
+          "capture_ms": [
+            7.671
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 12.997,
+          "send_ms": 6.483,
+          "capture_ms": [
+            6.499
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.186,
+          "send_ms": 6.567,
+          "capture_ms": [
+            6.605
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.23,
+          "send_ms": 6.639,
+          "capture_ms": [
+            6.578
+          ],
+          "captures": 1
+        },
+        {
+          "key": "Down",
+          "before": [
+            7,
+            "sample-0000"
+          ],
+          "after": [
+            8,
+            "sample-0001"
+          ],
+          "elapsed_ms": 13.282,
+          "send_ms": 6.741,
+          "capture_ms": [
+            6.527
+          ],
+          "captures": 1
+        }
+      ],
+      "summary": {
+        "median_ms": 13.282,
+        "p95_ms": 14.831,
+        "min_ms": 12.997,
+        "max_ms": 14.831
+      },
+      "send_summary": {
+        "median_ms": 6.723,
+        "p95_ms": 7.143,
+        "min_ms": 6.483,
+        "max_ms": 7.143
+      },
+      "owned_process_survivors": []
+    }
+  ],
+  "metadata": {
+    "machine": "macOS-27.2-arm64-arm-64bit",
+    "revisions": {
+      "a07d017": "a07d017fb402ae8994c21fa094ae200fbba031b6",
+      "d482121": "d482121ffc8ab73bdc2a138b2ba5e4118d002a82"
+    },
+    "tools": {
+      "tmux": "tmux 3.8",
+      "fzf": "0.75.0 (Homebrew)",
+      "bash": "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin26)"
+    }
+  }
+}

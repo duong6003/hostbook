@@ -18,7 +18,7 @@ export HOSTBOOK_REPO="$T/source"
 bash "$HERE/install.sh" </dev/null
 app="$HOME/.local/share/hostbook"
 [ -x "$HOME/.local/bin/hostbook" ] && [ -d "$app/.git" ]
-for module in ui import; do [ -s "$app/lib/$module.sh" ]; done
+for module in ui import settings hosts; do [ -s "$app/lib/$module.sh" ]; done
 "$HOME/.local/bin/hostbook" --version | grep -q '^hostbook '
 (cd "$T" && "$HOME/.local/bin/hostbook" _header > "$T/header")
 [ -s "$T/header" ]
@@ -27,7 +27,7 @@ git -C "$T/source" add ci-update-probe
 git -C "$T/source" commit -qm 'CI update fixture'
 "$HOME/.local/bin/hostbook" update </dev/null
 [ -f "$app/ci-update-probe" ]
-for module in ui import; do [ -s "$app/lib/$module.sh" ]; done
+for module in ui import settings hosts; do [ -s "$app/lib/$module.sh" ]; done
 (cd "$T" && "$HOME/.local/bin/hostbook" _header > "$T/header")
 [ -s "$T/header" ]
 [ "$(cat "$HOSTBOOK_DIR/sentinel")" = 'keep host data' ]

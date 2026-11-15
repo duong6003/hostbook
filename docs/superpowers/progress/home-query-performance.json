@@ -1,0 +1,89 @@
+{
+  "method": "Single z yielding zero matches; baseline waits for 0/N, current waits for no-match message; 9 samples after 3 warmups, 100x24, timing includes tmux send/capture, 5ms poll, 80ms settle.",
+  "results": [
+    {
+      "revision": "9598b22",
+      "hosts": 20,
+      "samples_ms": [
+        15.197,
+        16.625,
+        16.391,
+        15.831,
+        16.128,
+        15.569,
+        15.433,
+        15.674,
+        16.904
+      ],
+      "summary": {
+        "median_ms": 15.831,
+        "p95_ms": 16.904,
+        "min_ms": 15.197,
+        "max_ms": 16.904
+      }
+    },
+    {
+      "revision": "309f356",
+      "hosts": 20,
+      "samples_ms": [
+        15.17,
+        15.404,
+        15.776,
+        15.637,
+        15.216,
+        15.803,
+        15.585,
+        16.329,
+        15.907
+      ],
+      "summary": {
+        "median_ms": 15.637,
+        "p95_ms": 16.329,
+        "min_ms": 15.17,
+        "max_ms": 16.329
+      }
+    },
+    {
+      "revision": "9598b22",
+      "hosts": 500,
+      "samples_ms": [
+        15.634,
+        15.792,
+        15.179,
+        17.886,
+        16.339,
+        15.689,
+        15.286,
+        16.06,
+        15.754
+      ],
+      "summary": {
+        "median_ms": 15.754,
+        "p95_ms": 17.886,
+        "min_ms": 15.179,
+        "max_ms": 17.886
+      }
+    },
+    {
+      "revision": "309f356",
+      "hosts": 500,
+      "samples_ms": [
+        15.654,
+        16.364,
+        15.413,
+        15.551,
+        15.683,
+        15.981,
+        15.255,
+        15.853,
+        15.919
+      ],
+      "summary": {
+        "median_ms": 15.683,
+        "p95_ms": 16.364,
+        "min_ms": 15.255,
+        "max_ms": 16.364
+      }
+    }
+  ]
+}
