@@ -10,12 +10,18 @@ concurrency:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Install macOS terminal test dependency
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install tmux
       - name: Install using install.sh from this checkout
         env:
           HOSTBOOK_REPO: ${{ github.workspace }}
@@ -30,6 +36,7 @@ jobs:
       - name: Run tests
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          for tool in tmux fzf gum; do command -v "$tool" >/dev/null || exit 1; done
           bash tests/test.sh
           bash tests/platform.sh
           bash tests/hosts-module.sh
