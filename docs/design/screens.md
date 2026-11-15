@@ -54,6 +54,8 @@ text into the screen's header lines and calling the `ui_*` helper directly, whic
 
 Multiline input is a native `gum write` screen: gum does not expose a live outer-border or footer option. It uses the same breadcrumb, theme roles and key-hint words, with the hints above the editor. Ctrl-J inserts a newline and Enter submits in the supported gum versions.
 
+Searchable menus with choices show the live match count and a persistent localized Ctrl-U clear-search hint. Ctrl-U clears the entire query; empty file-picker directories retain their distinct empty-folder message.
+
 When a screen only reports that something finished, it does not stay open: it returns to the search screen and calls
 `flash` (shown in the header there).
 
