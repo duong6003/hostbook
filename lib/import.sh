@@ -22,7 +22,7 @@ import_parse(){
 prepare_import_list(){ # parsed TSV and optional project → private stage
   local list=$1 to=$2 d n u h pt tg blk
   local group src_group user src_user port tags src_tags jump src_jump secret src_secret
-  d=$(tmpd) || return 1; : > "$d/added"; blk=$d/block
+  d=$(import_tmpd) || return 1; : > "$d/added"; blk=$d/block
   awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} !seen[$1]++' "$IDX" "$list" > "$d/accepted" || return 1
   while IFS="$TAB" read -r n u h pt tg; do
     [ "$u" = - ] && u=""; [ "$pt" = - ] && pt=""; [ "$tg" = - ] && tg=""
@@ -75,27 +75,59 @@ first_import_order_guard(){
       if((wild && concrete) || (tail && concrete)) bad=1; if(wild) tail=1
     }} END {exit bad}' "$1" || { err "$(t err_import_order)" >&2; return 1; }
 }
+# All transient input and decrypted package files belong to this import flow.
+import_tmpd(){ if [ -n "${IMPORT_WORK:-}" ]; then mktemp -d "$IMPORT_WORK/item.XXXXXX"; else tmpd; fi; }
+remember_package_offer(){
+  local c; c=$(head -c 200000 "$1") || return 1
+  printf '%s' "$c" | sha256 > "$STATE/last-offer"
+}
 import_flow(){ # [file]
-  local src=${1:-} raw list errs n to cnt to_dir tmp stage f
-  [ -z "$src" ] || src=$(unix_path "$src")
-  title "$(t impf_title)"
-  tmp=$(tmpd) || return 1; list=$tmp/list; errs=$tmp/errs; : > "$list"; : > "$errs"
-  if [ -n "$src" ] && is_pack "$src"; then import_pack "$src"; return; fi
-  if [ -z "$src" ] && clip_get 2>/dev/null | head -c 300 | grep -q '^# hostbook-share v1'; then   # a share package is already in the clipboard
-    to_dir=$(tmpd) || return 1; to_dir=$to_dir/clip.hbshare; clip_get > "$to_dir"; import_pack "$to_dir"; return; fi
-  if [ -n "$src" ]; then raw=$(cat "$src") || return 1
-  else
-    # use an editor to allow unlimited pasted lines (gum 2 input treats Enter as submit)
-    local tf ed; tf=$(mktemp); ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
-    printf '%s\n' "$(t impf_tpl1)" "$(t impf_tpl2)" "$(t impf_tpl3)" "" > "$tf"
-    $ed "$tf"
-    if grep -q 'BEGIN AGE ENCRYPTED FILE' "$tf"; then { echo "# hostbook-share v1"; sed -n '/BEGIN AGE ENCRYPTED FILE/,$p' "$tf"; } > "$tf.pack"; rm -f "$tf"; import_pack "$tf.pack"; rm -f "$tf.pack"; return; fi
-    raw=$(grep -v '^# ' "$tf" | sed '/./,$!d'); rm -f "$tf"   # strip leading blank lines so error line numbers match the pasted content
-    [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || return 1
+  local IMPORT_WORK rc
+  IMPORT_WORK=$(tmpd) || return 1
+  import_source "$@"; rc=$?
+  rm -rf "$IMPORT_WORK"
+  return "$rc"
+}
+import_source(){ # [file]
+  local src=${1:-} choice draft= value input=$IMPORT_WORK/input rc session=$IMPORT_WORK/picker
+  mkdir -p "$session" || return 1
+  if [ -n "$src" ]; then
+    src=${src/#\~/$HOME}; src=$(unix_path "$src") || return 1
+    [ -f "$src" ] && [ -r "$src" ] && cp "$src" "$input" || { err "$(t err_import_read)" >&2; return 1; }
+    import_content "$input"; return $?
   fi
+  while :; do
+    at "$(t import_title)"
+    choice=$(ui_menu "$(t import_source_title)" "$(t import_source_file)" "$(t import_source_paste)" "$(t import_source_clipboard)" "$(t cancel)") || return 1
+    case $choice in
+      0) src=$(file_pick "$HOME" "$(t import_source_file)" "" "" "$session") || continue
+         src=${src/#\~/$HOME}; src=$(unix_path "$src") || continue
+         if ! { [ -f "$src" ] && [ -r "$src" ] && cp "$src" "$input"; }; then err "$(t err_import_read)" >&2; pause; continue; fi;;
+      1) value=$(ui_multiline "$(t import_source_paste)" "$draft") || continue
+         draft=$value; printf '%s\n' "$draft" > "$input" || return 1;;
+      2) if ! clip_get > "$input" 2>/dev/null || [ ! -s "$input" ]; then err "$(t err_import_clipboard)" >&2; pause; continue; fi;;
+      *) return 1;;
+    esac
+    import_content "$input"; rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    [ "$rc" -ne 2 ] || pause
+  done
+}
+import_content(){ # private input file, after choosing a source
+  local src=$1 raw list errs n to cnt to_dir tmp stage f invalid
+  title "$(t impf_title)"
+  [ -s "$src" ] || { err "$(t err_import_empty)" >&2; return 2; }
+  invalid=$(LC_ALL=C tr -d '\011\012\015\040-\176\200-\377' < "$src" | wc -c | tr -d ' ') || return 1
+  [ "$invalid" = 0 ] || { err "$(t err_import_binary)" >&2; return 2; }
+  if grep -qiE 'BEGIN [A-Z0-9 ]*PRIVATE KEY' "$src"; then err "$(t err_import_private)" >&2; return 2; fi
+  if is_pack "$src"; then remember_package_offer "$src" || return 1; import_pack "$src"; return $?; fi
+  if grep -qiE '^#[[:space:]]*hostbook-share|BEGIN AGE ENCRYPTED FILE' "$src"; then err "$(t err_pack_bad)" >&2; return 2; fi
+  raw=$(cat "$src") || return 1
+  [ -n "$(printf '%s' "$raw" | tr -d '[:space:]')" ] || { err "$(t err_import_empty)" >&2; return 1; }
+  tmp=$(import_tmpd) || return 1; list=$tmp/list; errs=$tmp/errs; : > "$list"; : > "$errs"
   if printf '%s\n' "$raw" | grep -qiE '^[[:space:]]*host([[:space:]]|=)'; then   # a complete SSH config was pasted: preserve it and split by name
     ensure_index
-    printf '%s\n' "$raw" > "$list"; import_config_guard "$list" || { rm -f "$list" "$errs"; return 1; }; to_dir=$(tmpd) || return 1
+    printf '%s\n' "$raw" > "$list"; import_config_guard "$list" || { rm -f "$list" "$errs"; return 1; }; to_dir=$(import_tmpd) || return 1
     : > "$to_dir/ordered"
     split_config "$list" "$to_dir" "$to_dir/global" "$to_dir/ordered" >/dev/null || return 1
     n=$(awk '{line=$0; sub(/^[ \t]*/,"",line); key=line; sub(/[ \t=].*/,"",key); if(tolower(key)!="host") next; sub(/^[^ \t=]+[ \t=]+/,"",line); count=split(line,a,/[ \t]+/); for(i=1;i<=count;i++) {if(a[i] ~ /^#/) break; if(a[i]!="") print a[i]}}' "$to_dir/ordered" | wc -l | tr -d ' ')
@@ -154,7 +186,7 @@ split_config(){ # source-file destination-directory global-file
     }' "$1"
 }
 prepare_import_config(){ # split directory → private stage with accepted names
-  local f d; d=$(tmpd) || return 1
+  local f d; d=$(import_tmpd) || return 1
   : > "$d/added"
   for f in "$1"/*.conf; do [ -f "$f" ] || continue
     awk -v idx="$IDX" -v added="$d/added" '
@@ -332,7 +364,7 @@ apply_import_config(){ # staged config and names; restore only these destination
 is_pack(){ head -c 300 "$1" 2>/dev/null | grep -q '^# hostbook-share v1'; }
 pack_open(){ # package-file → print the extracted directory (inside tmpd); prompt for the package password
   local f=$1 d pw i bad=""
-  d=$(tmpd) || return 1; at "$(t import_title)"
+  d=$(import_tmpd) || return 1; at "$(t import_title)"
   for i in 1 2 3; do
     pw=${HB_PACK_PW:-}; [ -n "$pw" ] || pw=$(ask_pw "$(t pack_pw_head)" "${bad:+$bad}") || return 1
     if sed -n '/BEGIN AGE ENCRYPTED FILE/,$p' "$f" > "$d/pack.age" && age_pw_dec "$pw" "$d/pack.age" > "$d/pack.tgz" && [ -s "$d/pack.tgz" ]; then break; fi
@@ -489,7 +521,7 @@ pack_state_signature(){ # detect changes to files that influence package choices
   local f sig mode idxfile d link rc
   [ ! -L "$SEC" ] || return 1
   idxfile=$(g rev-parse --git-path index) || return 1; case $idxfile in /*) ;; *) idxfile=$DIR/$idxfile;; esac
-  d=$(tmpd) || return 1
+  d=$(import_tmpd) || return 1
   for f in "$DIR"/*.conf "$GRP" "$SEC"/*.meta "$SEC"/*.pub "$SEC"/*.age "$idxfile"; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     case $f in *$'\n'*|*$'\t'*) return 1;; esac
@@ -702,7 +734,7 @@ import_done(){ # new-count updated-count skipped-count
   esac
 }
 clip_offer(){ # offer to import a share package from the clipboard (only once per package)
-  local c h f line cnt from
+  local c h f line cnt from d rc
   c=$(clip_get 2>/dev/null | head -c 200000) || return 0
   printf '%s' "$c" | head -c 300 | grep -q '^# hostbook-share v1' || return 0
   h=$(printf '%s' "$c" | sha256); [ "$h" = "$(cat "$STATE/last-offer" 2>/dev/null)" ] && return 0
@@ -711,5 +743,6 @@ clip_offer(){ # offer to import a share package from the clipboard (only once pe
   cnt=$(printf '%s' "$line" | sed -n 's/^# hostbook-share v1 · \([0-9]*\) server.*/\1/p'); from=$(printf '%s' "$line" | sed -n 's/.* từ //p')
   at "$(t import_title)"
   ui_confirm --affirmative "$(t clip_yes)" --negative "$(t clip_no)" "$(t clip_q)" ${from:+"$(t clip_from "$from")"} ${cnt:+"$(t clip_count "$cnt")"} "$CD$(t clip_note)$C0" || return 0
-  f=$(tmpd) || return 1; f=$f/clip.hbshare; printf '%s\n' "$c" > "$f"; import_pack "$f"
+  d=$(tmpd) || return 1; f=$d/clip.hbshare; printf '%s\n' "$c" > "$f"
+  import_flow "$f"; rc=$?; rm -rf "$d"; return "$rc"
 }
