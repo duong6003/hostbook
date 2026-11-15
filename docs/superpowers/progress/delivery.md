@@ -24,3 +24,17 @@ Prototype: /Users/duong.vv/works/hostbook-ui-prototype (v3, synthetic UI fixture
 - Added tests/performance.py: subprocess timing in isolated fixture HOME/config/state/SSH,20/500 hosts,9 samples,100 columns. No network connections. JSON performance-baseline.json records timings and sample spread.
 - Baseline medians:20 hosts preview22.6/header33.7/footer19.3/list47.9/demo50.7 ms;500 hosts preview22.9/header34.1/footer19.2/list61.0/demo50.8 ms. Version about5ms.
 - Existing500-host list exceeds50ms if used synchronously; record as baseline limitation, investigate under module comparison instead of claiming all budgets pass. Pointer response requires separate interactive measurement.
+
+## Execution checkpoints
+
+- CI commits:8ab924c efficiency;bd7c273 coverage;ed7d17e isolated HOSTBOOK_HOME/named fixture branch;2d6f88c existing fixture branch correction. Sol reviewed first two phases; review-driven fixtures verified with disposable sentinel and detached/named inputs.
+- Draft PR: https://github.com/duong6003/hostbook/pull/13. First hosted run43697720583 oned7d17e; keep it finish for cold cache evidence before pushing2d6f88c. Main remains unchanged. GitHub connector cannot create PR (collaborator mismatch); authenticated gh used.
+- CI local macOS suites all passed, including TUI/screens and15 Docker SSH checks. Native macOS CI SSH fixture remains a documented gap; do not modify system accounts or install a Docker VM merely to claim parity.
+- Module task: Terra module_implementation implements Tasks1-2 of2026-11-15-modules.md; pending test/benchmark results.
+- Import planning: Astra architecture_plan preparing2026-11-15-import.md; production code still untouched for that phase.
+- Reviewer: Sol ci_review; no code edits.
+- Ruling: existing user tmux/ssh-agent processes are left untouched; test cleanup is judged by owned fixture process groups, not killing every global matching process.
+
+- Module eager extraction committed9732cb9, benchmark reportde95e78: core150/platform17/UI111/import13/TUI/screens all pass; initial eager timings roughly unchanged. Correcting benchmark TMUX isolation and remeasuring snapshots before final decision.
+- Import task plan persisted2026-11-15-import.md; includes explicit dirty-data rollback, commit failure and unsafe source/archive handling checks.
+- CI review accepted all changes through2d6f88c; hosted cold run currently macOS/Ubuntu green, Windows running.
