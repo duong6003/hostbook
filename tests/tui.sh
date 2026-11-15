@@ -230,7 +230,10 @@ for width in 60 100 200; do
  export COLORFGBG='0;15'
  mkdir -p "$HOME"
  start "$width"
+ wait_for 'Choose a language'   # the first screen picks the language; Tiếng Việt is preselected from HOSTBOOK_LANG
+ tmux -L "$socket" send-keys -t ui Enter
  wait_for 'Bắt đầu thế nào?'
+ grep -qx 'lang = vi' "$XDG_CONFIG_HOME/hostbook/config"
  tmux -L "$socket" send-keys -t ui Down Enter
  wait_for 'Kết nối kho ngay'
  tmux -L "$socket" send-keys -t ui n   # confirm screens: y/n or ↑↓ enter

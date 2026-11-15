@@ -49,7 +49,7 @@ if is_windows; then DIR=$(unix_path "$DIR"); STATE=$(unix_path "$STATE"); [ -z "
 IDX=$STATE/index.tsv; HIST=$STATE/history; ST=$STATE/status; FLASH=$STATE/flash
 GRP=$DIR/groups.tsv
 ME=${USER:-$(id -un)}
-TAB=$'\t'
+TAB=$'\t'; NL=$'\n'
 # ${#string} counts accented characters correctly only in a UTF-8 locale; minimal Ubuntu has C.UTF-8, macOS has en_US.UTF-8
 case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in *[Uu][Tt][Ff]*8*) ;; *)
   for l in C.UTF-8 en_US.UTF-8; do locale -a 2>/dev/null | grep -qix "$l\|${l%UTF-8}utf8" && { export LC_CTYPE=$l; break; }; done;; esac
@@ -146,13 +146,13 @@ lang_load(){
 }
 t(){ # key [args…] → text for key (printf format when arguments follow); an unknown key prints ‹L_key›
   local _k=L_$1; shift
-  if [ $# -gt 0 ]; then printf -- "${!_k-‹$_k›}" "$@"; else printf '%s' "${!_k-‹$_k›}"; fi; }
-tv(){ local _o=$1 _k=L_$2; shift 2; if [ $# -gt 0 ]; then printf -v "$_o" -- "${!_k-‹$_k›}" "$@"; else printf -v "$_o" '%s' "${!_k-‹$_k›}"; fi; }
+  if [ $# -gt 0 ]; then printf -- "${!_k-‹${_k}›}" "$@"; else printf '%s' "${!_k-‹${_k}›}"; fi; }
+tv(){ local _o=$1 _k=L_$2; shift 2; if [ $# -gt 0 ]; then printf -v "$_o" -- "${!_k-‹${_k}›}" "$@"; else printf -v "$_o" '%s' "${!_k-‹${_k}›}"; fi; }
 
 # ---------- screens (docs/design/screens.md) ----------
 # Every screen besides the search list is one fzf frame: a header box (breadcrumb label + context card), an input or
 # list box, and a footer box with key hints. A flow calls "at" once; the screens it opens then share that context.
-UI_AT=""; UI_HOST=""; UI_TONE=""; UI_ENTER=""; UI_INLINE=""; UI_TAKEN=""   # UI_TONE=danger: error-coloured frame; UI_ENTER: what enter does; UI_TAKEN: lang key for "name already used"
+UI_AT=""; UI_HOST=""; UI_TONE=""; UI_ENTER=""; UI_INLINE=""; UI_TAKEN=""; UI_HEAD=""; UI_POS=""; UI_EXPECT=""; UI_FOOT=""   # UI_TONE=danger: error-coloured frame; UI_ENTER: what enter does; UI_TAKEN: lang key for "name already used"
 at(){ UI_AT=$1; UI_HOST=${2-}; }   # "part|part…" [server for the context card]
 ui_label(){ # breadcrumb for the header label; the last part is what the screen does
   local rest=$UI_AT p o=" ${CP}${CB}hostbook${C0}"
@@ -182,13 +182,14 @@ ui_fzf(){ # header-text fzf-args… (stdin: list) → the shared frame
 }
 ui_head(){ # [line…] → header text: the context card, a blank line, then the screen's own lines
   local c l o=; c=$(ui_card)
-  for l in "$@"; do [ -n "$l" ] && o="${o:+$o$'\n'}$l"; done
+  for l in "$@"; do if [ -n "$l" ] || [ -n "$o" ]; then o="${o:+$o$NL}$l"; fi; done   # an empty line in the middle stays a blank line
+  while [ "${o%"$NL"}" != "$o" ]; do o=${o%"$NL"}; done
   if [ -n "$c" ] && [ -n "$o" ]; then printf '%s\n \n%s' "$c" "$o"; else printf '%s' "$c$o"; fi; }
 # ui_field LABEL VALUE CHECK [RULE] [PREVIEW] [INTRO] → the value on enter (status 1 on esc). CHECK runs in fzf's shell on
-# every key, builtins only: name:<file of taken names> | lname:<file> (lowercase only) | port | project | text | equals:<word> | any.
+# every key, builtins only: name:<file of taken names> | lname:<file> (lowercase only) | addr | port | project | text | equals:<word> | any.
 # PREVIEW is shown in the list box; every %s in it becomes the typed value.
 ui_field(){
-  local label=$1 value=$2 check=$3 rule=${4:-} prev=${5:-} intro=${6:-} d f keys v out tk
+  local label=$1 value=$2 check=$3 rule=${4:-} prev=${5:-} intro=${6:-} d f keys v out tk rc
   tk='m=; while IFS= read -r n; do [ "$n" = "$q" ] && m="${HB_E_TAKEN%%%s*}$q${HB_E_TAKEN#*%s}"; done < "$HB_ARG"'
   d=$(tmpd) || return 1; f=$d/field.sh
   keys=$(ui_keys "enter:${UI_ENTER:-$(t key_save)}" "esc:$(t key_cancel)")
@@ -197,6 +198,7 @@ ui_field(){
     lname:*) v='case $q in "") m=$HB_E_EMPTY;; *[!a-z0-9._-]*) m=$HB_E_LOWER;; *) '"$tk"';; esac';;
     port) v='case $q in ""|*[!0-9]*) m=$HB_E_PORT;; *) if [ "$q" -ge 1 ] && [ "$q" -le 65535 ]; then m=; else m=$HB_E_PORT; fi;; esac';;
     project) v='case $q in ""|*[!a-z0-9-]*) m=$HB_E_PROJECT;; *) m=;; esac';;
+    addr) v='case $q in "") m=$HB_E_EMPTY;; *[!A-Za-z0-9._@:-]*|*@*@*|@*|*@|*@:*|:*|*:|*:*[!0-9]*) m=$HB_E_ADDR;; *) m=;; esac';;
     text) v='if [ -n "$q" ]; then m=; else m=$HB_E_EMPTY; fi';;
     equals:*) v='if [ "$q" = "$HB_ARG" ]; then m=; else m=; [ -n "$q" ] && m="${HB_E_EQUALS%%%s*}$HB_ARG${HB_E_EQUALS#*%s}"; [ -z "$q" ] && m=-; fi';;
     *) v='m=';;
@@ -213,16 +215,18 @@ SH
   } > "$f"
   out=$(export HB_SELF="$(printf %q "$f")" HB_PREV="$prev" HB_ARG="${check#*:}" HB_FOOT="${rule:+$CD$rule$C0$'\n'}$keys" HB_KEYS="$keys" \
       HB_ERR="$CR$ICON_ERR " HB_C0="$C0" HB_E_EMPTY="$(t err_empty)" HB_E_SPACE="$(t err_name_space)" HB_E_CHARS="$(t err_name_chars)" \
-      HB_E_TAKEN="$(t "${UI_TAKEN:-err_name_taken}")" HB_E_LOWER="$(t err_name_lower)" HB_E_PORT="$(t err_port)" HB_E_PROJECT="$(t err_project)" HB_E_EQUALS="$(t err_equals)"
+      HB_E_TAKEN="$(t "${UI_TAKEN:-err_name_taken}")" HB_E_LOWER="$(t err_name_lower)" HB_E_PORT="$(t err_port)" HB_E_PROJECT="$(t err_project)" HB_E_EQUALS="$(t err_equals)" HB_E_ADDR="$(t err_addr)"
     : | ui_fzf "$(ui_head "$intro")" --disabled --print-query --query="$value" --prompt='› ' \
       --input-label=" $label " --list-label="${prev:+ $(t preview_label) }" --no-highlight-line --pointer=' ' \
       --footer="${rule:+$CD$rule$C0$'\n'}$keys" --bind "start:transform:sh $(printf %q "$f") change" \
       --bind "change:transform:sh $(printf %q "$f") change" --bind "enter:transform:sh $(printf %q "$f") enter" --bind 'esc:abort')
-  [ $? -eq 0 ] || return 1
+  rc=$?; [ $rc -le 1 ] || return 1   # enter on an empty list is "no match" (1) for fzf, esc is 130
   printf '%s\n' "${out%%$'\n'*}"
 }
 # ui_menu HEADER ITEM… → zero-based index of the chosen item. Items: "Label|description"; "#Name" starts a section
-# (not an item); "!Label" marks a destructive item, shown in the error colour.
+# (not an item); "!Label" marks a destructive item, shown in the error colour. Prefix a call with UI_HEAD (lines above the
+# question, e.g. finished steps), UI_POS (row to start on), UI_EXPECT (extra keys that end it: the output is then the key,
+# a newline, the index) or UI_FOOT (replaces the key hints).
 ui_menu(){
   local header=$1; shift; local x lab desc sec= cols lw=0 sw=0 i=0 pad spad line list= danger
   cols=$(term_cols)
@@ -237,9 +241,10 @@ ui_menu(){
     line="$line$danger$lab$C0${desc:+$pad$CD$desc$C0}"; list="$list$line"$'\n'
     sec=; i=$((i+1))
   done
-  printf '%s' "$list" | ui_fzf "$(ui_head "${header:+$CB$header$C0}")" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
+  printf '%s' "$list" | ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "${header:+$CB$header$C0}")" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
     --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" --highlight-line \
-    --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:$(t key_back)")" --bind 'esc:abort'
+    --footer="${UI_FOOT:-$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_select)" "esc:$(t key_back)")}" --bind 'esc:abort' \
+    ${UI_POS:+--bind "load:pos($UI_POS)"} ${UI_EXPECT:+--expect="$UI_EXPECT"}
 }
 # ui_confirm [--default=false] [--affirmative X] [--negative Y] [--danger] QUESTION [DETAIL…] → status 0 for yes
 ui_confirm(){
@@ -249,7 +254,7 @@ ui_confirm(){
     --affirmative=*) yes=${1#*=};; --negative=*) no=${1#*=};; --danger) danger=1;; *) break;; esac; shift; done
   q=$1; shift
   [ -n "$danger" ] && yes="$CR$yes$C0"
-  [ "$(printf '1\t%s\n0\t%s\n' "$yes" "$no" | UI_TONE=${danger:+danger} ui_fzf "$(ui_head "$CB$q$C0" "$@")" --no-input --delimiter="$TAB" --with-nth=2 \
+  [ "$(printf '1\t%s\n0\t%s\n' "$yes" "$no" | UI_TONE=${danger:+danger} ui_fzf "$(ui_head ${UI_HEAD:+"$UI_HEAD"} "$CB$q$C0" "$@")" --no-input --delimiter="$TAB" --with-nth=2 \
     --accept-nth=1 --highlight-line --bind "load:pos($def)" --bind 'y:pos(1)+accept,n:pos(2)+accept,esc:abort' \
     --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")")" = 1 ]
 }
@@ -1059,12 +1064,37 @@ secret_add_password(){ # [name] [password] → print the name
   printf '%s\n' "$pw" | secret_enc > "$SEC/$name.age"
   save_and_sync "Đã thêm secret $name"; echo "$name"
 }
-pick_key_file(){ # → print a private-key path
-  local list=() f i
-  for f in "$HOME"/.ssh/*; do [ -f "$f" ] && head -1 "$f" 2>/dev/null | grep -q 'PRIVATE KEY' && list+=("${f/#$HOME/~}"); done
-  list+=("Đường dẫn khác…")
-  i=$(pick "Key nào?" "${list[@]}") || return 1
-  if [ "$i" -eq $(( ${#list[@]} - 1 )) ]; then f=$(gum file --all "$(native_path "$HOME")") || return 1; unix_path "$f"; else echo "${list[$i]}"; fi
+hsize(){ local b=$1; if [ "$b" -lt 1024 ]; then printf '%s B' "$b"; elif [ "$b" -lt 1048576 ]; then printf '%s.%s K' $((b/1024)) $((b%1024*10/1024))
+  elif [ "$b" -lt 1073741824 ]; then printf '%s.%s M' $((b/1048576)) $((b%1048576*10/1048576)); else printf '%s.%s G' $((b/1073741824)) $((b%1073741824*10/1073741824)); fi; }
+# File picker: one ui_menu per directory. Folders first, dot files hidden, sizes right-aligned; → opens a folder, ← goes up,
+# enter opens a folder or picks a file. Prints the file (as ~/… under the home directory); esc → status 1.
+file_pick(){ # start-dir header [enter-label]
+  local dir=${1:-$HOME} head=$2 enter=${3:-$(t key_pick)} base=$UI_AT H=${HOME%/} lines kind size name items names isdir out key i lab shown h2
+  dir=${dir%/}; [ -d "$dir/" ] || dir=$H   # the root directory is "" so that "$dir/" is always a valid path
+  while :; do
+    shown=$dir; case $dir in "$H"|"$H"/*) shown="~${dir#"$H"}";; esac; UI_AT="$base|${shown:-/}"
+    items=(); names=(); isdir=()
+    lines=$(LC_ALL=C ls -lnL "$dir/" 2>/dev/null | awk '{ k = substr($1, 1, 1); if (k != "d" && k != "-") next; n = $0; for (i = 1; i <= 8; i++) sub(/^[ \t]*[^ \t]+/, "", n); sub(/^[ \t]+/, "", n); printf "%s\t%s\t%s\n", k, $5, n }' | sort -t "$TAB" -k1,1r -k3,3f)
+    while IFS="$TAB" read -r kind size name; do
+      [ -n "$name" ] || continue
+      lab=${name//|/¦}; case $lab in \#*|\!*) lab=" $lab";; esac
+      if [ "$kind" = d ]; then items+=("$lab/"); isdir+=(1); else items+=("$lab|$(printf '%8s' "$(hsize "${size:-0}")")"); isdir+=(0); fi
+      names+=("$name")
+    done <<< "$lines"
+    h2=$head; [ ${#items[@]} -gt 0 ] || h2="$head$NL$CD$(t file_empty)$C0"
+    out=$(UI_EXPECT=left,right UI_FOOT=$(ui_keys "→:$(t key_open)" "←:$(t key_up)" "enter:$enter" "esc:$(t key_cancel)") \
+      ui_menu "$h2" ${items[@]+"${items[@]}"}) || { UI_AT=$base; return 1; }
+    key=${out%%$NL*}; i=${out#*$NL}
+    if [ "$key" = left ]; then dir=${dir%/*}; continue; fi
+    [ -n "$i" ] || continue
+    if [ "${isdir[$i]}" = 1 ]; then dir=$dir/${names[$i]}; continue; fi
+    [ "$key" = right ] && continue
+    UI_AT=$base; case $dir in "$H"|"$H"/*) dir="~${dir#"$H"}";; esac; printf '%s/%s\n' "$dir" "${names[$i]}"; return 0
+  done
+}
+pick_key_file(){ # → print a private-key path (as ~/… under the home directory)
+  local start=$HOME; [ -d "$HOME/.ssh" ] && start=$HOME/.ssh
+  file_pick "$start" "$(t pick_key_head)"
 }
 # Choose a login method for a server. Print the secret name (empty = SSH handles it). Return 1 on cancellation.
 pick_login(){ # [suggested secret] [reason]
@@ -1277,7 +1307,7 @@ secret_edit(){
 push_new_key(){ # secret-name old-public-key-file [yes = no prompts, keep the old key]
   local sc=$1 oldpub=$2 auto=${3:-} h hosts okh="" bad="" oldblob
   hosts=$(secret_users "$sc"); [ -n "$hosts" ] || return 0
-  [ -n "$auto" ] || confirm "Đưa key mới lên $(printf '%s\n' "$hosts" | grep -c .) server đang dùng $sc? (đăng nhập bằng key cũ)" || return 0
+  [ -n "$auto" ] || { at "$(t secrets_title)|$sc|$(t pn_title)"; ui_confirm --affirmative "$(t pn_yes)" --negative "$(t cancel)" "$(t pn_q "$(printf '%s\n' "$hosts" | grep -c .)" "$sc")" "$CD$(t pn_how)$C0" "  • $(printf '%s ' $hosts)"; } || return 0
   agent_ready && load_secret "$sc" || return 1
   for h in $hosts; do
     printf '  %s … ' "$h"
@@ -1287,7 +1317,8 @@ push_new_key(){ # secret-name old-public-key-file [yes = no prompts, keep the ol
   done
   [ -n "$bad" ] && warn "Các server này vẫn chỉ nhận key cũ:$bad. Thêm public key mới bằng tay rồi thử lại."
   [ -n "$auto" ] && [ "$auto" != remove ] && return 0
-  if [ -n "$okh" ] && { [ "$auto" = remove ] || confirm --default=false "Gỡ key cũ khỏi các server đã vào được bằng key mới?"; }; then
+  if [ -n "$okh" ] && { [ "$auto" = remove ] || { at "$(t secrets_title)|$sc|$(t pn_remove_title)"
+      ui_confirm --danger --default=false --affirmative "$(t pn_remove_yes)" --negative "$(t cancel)" "$(t pn_remove_q)" "$CB$(t delete_removes)$C0" "  • $(t pn_removes)" "    ${okh# }" " " "$CB$(t delete_keeps)$C0" "  • $(t pn_keeps)" " " "$CD$(t pn_undo)$C0"; }; }; then
     oldblob=$(awk '{print $2}' "$oldpub")
     for h in $okh; do
       if sshx -o BatchMode=yes -o ConnectTimeout=8 "$h" "grep -vF '$oldblob' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.hb && mv ~/.ssh/authorized_keys.hb ~/.ssh/authorized_keys" </dev/null 2>/dev/null; then printf "  %s ${ICON_OK} đã gỡ key cũ\n" "$h"; else printf "  %s %s${ICON_ERR} chưa gỡ được%s\n" "$h" "$CR" "$C0"; fi; done
@@ -1362,9 +1393,12 @@ secret_rename(){
   apply_change "$(t done_secret_renamed "$n" "$m")" secret_rename_raw "$n" "$m"
 }
 secret_delete(){
-  local n=$1 users; users=$(secret_users "$n" | tr '\n' ' ')
-  confirm --default=false "Xoá secret $n?${users:+ Các server $users sẽ không còn cách đăng nhập đã lưu.} Có thể hoàn tác trong Công cụ." || return 1
-  apply_change "Đã xoá secret $n" secret_delete_raw "$n"
+  local n=$1 users lines=() ut; users=$(secret_users "$n" | tr '\n' ' '); at "$(t secrets_title)|$n|$(t act_sc_delete)"
+  lines=("$CB$(t delete_removes)$C0" "  • $(t secret_delete_line "$n" "$(secret_label "$n")")")
+  [ -z "$users" ] || lines+=("  ${CR}• $(t secret_delete_users "$users")$C0")
+  lines+=(" " "$CB$(t delete_keeps)$C0" "  • $(t secret_delete_keeps)" " " "$CD$(t delete_undo)$C0")
+  ui_confirm --danger --default=false --affirmative "$(t secret_delete_yes "$n")" --negative "$(t cancel)" "$(t secret_delete_q "$n")" "${lines[@]}" || return 1
+  apply_change "$(t done_secret_deleted "$n")" secret_delete_raw "$n"
 }
 
 # ---------- connections and error reporting ----------
@@ -1509,8 +1543,12 @@ explain(){ # name log [pane]
 #            group<TAB>project used to infer fields (argument 5, or the top project)
 #            field<TAB>user|port|jump|secret|tags|prefix<TAB>value<TAB>reason
 suggest(){ # address name user port [project]
+  local r24 r16 tail dom pfx word prt usr cnt like me jmp sec tg tg2
   ensure_index
-  LC_ALL=C awk -F'\t' -v ip="$1" -v name="$2" -v user="$3" -v port="$4" -v force="${5:-}" -v me="$ME" -v now="$(date +%s)" '
+  tv r24 sg_r24; tv r16 sg_r16; tv tail sg_tail; tv dom sg_dom; tv pfx sg_pfx; tv word sg_word; tv prt sg_port; tv usr sg_user
+  tv cnt sg_cnt; tv like sg_like; tv me sg_me; tv jmp sg_jump; tv sec sg_sec; tv tg sg_tags; tv tg2 sg_tags2
+  LC_ALL=C awk -F'\t' -v sg_r24="$r24" -v sg_r16="$r16" -v sg_tail="$tail" -v sg_dom="$dom" -v sg_pfx="$pfx" -v sg_word="$word" -v sg_port="$prt" \
+    -v sg_user="$usr" -v sg_cnt="$cnt" -v sg_like="$like" -v sg_me="$me" -v sg_jump="$jmp" -v sg_sec="$sec" -v sg_tags="$tg" -v sg_tags2="$tg2" -v ip="$1" -v name="$2" -v user="$3" -v port="$4" -v force="${5:-}" -v me="$ME" -v now="$(date +%s)" '
     function isip(h){ return h ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ }
     function rest(h){ if (index(h,".")==0) return ""; return substr(h, index(h,".")+1) }
     function base(h,  n,a){ n=split(h,a,"."); if (n>=3 && length(a[n])==2 && length(a[n-1])<=3) return a[n-2] "." a[n-1] "." a[n]; if (n>=2) return a[n-1] "." a[n]; return h }
@@ -1523,18 +1561,18 @@ suggest(){ # address name user port [project]
       m=split($8,t," "); for (i=1;i<=m;i++) pool[t[i]]=1
       a=0
       if (isip(ip) && isip($3)) { split(ip,x,"."); split($3,y,".")
-        if (x[1]==y[1] && x[2]==y[2] && x[3]==y[3]) { a=50; addlab(n, "cùng dải " x[1] "." x[2] "." x[3] ".x", 50) }
-        else if (x[1]==y[1] && x[2]==y[2]) { a=15; addlab(n, "cùng dải " x[1] "." x[2] ".x.x", 15) } }
+        if (x[1]==y[1] && x[2]==y[2] && x[3]==y[3]) { a=50; addlab(n, sprintf(sg_r24, x[1] "." x[2] "." x[3]), 50) }
+        else if (x[1]==y[1] && x[2]==y[2]) { a=15; addlab(n, sprintf(sg_r16, x[1] "." x[2]), 15) } }
       else if (!isip(ip) && !isip($3) && index(ip,".")) {
-        if (index(rest(ip),".") && rest(ip)==rest($3)) { a=55; addlab(n, "cùng đuôi ." rest(ip), 55) }
-        else if (base(ip)==base($3)) { a=40; addlab(n, "cùng tên miền " base(ip), 40) } }
+        if (index(rest(ip),".") && rest(ip)==rest($3)) { a=55; addlab(n, sprintf(sg_tail, rest(ip)), 55) }
+        else if (base(ip)==base($3)) { a=40; addlab(n, sprintf(sg_dom, base(ip)), 40) } }
       AD[n]=a; s=a
       if (name!="") { p1=pfx(name); p2=pfx(n)
-        if (p1!="" && p1==p2) { s+=40; addlab(n, "tên bắt đầu bằng " p1, 40) }
+        if (p1!="" && p1==p2) { s+=40; addlab(n, sprintf(sg_pfx, p1), 40) }
         c=0; m=split(tolower(name),t,/[-_.0-9]+/); k=split(tolower(n),q,/[-_.0-9]+/)
-        for (i=(p1!=""?2:1); i<=m && c<2; i++) if (t[i]!="") for (j=(p2!=""?2:1); j<=k; j++) if (q[j]==t[i]) { s+=10; c++; addlab(n, "tên có chữ " t[i], 10); break } }
-      if (port!="" && port!="22" && $5==port) { s+=10; addlab(n, "cùng cổng " port, 10) }
-      if (user!="" && $4==user) { s+=10; addlab(n, "cùng user " user, 10) }
+        for (i=(p1!=""?2:1); i<=m && c<2; i++) if (t[i]!="") for (j=(p2!=""?2:1); j<=k; j++) if (q[j]==t[i]) { s+=10; c++; addlab(n, sprintf(sg_word, t[i]), 10); break } }
+      if (port!="" && port!="22" && $5==port) { s+=10; addlab(n, sprintf(sg_port, port), 10) }
+      if (user!="" && $4==user) { s+=10; addlab(n, sprintf(sg_user, user), 10) }
       if (s>0 && (n in recent)) s+=5
       S[n]=s }
     END {
@@ -1549,7 +1587,7 @@ suggest(){ # address name user port [project]
         if (best=="") break; used[best]=1
         if (r==1) { top=best; topv=bv } else if (r==2) second=bv
         why=""; c=0
-        for (w=55; w>=10 && c<3; w-=5) for (j=1;j<=nl && c<3;j++) { l=LO[j]; if (LW[l]==w && ((best SUBSEP l) in LC)) { why=why (why==""?"":" · ") l " (" LC[best SUBSEP l] " server)"; c++ } }
+        for (w=55; w>=10 && c<3; w-=5) for (j=1;j<=nl && c<3;j++) { l=LO[j]; if (LW[l]==w && ((best SUBSEP l) in LC)) { why=why (why==""?"":" · ") sprintf(sg_cnt, l, LC[best SUBSEP l]); c++ } }
         printf "project\t%s\t%d\t%s\t%s\n", best, bv, dots(bv), why }
       print "auto\t" ((top!="" && topv>=80 && topv-second>=30) ? 1 : 0)
       bp=""; bs=59.999; for (i=1;i<=N;i++) if (S[nm[i]]>bs) { bs=S[nm[i]]; bp=nm[i] }
@@ -1562,21 +1600,21 @@ suggest(){ # address name user port [project]
       ng=0; for (i=1;i<=N;i++) if (P[nm[i]]==G) { n=nm[i]; ng++; UW[U[n]]+=S[n]+1; if (!(U[n] in useen)) { useen[U[n]]=1; uo[++nu]=U[n] } }
       if (user!="") print "field\tuser\t" user "\t"
       else { bu=""; bv=0; for (i=1;i<=nu;i++) if (UW[uo[i]]>bv) { bv=UW[uo[i]]; bu=uo[i] }
-        if (bu!="") print "field\tuser\t" bu "\tgiống các server trong " G; else print "field\tuser\t" me "\tuser của máy này" }
+        if (bu!="") print "field\tuser\t" bu "\t" sprintf(sg_like, G); else print "field\tuser\t" me "\t" sg_me }
       cu=(user!="") ? user : bu
       if (G=="" || ng==0) exit
       tot=0; for (i=1;i<=N;i++) { n=nm[i]; if (P[n]!=G) continue; if ((" " TG[n] " ") ~ / bastion /) continue; tot++; if (J[n]!="") { JC[J[n]]++; if (!(J[n] in jseen)) { jseen[J[n]]=1; jo[++nj]=J[n] } } }
-      for (i=1;i<=nj;i++) if (tot>0 && JC[jo[i]] >= 0.8*tot) { print "field\tjump\t" jo[i] "\tcác server khác trong " G " đều đi qua máy này"; break }
+      for (i=1;i<=nj;i++) if (tot>0 && JC[jo[i]] >= 0.8*tot) { print "field\tjump\t" jo[i] "\t" sprintf(sg_jump, G); break }
       for (i=1;i<=N;i++) { n=nm[i]; if (P[n]!=G || SC[n]=="") continue; if (!(SC[n] in sseen)) { sseen[SC[n]]=1; so[++ns]=SC[n] }; SA[SC[n]]++; if (U[n]==cu) SU[SC[n]]++ }
       bsn=""; bv=0; for (i=1;i<=ns;i++) if (SU[so[i]]>bv) { bv=SU[so[i]]; bsn=so[i] }
       if (bsn=="") for (i=1;i<=ns;i++) if (SA[so[i]]>bv) { bv=SA[so[i]]; bsn=so[i] }
-      if (bsn!="") print "field\tsecret\t" bsn "\tđang dùng cho " SA[bsn] " server trong " G
+      if (bsn!="") print "field\tsecret\t" bsn "\t" sprintf(sg_sec, SA[bsn], G)
       tags=""
       for (i=1;i<=N;i++) { n=nm[i]; if (P[n]!=G) continue; m=split(TG[n],t," "); for (j=1;j<=m;j++) { TC[t[j]]++; if (!(t[j] in tseen)) { tseen[t[j]]=1; to[++nt]=t[j] } } }
       for (i=1;i<=nt;i++) if (TC[to[i]] >= 0.6*ng) { tags=tags (tags==""?"":" ") to[i]; chosen[to[i]]=1 }
       extra=0; m=split(tolower(name),t,/[-_.0-9]+/)
       for (i=1;i<=m;i++) if (t[i]!="" && (t[i] in pool) && !(t[i] in chosen)) { tags=tags (tags==""?"":" ") t[i]; chosen[t[i]]=1; extra=1 }
-      if (tags!="") print "field\ttags\t" tags "\ttừ " G (extra ? " và tên server" : "")
+      if (tags!="") print "field\ttags\t" tags "\t" sprintf(extra ? sg_tags2 : sg_tags, G)
     }' "$HIST" "$IDX"
 }
 sug_val(){ awk -F'\t' -v k="$2" '$1=="field" && $2==k {print $3; exit}' "$1"; }
@@ -1591,21 +1629,23 @@ read_suggest(){ # address name user port [project]
   src_user=$(sug_why "$f" user); src_jump=$(sug_why "$f" jump); src_secret=$(sug_why "$f" secret); src_tags=$(sug_why "$f" tags)
   src_group=$(awk -F'\t' -v g="$group" '$1=="project" && $2==g {print $5}' "$f")
 }
-pick_project(){ # suggestions-file → print the project name
+pick_project(){ # suggestions-file → print the project name (call with UI_HEAD for the finished steps)
   local f=$1 items=() keys=() p sc dt why i
   while IFS="$TAB" read -r _ p sc dt why; do items+=("$p|$dt $why"); keys+=("$p"); done < <(grep '^project' "$f")
   for p in $(cut -f2 "$IDX" | sort -u); do case " ${keys[*]:-} " in *" $p "*) ;; *) items+=("$p"); keys+=("$p");; esac; done
-  items+=("+ Dự án mới"); keys+=("+")
-  i=$(pick "Dự án nào?" "${items[@]}") || return 1
-  if [ "${keys[$i]}" = "+" ]; then p=$(ask "Tên dự án mới · chữ thường, số, dấu gạch ngang" "project-d") || return 1
-    case $p in ""|*[!a-z0-9-]*) err "Tên dự án không hợp lệ" >&2; return 1;; esac; echo "$p"
+  [ ${#keys[@]} -eq 0 ] || items=("#$(t sec_projects)" "${items[@]}")
+  items+=("#$(t sec_new)" "$(t move_new)"); keys+=("+")
+  i=$(ui_menu "$(t proj_head)" "${items[@]}") || return 1
+  if [ "${keys[$i]}" = "+" ]; then ui_field "$(t move_new_label)" "" project "$(t move_rule)"$'\n'"$(t example project-d)" "" "$UI_HEAD"
   else echo "${keys[$i]}"; fi
 }
 pick_tags(){ # project current-tags → print new tags
-  local g=$1 cur=$2 all sel
+  local g=$1 cur=$2 all sel other; other=$(t tags_other)
   all=$( { printf '%s\n' $cur; awk -F'\t' -v g="$g" '$2==g{print $8}' "$IDX" | tr ' ' '\n'; } | grep . | awk '!s[$0]++')
-  sel=$( { printf '%s\n' "$all"; echo "+ Tag khác…"; } | grep . | gum choose --no-limit --header "Tags · space để bật/tắt, enter để xong" --selected "$(printf '%s' "$cur" | tr ' ' ',')") || return 1
-  if printf '%s\n' "$sel" | grep -qx '+ Tag khác…'; then sel=$(printf '%s\n' "$sel" | grep -vx '+ Tag khác…'; ask "Thêm tag · cách nhau dấu cách" "prod web" "" | tr ' ' '\n'); fi
+  shown
+  sel=$( { printf '%s\n' "$all"; echo "$other"; } | grep . | gum choose --no-limit --header "$(t tags_head)" --selected "$(printf '%s' "$cur" | tr ' ' ',')") || return 1
+  if printf '%s\n' "$sel" | grep -qxF "$other"; then
+    sel=$(printf '%s\n' "$sel" | grep -vxF "$other"; ui_field "$(t tags_add_label)" "" any "$(t tags_add_rule)"$'\n'"$(t example 'prod web')" | tr ' ' '\n'); fi
   printf '%s\n' "$sel" | grep . | tr -cd 'A-Za-z0-9._\n-' | tr '\n' ' ' | sed 's/ $//'
 }
 parse_addr(){ # "user@host:port" → print user, host, and port on three lines
@@ -1659,63 +1699,93 @@ write_host(){ # project block-file
     awk -v blk="$2" 'BEGIN{ while ((getline l < blk) > 0) b=b l "\n" } !done && /^[ \t]*[Hh][Oo][Ss][Tt][ \t].*[*?]/ { printf "%s\n", b; done=1 } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   else { [ -s "$f" ] && echo; cat "$2"; } >> "$f"; fi
 }
-add_host(){ # [address] [name]: ask only what is needed, infer the rest, allow review, then save
-  local raw=${1:-} name=${2:-} u h p pre line i blk f dup
-  local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" secret="" src_secret="" desc=""
+ui_done(){ # label value [source] → "✓ Label  value  ← source": a finished step of a multi-step flow
+  printf '%s%s%s %s%*s %s%s\n' "$CG" "$ICON_OK" "$C0" "$1" $(( ${#1} < 10 ? 10 - ${#1} : 1 )) '' "$2" "${3:+  ${CD}← $3$C0}"; }
+add_addr_ask(){ # [value] [intro] → print the address once parse_addr reads it
+  local v=${1:-} intro=${2:-} e= raw
   while :; do
-    [ -n "$raw" ] || raw=$(ask "Địa chỉ server · dán kiểu nào cũng được: 10.0.1.13, ubuntu@10.0.1.13, 10.0.1.13:2222" "10.0.1.13") || return 1
-    if line=$(parse_addr "$raw"); then break; fi; err "Không đọc được \"$raw\". Ví dụ: ubuntu@10.0.1.13"; raw=""
+    raw=$(ui_field "$(t add_addr_label)" "$v" addr "$(t add_addr_rule)"$'\n'"$(t example '10.0.1.13, ubuntu@10.0.1.13, 10.0.1.13:2222')" "" "$intro${e:+${intro:+$NL}$e}") || return 1
+    if parse_addr "$raw" >/dev/null; then printf '%s\n' "$raw"; return 0; fi
+    v=$raw; e="$CR$ICON_ERR $(t err_addr_read "$raw")$C0"
   done
+}
+add_name_ask(){ # value suggestion-reason intro own-name → print a complete, unused server name
+  local v=${1:-} why=${2:-} intro=${3:-} d n rule e=
+  d=$(tmpd) || return 1; { [ -f "$IDX" ] && cut -f1 "$IDX"; } | awk -v x="${4:-}" '$0!=x' > "$d/taken"
+  while :; do
+    rule=$(t rename_rule); if [ -n "$why" ]; then rule=$rule$'\n'$(t add_name_filled "$v" "$why"); elif [ -z "$v" ]; then rule=$rule$'\n'$(t example web3); fi
+    n=$(ui_field "$(t f_name)" "$v" "name:$d/taken" "$rule" "$(t add_name_prev "$CP$CB%s$C0")" "$intro${e:+${intro:+$NL}$e}") || return 1
+    case $n in *-) e="$CR$ICON_ERR $(t err_name_unfinished "$n")$C0"; v=$n; why=;; *) printf '%s\n' "$n"; return 0;; esac
+  done
+}
+add_host(){ # [address] [name]: ask only what is needed, infer the rest, allow review, then save
+  local raw=${1:-} name=${2:-} u h p pre prewhy line i blk f dup fin="" e="" sug peer peerwhy cloned="" x via login has tbl
+  local group="" src_group="" user="" src_user="" port="" tags="" src_tags="" jump="" src_jump="" secret="" src_secret="" desc="" lines=()
+  ensure_index
+  at "$(t add_title)|$(t add_step 1 4)"   # address, name, project, login: a step that is already known still shows as done
+  if [ -n "$raw" ] && ! parse_addr "$raw" >/dev/null; then e="$CR$ICON_ERR $(t err_addr_read "$raw")$C0"; x=$raw; raw=""; fi
+  [ -n "$raw" ] || raw=$(add_addr_ask "${x:-}" "$e") || return 1
+  line=$(parse_addr "$raw"); e=""
   u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p)
-  local sug peer peerwhy cloned="" prewhy
+  fin=$(ui_done "$(t f_addr)" "$raw")
   sug=$(tmpd) || return 1; sug=$sug/sug; suggest "$h" "" "$u" "$p" > "$sug"
   pre=$(sug_val "$sug" prefix); prewhy=$(sug_why "$sug" prefix)
+  at "$(t add_title)|$(t add_step 2 4)"
   while :; do
-    [ -n "$name" ] || name=$(ask "Tên server${pre:+ · đã điền sẵn \"$pre\" vì $prewhy}" "${pre}web3" "$pre") || return 1
+    [ -n "$name" ] || name=$(add_name_ask "$pre" "$prewhy" "$fin${e:+$NL$e}") || return 1
+    e=
     case $name in
-      *-) err "Tên chưa xong: \"$name\""; pre=$name; name="";;
-      *) if ! valid_name "$name"; then err "Tên chỉ gồm chữ, số và . _ -"; name=""
-         elif host_exists "$name"; then err "Đã có server tên $name"; name=""; else break; fi;; esac
+      *-) e="$CR$ICON_ERR $(t err_name_unfinished "$name")$C0"; pre=$name; prewhy=""; name="";;
+      *) if ! valid_name "$name"; then e="$CR$ICON_ERR $(t err_name_chars)$C0"; name=""
+         elif host_exists "$name"; then e="$CR$ICON_ERR $(t err_name_taken "$name")$C0"; name=""; else break; fi;; esac
   done
+  fin="$fin"$'\n'$(ui_done "$(t f_name)" "$name")
+  at "$(t add_title)|$(t add_step 3 4)"
   suggest "$h" "$name" "$u" "$p" > "$sug"
   peer=$(awk -F'\t' '$1=="peer"{print $2}' "$sug"); peerwhy=$(awk -F'\t' '$1=="peer"{print $4}' "$sug")
   if [ -n "$peer" ]; then   # a very similar server exists: offer to copy its settings
-    clear; title "Thêm server $name"
-    echo "Giống ${CB}$peer${C0} nhất ${CD}($peerwhy)${C0}"
-    dim "Thiết lập của $peer: user $(host_field "$peer" 4)$( [ -n "$(host_field "$peer" 12)" ] && echo " · $(host_field "$peer" 12)")$( [ -n "$(host_field "$peer" 6)" ] && echo " · qua $(host_field "$peer" 6)") · dự án $(host_field "$peer" 2)"; echo
-    confirm "Sao chép thiết lập của $peer?" && cloned=1
+    login=$(host_field "$peer" 12); via=$(host_field "$peer" 6)
+    has="$(t add_peer_user "$(host_field "$peer" 4)")${login:+ · $login}${via:+ · $(t add_peer_via "$via")} · $(t add_peer_proj "$(host_field "$peer" 2)")"
+    lines=("$CD$(t add_peer_why)$C0")
+    while IFS= read -r x; do [ -z "$x" ] || lines+=("  • $x"); done <<< "${peerwhy// · /$'\n'}"
+    lines+=(" " "$(t add_peer_has "$peer" "$has")")
+    UI_HEAD=$fin$NL ui_confirm --affirmative "$(t add_peer_yes "$peer")" --negative "$(t add_peer_no)" "$(t add_peer_q "$peer")" "${lines[@]}" && cloned=1
   fi
   if [ -n "$cloned" ]; then group=$(host_field "$peer" 2)
   elif [ "$(awk -F'\t' '$1=="auto"{print $2}' "$sug")" = 1 ]; then group=$(awk -F'\t' '$1=="group"{print $2}' "$sug")
   elif [ ! -s "$IDX" ]; then group=servers
-  else clear; title "Thêm server $name"; group=$(pick_project "$sug") || return 1; fi
+  else group=$(UI_HEAD=$fin$NL pick_project "$sug") || return 1; fi
   read_suggest "$h" "$name" "$u" "$p" "$group"
   if [ -n "$cloned" ]; then
-    [ -n "$u" ] || { user=$(host_field "$peer" 4); src_user="giống $peer"; }
-    jump=$(host_field "$peer" 6); src_jump=${jump:+giống $peer}; secret=$(host_field "$peer" 12); src_secret=${secret:+giống $peer}; src_group="giống $peer"
+    [ -n "$u" ] || { user=$(host_field "$peer" 4); src_user=$(t add_same_as "$peer"); }
+    jump=$(host_field "$peer" 6); src_jump=${jump:+$(t add_same_as "$peer")}; secret=$(host_field "$peer" 12); src_secret=${secret:+$(t add_same_as "$peer")}; src_group=$(t add_same_as "$peer")
   fi
-  if [ -z "$secret" ]; then clear; title "Thêm server $name"; secret=$(pick_login) || return 1; fi   # nothing to suggest: ask for the login method now
+  fin="$fin"$'\n'$(ui_done "$(t f_project)" "$group" "$src_group")
+  at "$(t add_title)|$(t add_step 4 4)"
+  if [ -z "$secret" ]; then secret=$(UI_HEAD=$fin$NL pick_login) || return 1   # nothing to suggest: ask for the login method now
+  fi
   while :; do
-    clear; title "Thêm server"
+    at "$(t add_title)|$(t add_review)"
     dup=$(awk -F'\t' -v ip="$h" '$3==ip{print $1; exit}' "$IDX")
-    box dim "$(row "Tên" "$name"
-      row "Địa chỉ" "$user@$h$( [ "$port" != 22 ] && echo ":$port")" "$src_user"
-      row "Dự án" "$group" "$src_group"
-      row "Tags" "${tags:-—}" "$src_tags"
-      row "Máy trung gian" "${jump:-không}" "$src_jump"
-      row "Đăng nhập" "$( [ -n "$secret" ] && echo "$secret ($(secret_label "$secret"))" || echo "ssh tự lo")" "$src_secret"
-      row "Mô tả" "${desc:-(trống)}")"
-    [ -n "$dup" ] && warn "Trùng IP với $dup"
-    case $(pick "" "Lưu|kiểm tra rồi tự đồng bộ" "Sửa một mục…" "Huỷ") in
+    tbl=$(row "$(t f_name)" "$name"
+      row "$(t f_addr)" "$user@$h$( [ "$port" != 22 ] && echo ":$port")" "$src_user"
+      row "$(t f_project)" "$group" "$src_group"
+      row "$(t f_tags)" "${tags:-—}" "$src_tags"
+      row "$(t f_jump)" "${jump:-$(t f_no_jump)}" "$src_jump"
+      row "$(t f_login)" "$( [ -n "$secret" ] && echo "$secret ($(secret_label "$secret"))" || t card_ssh_self)" "$src_secret"
+      row "$(t f_desc)" "${desc:-$(t add_empty)}"
+      [ -n "$dup" ] && printf '%s%s%s %s\n' "$CY" "$ICON_WARN" "$C0" "$(t add_dup "$dup")")
+    case $(UI_HEAD=$tbl ui_menu "" "$(t act_add_save)|$(t act_add_save_hint)" "$(t act_add_edit)" "$(t cancel)") in
       0) break;;
-      1) case $(pick "Sửa mục nào?" "Tên|$name" "Địa chỉ|$user@$h:$port" "Dự án|$group" "Tags|${tags:-—}" "Máy trung gian|${jump:-không}" "Đăng nhập|${secret:-ssh tự lo}" "Mô tả|${desc:-(trống)}") in
-           0) i=$(ask "Tên" "" "$name") && { if valid_name "$i" && ! host_exists "$i"; then name=$i; else err "Tên không hợp lệ hoặc đã có"; sleep 1; fi; };;
-           1) i=$(ask "Địa chỉ" "ubuntu@10.0.1.13:22" "$user@$h:$port") && line=$(parse_addr "$i") && { u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p); user=${u:-$user}; port=${p:-22}; src_user=""; };;
+      1) case $(ui_menu "$(t add_edit_head)" "$(t f_name)|$name" "$(t f_addr)|$user@$h:$port" "$(t f_project)|$group" "$(t f_tags)|${tags:-—}" "$(t f_jump)|${jump:-$(t f_no_jump)}" "$(t f_login)|${secret:-$(t card_ssh_self)}" "$(t f_desc)|${desc:-$(t add_empty)}") in
+           0) i=$(add_name_ask "$name" "" "" "$name") && name=$i;;
+           1) i=$(add_addr_ask "${user:+$user@}$h:$port") && line=$(parse_addr "$i") && { u=$(echo "$line" | sed -n 1p); h=$(echo "$line" | sed -n 2p); p=$(echo "$line" | sed -n 3p); user=${u:-$user}; port=${p:-22}; src_user=""; };;
            2) i=$(pick_project "$sug") && { group=$i; src_group=""; };;
            3) i=$(pick_tags "$group" "$tags") && { tags=$i; src_tags=""; };;
-           4) i=$( { echo "Không"; awk -F'\t' '$8 ~ /(^| )bastion( |$)/ {print $1}' "$IDX"; } | gum choose --header "Máy trung gian (ProxyJump)") && { [ "$i" = Không ] && jump="" || jump=$i; src_jump=""; };;
+           4) x=(); while IFS= read -r i; do x+=("$i"); done < <(awk -F'\t' '$8 ~ /(^| )bastion( |$)/ {print $1}' "$IDX")
+              i=$(ui_menu "$(t add_jump_head)" "$(t add_jump_none)" ${x[@]+"${x[@]}"}) && { if [ "$i" = 0 ]; then jump=""; else jump=${x[$((i-1))]}; fi; src_jump=""; };;
            5) i=$(pick_login "$secret" "$src_secret") && { secret=$i; src_secret=""; };;
-           6) i=$(ask "Mô tả · một dòng" "Nginx chính" "$desc") && desc=$(printf '%s' "$i" | tr -d '\t\n\r');;
+           6) i=$(ui_field "$(t f_desc)" "$desc" any "$(t add_desc_rule)"$'\n'"$(t example "$(t add_desc_example)")") && desc=$(printf '%s' "$i" | tr -d '\t\n\r');;
          esac;;
       *) return 1;;
     esac
@@ -1725,10 +1795,10 @@ add_host(){ # [address] [name]: ask only what is needed, infer the rest, allow r
   write_host "$group" "$blk"
   if ! i=$(validate); then
     if [ -f "$blk.bak" ]; then mv "$blk.bak" "$f"; else rm -f "$f"; fi
-    err "Không lưu được vì config lỗi:"; dim "$i"; rm -f "$blk"; pause; return 1
+    at "$(t add_title)"; shown; err "$(t add_err_invalid)"; dim "$i"; rm -f "$blk"; pause; return 1
   fi
   rm -f "$blk" "$blk.bak"; build_index
-  save_and_sync "Đã thêm $name"
+  save_and_sync "$(t done_added "$name")"
   ADDED=$name
 }
 edit_host(){ # open the file at the correct line, validate on close, and prompt again if invalid
@@ -2278,39 +2348,39 @@ pack_apply_raw(){ # package-directory decisions-file
   return 0
 }
 pack_decide(){ # package-directory mode(pack|mine|ask) → print the decisions file
-  local x=$1 mode=$2 n c det all=""
+  local x=$1 mode=$2 n c det all="" i
   while IFS="$TAB" read -r -u 3 n c det; do
     case $c in
       new) printf '%s\tadd\n' "$n";;
       same) printf '%s\tskip\n' "$n";;
       diff) if [ "$mode" = pack ] || [ "$all" = update ]; then printf '%s\tupdate\n' "$n"; elif [ "$mode" = mine ] || [ "$all" = skip ]; then printf '%s\tskip\n' "$n"
-            else { clear; title "$n khác bản của bạn"; printf '%s\n' "$det" | tr ';' '\n' | sed 's/^ */  /'; echo; } >&2
-              case $(pick "" "Cập nhật theo gói" "Giữ bản của tôi" "Giữ cả hai|bản trong gói thành $n-2" "Cập nhật tất cả các server còn lại" "Giữ bản của tôi cho tất cả còn lại") in
+            else at "$(t import_title)|$n"
+              i=$(UI_HEAD="$CB$(t imp_differs "$n")$C0$NL$(printf '%s\n' "$det" | tr ';' '\n' | sed 's/^ */  /')" ui_menu "" "$(t act_dec_update)" "$(t act_dec_keep)" "$(t act_dec_both)|$(t act_dec_both_hint "$n")" "$(t act_dec_update_all)" "$(t act_dec_keep_all)") || i=1
+              case $i in
                 0) printf '%s\tupdate\n' "$n";; 2) printf '%s\tboth\n' "$n";; 3) all=update; printf '%s\tupdate\n' "$n";; 4) all=skip; printf '%s\tskip\n' "$n";; *) printf '%s\tskip\n' "$n";; esac; fi;;
       ipdup) if [ "$mode" = pack ]; then printf '%s\tadd\n' "$n"; elif [ "$mode" = mine ]; then printf '%s\tskip\n' "$n"
-             else { clear; title "$n trùng địa chỉ với $det"; } >&2
-               case $(pick "" "Thêm như server mới" "Bỏ qua" "Thay thế $det") in 0) printf '%s\tadd\n' "$n";; 2) printf '%s\treplace:%s\n' "$n" "$det";; *) printf '%s\tskip\n' "$n";; esac; fi;;
+             else at "$(t import_title)|$n"
+               case $(ui_menu "$(t imp_dupip "$n" "$det")" "$(t act_dup_add)" "$(t act_dup_skip)" "!$(t act_dup_replace "$det")") in 0) printf '%s\tadd\n' "$n";; 2) printf '%s\treplace:%s\n' "$n" "$det";; *) printf '%s\tskip\n' "$n";; esac; fi;;
     esac
   done 3< "$x/classes"
 }
 import_pack(){ # file
-  local f=$1 x from nh nnew nsame ndiff ndup dec mode np n
+  local f=$1 x from nh nnew nsame ndiff ndup dec mode np n sum
   x=$(pack_open "$f") || { pause; return 1; }
   if ls "$x"/secrets/*.meta >/dev/null 2>&1; then vault_init || { pause; return 1; }; fi
   pack_classify "$x" > "$x/classes"
   from=$(sed -n 's/^from=//p' "$x/manifest"); nh=$(grep -c . "$x/classes")
   nnew=$(grep -c "${TAB}new${TAB}" "$x/classes"); nsame=$(grep -c "${TAB}same${TAB}" "$x/classes"); ndiff=$(grep -c "${TAB}diff${TAB}" "$x/classes"); ndup=$(grep -c "${TAB}ipdup${TAB}" "$x/classes")
   np=$(awk -F'\t' '(" " $8 " ") ~ / prod /' "$x/index" | grep -c .)
-  clear; title "Nhập gói chia sẻ"
-  printf 'Gói từ %s · %s server · %s nhóm · %s secret%s\n\n' "$from" "$nh" "$(grep -c . "$x/groups.tsv" 2>/dev/null)" "$(grep -c . "$x/smap")" "$( [ "$np" -gt 0 ] && printf "   %s${ICON_PROD} %s server prod%s" "$CR" "$np" "$C0")"
-  [ "$nnew" -gt 0 ] && printf '  %s+ %s server mới%s            %s\n' "$CG" "$nnew" "$C0" "$(awk -F'\t' '$2=="new"{printf "%s ", $1}' "$x/classes" | cut -c1-70)"
-  [ "$nsame" -gt 0 ] && printf '  %s= %s server giống hệt%s      bỏ qua\n' "$CD" "$nsame" "$C0"
-  [ "$ndiff" -gt 0 ] && { printf '  %s≠ %s server khác bản của bạn%s\n' "$CY" "$ndiff" "$C0"; awk -F'\t' '$2=="diff"{printf "      %-14s %s\n", $1, $3}' "$x/classes" | cut -c1-110; }
-  [ "$ndup" -gt 0 ] && { printf '  %s! %s server trùng địa chỉ%s\n' "$CY" "$ndup" "$C0"; awk -F'\t' '$2=="ipdup"{printf "      %s trong gói trùng địa chỉ với %s của bạn\n", $1, $3}' "$x/classes"; }
-  [ -s "$x/smap" ] && { printf '\n  Secret: '; awk -F'\t' '{printf "%s (%s%s) · ", $1, $3, ($1!=$2 ? " → " $2 : "")}' "$x/smap" | sed 's/ · $//'; echo; }
-  echo
-  if [ $((nnew + ndiff + ndup)) -eq 0 ]; then ok "Mọi server trong gói đã có và giống hệt. Không có gì để nhập."; pause; return 0; fi
-  case $(pick "" "Nhập theo đề xuất|thêm mới, bỏ qua giống hệt$( [ $((ndiff + ndup)) -gt 0 ] && echo ', hỏi từng server còn lại')" "Cập nhật tất cả theo gói" "Giữ tất cả bản của tôi|chỉ thêm server mới" "Huỷ") in
+  at "$(t import_title)"
+  if [ $((nnew + ndiff + ndup)) -eq 0 ]; then shown; ok "$(t imp_nothing)"; pause; return 0; fi
+  sum=$(printf '%s\n' "$(t imp_from "$from" "$nh" "$(grep -c . "$x/groups.tsv" 2>/dev/null)" "$(grep -c . "$x/smap")")$( [ "$np" -gt 0 ] && printf "   %s${ICON_PROD} %s%s" "$CR" "$(t imp_prod "$np")" "$C0")" ""
+    [ "$nnew" -gt 0 ] && printf '  %s%s%s            %s\n' "$CG" "$(t imp_new "$nnew")" "$C0" "$(awk -F'\t' '$2=="new"{printf "%s ", $1}' "$x/classes" | cut -c1-60)"
+    [ "$nsame" -gt 0 ] && printf '  %s%s%s\n' "$CD" "$(t imp_same "$nsame")" "$C0"
+    [ "$ndiff" -gt 0 ] && { printf '  %s%s%s\n' "$CY" "$(t imp_diff "$ndiff")" "$C0"; awk -F'\t' '$2=="diff"{printf "      %-14s %s\n", $1, $3}' "$x/classes" | head -5 | cut -c1-100; }
+    [ "$ndup" -gt 0 ] && { printf '  %s%s%s\n' "$CY" "$(t imp_dup "$ndup")" "$C0"; awk -F'\t' '$2=="ipdup"{print $1 "\t" $3}' "$x/classes" | head -5 | while IFS="$TAB" read -r n dec; do printf '      %s\n' "$(t imp_dup_line "$n" "$dec")"; done; }
+    [ -s "$x/smap" ] && printf '\n  %s\n' "$(t imp_secrets "$(awk -F'\t' '{printf "%s (%s%s) · ", $1, $3, ($1!=$2 ? " → " $2 : "")}' "$x/smap" | sed 's/ · $//')")")
+  case $(UI_HEAD=$sum$NL ui_menu "$(t imp_head)" "$(t act_imp_suggest)|$(t act_imp_suggest_hint)$( [ $((ndiff + ndup)) -gt 0 ] && t act_imp_suggest_ask)" "$(t act_imp_all)" "$(t act_imp_mine)|$(t act_imp_mine_hint)" "$(t cancel)") in
     0) mode=ask;; 1) mode=pack;; 2) mode=mine;; *) return 1;; esac
   dec=$x/decisions; pack_decide "$x" "$mode" > "$dec"
   apply_change "Nhập gói từ $from: +$(grep -c "${TAB}add$" "$dec") ~$(grep -cE "${TAB}(update|replace:.*|both)$" "$dec")" pack_apply_raw "$x" "$dec" || { pause; return 1; }
@@ -2402,10 +2472,10 @@ open_many(){ # group-name-or-empty host...
   fi
   if [ -z "$mode" ]; then
     last=$(cat "$STATE/lastmode" 2>/dev/null || echo sync)
-    title "Mở $# server"; dim "$*"; echo
-    case $last in split) last="Chia ô";; tabs) last="Mỗi server một tab";; *) last="Chạy đồng loạt";; esac
-    mode=$(printf 'Chia ô\nChạy đồng loạt\nMỗi server một tab\n' | gum choose --header "Mở thế nào?$( [ -n "$grp" ] && echo " · sẽ nhớ cho nhóm $grp")" --selected "$last") || return 1
-    case $mode in Chia*) mode=split;; Chạy*) mode=sync;; *) mode=tabs;; esac
+    case $last in split) mode=1;; tabs) mode=3;; *) mode=2;; esac
+    at "$(t open_title "$#")"
+    mode=$(UI_POS=$mode UI_HEAD="$CD$*$C0" ui_menu "$(t open_how)$( [ -n "$grp" ] && echo " · $(t open_remember "$grp")")" "$(t act_open_split)|$(t act_open_split_hint)" "$(t act_open_sync)|$(t act_open_sync_hint)" "$(t act_open_tabs)|$(t act_open_tabs_hint)") || return 1
+    case $mode in 0) mode=split;; 1) mode=sync;; *) mode=tabs;; esac
     echo "$mode" > "$STATE/lastmode"
     [ -n "$grp" ] && { set_group_mode "$grp" "$mode"; save_and_sync "Nhóm $grp: mở bằng $(mode_label "$mode")"; }
   fi
@@ -2465,10 +2535,11 @@ port_forward(){ # name [port]
   sshx -N -o ExitOnForwardFailure=yes -L "$lp:localhost:$port" "$n"
 }
 send_file(){
-  local n=$1 src dst
-  src=$(gum file --header "Chọn file hoặc thư mục để gửi lên $n" --all "$(native_path "$PWD")") || return 1
-  dst=$(ask "Lưu vào thư mục nào trên $n" "~" "~") || return 1
-  src=$(unix_path "$src"); record "$n"; scpx -r "$src" "$n:${dst:-~}/" && ok "Đã gửi $(basename "$src") lên $n:${dst:-~}/" || err "Không gửi được"; pause
+  local n=$1 src us ip
+  ip=$(host_field "$n" 3); us=$(host_field "$n" 4); at "$n|$(t send_title)"
+  src=$(file_pick "$HOME" "$(t send_card "$n" "${us:+$us@}$ip")" "$(t key_send)") || return 1
+  src=$(unix_path "${src/#\~/$HOME}"); shown; record "$n"
+  if scpx -r "$src" "$n:~/"; then flash "${CG}${ICON_OK} $(t done_sent "$(basename "$src")" "$n")${C0}"; else err "$(t err_send)"; pause; return 1; fi
 }
 get_file(){
   local n=$1 src dst="${PWD/#$HOME/~}"
@@ -2520,7 +2591,10 @@ group_actions(){
       "#$(t sec_danger)" "!$(t act_group_delete)|$(t act_group_delete_hint)") in
     0) open_many "$n" $members;;
     1) set_group_mode "$n" ""; open_many "$n" $members;;
-    2) ui_confirm --default=false "$(t group_delete_q "$n")" && { awk -F'\t' -v n="$n" '$1!=n' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; save_and_sync "$(t done_group_deleted "$n")"; };;
+    2) at "$n|$(t act_group_delete)"
+       ui_confirm --danger --default=false --affirmative "$(t group_delete_yes "$n")" --negative "$(t cancel)" "$(t group_delete_q "$n")" \
+         "$CB$(t delete_removes)$C0" "  • $(t group_delete_line "$n")" " " "$CB$(t delete_keeps)$C0" "  • $(t group_delete_keeps "$c")" " " "$CD$(t delete_undo)$C0" \
+         && { awk -F'\t' -v n="$n" '$1!=n' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; save_and_sync "$(t done_group_deleted "$n")"; };;
   esac
 }
 
@@ -2617,12 +2691,26 @@ make_kho_here(){
   echo; box ok "${CG}Kho đã sẵn sàng.${C0}" "Máy khác vào được bằng: $addrs" "Mở hostbook trên máy khác cùng mạng, app sẽ tự tìm thấy kho này." "${CD}Khi khác mạng, dùng VPN hoặc Tailscale để các máy thấy kho.${C0}"
   pause
 }
+undo_when(){ # → how long ago the last change was made
+  local ct d; ct=$(g log -1 --format=%ct 2>/dev/null); [ -n "$ct" ] || return 1; d=$(( $(date +%s) - ct ))
+  if [ $d -lt 60 ]; then t ago_now; elif [ $d -lt 3600 ]; then t ago_min $((d / 60)); elif [ $d -lt 86400 ]; then t ago_hour $((d / 3600)); else t ago_day $((d / 86400)); fi
+}
 undo_last(){
-  local msg; msg=$(g log -1 --format=%s 2>/dev/null) || return 1
-  confirm --default=false "Hoàn tác \"$msg\"?" || return 1
-  g revert --no-edit HEAD >/dev/null 2>&1 || { err "Không hoàn tác được"; pause; return 1; }
-  if ! validate >/dev/null; then g reset -q --hard HEAD~1; err "Hoàn tác sẽ làm hỏng config nên đã dừng"; pause; return 1; fi
-  build_index; flash "${CG}${ICON_OK} Đã hoàn tác \"$msg\"${C0}"; : > "$ST.force"
+  local files f add rem sec="" grp="" lines=() a r
+  files=$(g show --name-only --format= HEAD 2>/dev/null) || return 1
+  for f in $files; do case $f in *.conf) ;; groups.tsv) grp=1;; secrets/*.age|secrets/*.meta|secrets/*.pub) f=${f#secrets/}; f=${f%.*}; case " $sec " in *" $f "*) ;; *) sec="$sec $f";; esac;; *) ;; esac; done
+  a=$(g show --format= -U0 HEAD -- '*.conf' | sed -n 's/^+[Hh]ost  *//p' | sort); r=$(g show --format= -U0 HEAD -- '*.conf' | sed -n 's/^-[Hh]ost  *//p' | sort)
+  add=$(comm -23 <(printf '%s\n' "$a") <(printf '%s\n' "$r") | tr '\n' ' '); rem=$(comm -13 <(printf '%s\n' "$a") <(printf '%s\n' "$r") | tr '\n' ' ')
+  lines=("$(t undo_when "$(undo_when)")")
+  [ -z "${add% }" ] || lines+=("$(t undo_added "${add% }")"); [ -z "${rem% }" ] || lines+=("$(t undo_removed "${rem% }")")
+  [ -z "$grp" ] || lines+=("$(t undo_groups)"); [ -z "$sec" ] || lines+=("$(t undo_secrets "${sec# }")")
+  [ ${#lines[@]} -gt 1 ] || [ -z "$files" ] || lines+=("$(t undo_files "$(printf '%s ' $files | sed 's/ $//')")")
+  lines+=(" " "$CD$(t undo_effect)$C0")
+  at "$(t tools_title)|$(t act_undo)"
+  ui_confirm --default=false --affirmative "$(t undo_yes)" --negative "$(t cancel)" "$(t undo_q)" "${lines[@]}" || return 1
+  g revert --no-edit HEAD >/dev/null 2>&1 || { shown; err "$(t err_undo)"; pause; return 1; }
+  if ! validate >/dev/null; then g reset -q --hard HEAD~1; shown; err "$(t err_undo_broken)"; pause; return 1; fi
+  build_index; flash "${CG}${ICON_OK} $(t done_undone)${C0}"; : > "$ST.force"
 }
 doctor(){
   local n e
@@ -2658,7 +2746,7 @@ tools(){
   local items=() keys=() i
   at "$(t tools_title)"
   [ "$(sed -n 1p "$ST" 2>/dev/null)" = conflict ] && { items+=("#$(t sec_attention)" "$(t act_conflict)|$(t act_conflict_hint)"); keys+=(conflict); }
-  items+=("#$(t sec_server)" "$(t act_import)|$(t act_import_hint)" "$(t act_sync)|$(t act_sync_hint)" "$(t act_undo)|$(g log -1 --format=%s 2>/dev/null)" "#$(t sec_store)")
+  items+=("#$(t sec_server)" "$(t act_import)|$(t act_import_hint)" "$(t act_sync)|$(t act_sync_hint)" "$(t act_undo)|$(t act_undo_hint "$(undo_when)")" "#$(t sec_store)")
   if has_remote; then items+=("$(t act_kho_change)|$(t act_kho_change_hint "$(kho_addr)")"); else items+=("$(t act_kho_connect)|$(t act_kho_connect_hint)"); fi
   items+=("$(t act_hub)|$(t act_hub_hint)" "#$(t sec_machine)" "$(t act_secrets)|$(t act_secrets_hint)" "$(t act_doctor)|$(t act_doctor_hint)" "$(t act_settings)|$(t act_settings_hint)")
   keys+=(import sync undo kho hub keys doctor settings)
@@ -2751,20 +2839,23 @@ setting_pick(){ # key [heading] [row number to start on]; its own fzf because th
   if [ "$key" = preset ]; then apply_preset "$out"; else cfg_set "$key" "$out"; fi
   apply_theme
 }
-set_language(){ # Language / Ngôn ngữ: save lang, then reload the texts so the next screen is already in it
-  local i l; at "$(t settings_title)|$(t set_language)"
-  i=$(ui_menu "$(t set_lang_head)" "$(t lang_vi)|$([ "$UI_LANG" = vi ] && t current)" "$(t lang_en)|$([ "$UI_LANG" = en ] && t current)") || return 1
+set_language(){ # [breadcrumb] Language / Ngôn ngữ: save lang, then reload the texts so the next screen is already in it
+  local i l; at "${1:-$(t settings_title)|$(t set_language)}"
+  i=$(UI_POS=$([ "$UI_LANG" = vi ] && echo 1 || echo 2) ui_menu "$(t set_lang_head)" "$(t lang_vi)|$([ "$UI_LANG" = vi ] && t current)" "$(t lang_en)|$([ "$UI_LANG" = en ] && t current)") || return 1
   case $i in 0) l=vi;; *) l=en;; esac
   cfg_set lang "$l" || return 1
   HOSTBOOK_LANG=; lang_load   # a one-run HOSTBOOK_LANG would hide the choice just made, here and in child processes
 }
 custom_theme(){
-  local n f current
-  n=$(ask 'Tên theme mới (chữ, số, - và _)') || return 1
-  valid_theme_name "$n" || { err 'Tên theme không hợp lệ'; pause; return 1; }
-  theme_builtin "$n" >/dev/null && { err 'Tên trùng theme có sẵn'; pause; return 1; }
+  local n="" f current d e=""
+  at "$(t settings_title)|$(t set_custom)"
+  d=$(tmpd) || return 1; theme_names > "$d/taken"
+  while :; do
+    n=$(UI_TAKEN=err_theme_taken ui_field "$(t theme_label)" "$n" "name:$d/taken" "$(t theme_rule)" "" "$e") || return 1
+    valid_theme_name "$n" && break; e="$CR$ICON_ERR $(t err_theme_name)$C0"
+  done
   f=$CONF/themes/$n.theme; mkdir -p "$CONF/themes"
-  if [ -f "$f" ]; then confirm --default=false "Theme $n đã có. Mở để chỉnh sửa?" || return 1
+  if [ -f "$f" ]; then ui_confirm --default=false --affirmative "$(t theme_edit_yes)" --negative "$(t cancel)" "$(t theme_exists_q "$n")" || return 1
   else current=$(cfg theme hostbook)
     { printf '# Colors: 0–255, #rrggbb, or ANSI names. base: dark, light, 16.\n# accent: emphasis; title: headings; dim: secondary text; ok/warn/err: status.\n# border: borders; sel_bg: selection background; chip_fg/chips: project chip foreground/backgrounds.\n'
       theme_builtin "$current" || cat "$CONF/themes/$current.theme"; } > "$f"
@@ -2772,10 +2863,10 @@ custom_theme(){
   while :; do
     ${EDITOR:-vi} "$f"
     theme_check "$f" && break
-    confirm 'Theme có lỗi. Mở lại để sửa?' || return 1
+    ui_confirm --affirmative "$(t theme_fix_yes)" --negative "$(t cancel)" "$(t theme_bad_q)" || return 1
   done
   "$SELF" _demo "theme=$n"
-  confirm 'Dùng theme này?' && cfg_set theme "$n"
+  confirm "$(t theme_use_q)" && cfg_set theme "$n"
   apply_theme
 }
 settings(){
@@ -3010,31 +3101,33 @@ update(){
 }
 first_run(){ # ~/ssh-hosts does not exist yet
   local i m url n
-  clear; box title "${CU}${CB}Chào mừng đến hostbook${C0}" "Máy này chưa có danh sách server."; echo
-  i=$(pick "Bắt đầu thế nào?" "Dùng kho ở máy khác|lấy danh sách server về máy này" "Đây là máy đầu tiên|tạo danh sách ở máy này, kho để sau" "Tạo kho trên máy này|máy luôn bật, các máy khác đồng bộ với nó") || return 1
+  set_language "$(t set_language)" || return 1   # first: the language, preselected from the locale
+  at "$(t first_title)"
+  i=$(UI_HEAD="$CU$CB$(t first_welcome)$C0"$'\n'"$(t first_none)" ui_menu "$(t first_how)" "$(t act_first_remote)|$(t act_first_remote_hint)" "$(t act_first_new)|$(t act_first_new_hint)" "$(t act_first_hub)|$(t act_first_hub_hint)") || return 1
   case $i in
-    0) m=$(pick_machine "Kho ở máy nào?" url) || return 1
+    0) m=$(pick_machine "$(t first_pick_machine)" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
-       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "Lấy danh sách từ kho" -- git clone -q "$url" "$(native_path "$DIR")" || { err "Không lấy được kho từ $url"; return 1; };;
+       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "$(t first_cloning)" -- git clone -q "$url" "$(native_path "$DIR")" || { err "$(t err_clone "$url")"; return 1; };;
     *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
        ensure_git_identity || return 1
        printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
-       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && confirm "Nhập các server đang có trong ~/.ssh/config?"; then
+       if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host[[:space:]]+[^*]' "$HOME/.ssh/config" && ui_confirm --affirmative "$(t first_import_yes)" --negative "$(t first_import_no)" "$(t first_import_q)"; then
          cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"
          n=$(split_config "$HOME/.ssh/config.bak" "$DIR" "$HOME/.ssh/config")
-         ok "Đã chuyển $n khối Host sang ~/ssh-hosts, chia dự án theo phần đầu tên (bản cũ ở ~/.ssh/config.bak)"
-         dim "Khối Host * và Match vẫn để trong ~/.ssh/config vì chúng là cấu hình riêng của máy này."
+         ok "$(t first_imported "$n")"
+         dim "$(t first_imported_keep)"
        fi
-       g add -A && g commit -qm "Tạo danh sách" >/dev/null;;
+       g add -A && g commit -qm "$(t first_commit)" >/dev/null;;
   esac
   chmod 700 "$DIR"; ensure_merge_setup
   setup
   [ "$i" = 2 ] && make_kho_here
-  [ "$i" = 1 ] && confirm --negative "Để sau" "Kết nối kho ngay để sao lưu và dùng trên nhiều máy?" && connect_kho
+  at "$(t first_title)"
+  [ "$i" = 1 ] && ui_confirm --affirmative "$(t first_kho_yes)" --negative "$(t first_later)" "$(t first_kho_q)" && connect_kho
   cfg_set list cards
   local pos=1; case ${COLORFGBG:-} in 7|15|*\;7|*\;15) pos=6;; esac
-  setting_pick preset "Chọn giao diện · đổi lại trong Công cụ → Giao diện" "$pos" || :
-  pause "enter để bắt đầu"
+  setting_pick preset "$(t first_theme_head)" "$pos" || :
+  pause "$(t first_start)"
 }
 
 cfg_init

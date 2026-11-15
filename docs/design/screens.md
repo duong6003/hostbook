@@ -61,6 +61,9 @@ When a screen only reports that something finished, it does not stay open: it re
 | Key hints | `ui_keys "enter:$(t key_save)" "esc:$(t key_cancel)"` | every screen offers esc (or ctrl-c while running) |
 | Field checks | `ui_field LABEL VALUE CHECK [RULE] [PREVIEW] [INTRO]` | CHECK: `name:<taken-file>`, `port`, `project`, `text`, `equals:<word>`, `any`; runs inside fzf's shell with builtins only, so typing never boots hostbook |
 | Tone | `UI_TONE=danger`, `UI_ENTER=<verb>` | prefix a single call; never set globally |
+| Menu options | `UI_HEAD`, `UI_POS`, `UI_EXPECT`, `UI_FOOT` | prefix a `ui_menu`/`ui_confirm` call: lines above the question (finished steps), row to start on, extra ending keys (`←` `→` in the file picker), replacement key hints |
+| Step line | `ui_done label value [source]` | `✓ Label  value  ← source` for a finished step of a multi-step flow |
+| File picker | `file_pick start-dir header [enter-label]` | `ui_menu` per directory; used by send file and key from file |
 
 ## Colour roles
 
