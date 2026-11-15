@@ -35,6 +35,7 @@ jobs:
           bash tests/hosts-module.sh
           bash tests/settings-module.sh
           bash tests/ui.sh
+          bash tests/file-input.sh
           bash tests/controls.sh
           bash tests/open-mode.sh
           bash tests/home-recovery.sh
