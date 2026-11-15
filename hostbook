@@ -184,9 +184,22 @@ ui_head(){ # [line…] → header text: the context card, a blank line, then the
   local c l o=; c=$(ui_card)
   for l in "$@"; do if [ -n "$l" ] || [ -n "$o" ]; then o="${o:+$o$NL}$l"; fi; done   # an empty line in the middle stays a blank line
   while [ "${o%"$NL"}" != "$o" ]; do o=${o%"$NL"}; done
-  if [ -n "$c" ] && [ -n "$o" ]; then printf '%s\n \n%s' "$c" "$o"; else printf '%s' "$c$o"; fi; }
+  local w; term_cols w; w=$((w - 7))   # fzf headers do not wrap: fold long lines here so nothing is cut off (S3)
+  if [ -n "$c" ] && [ -n "$o" ]; then printf '%s\n \n%s' "$c" "$o"; else printf '%s' "$c$o"; fi | ui_wrap "$w"; }
+ui_wrap(){ # width: fold stdin lines at spaces, counting characters (not bytes, not colour codes); continuations keep
+  # the line's colour and indent
+  awk -v W="$1" '
+    function vis(s,  t) { t = s; gsub(/\033\[[0-9;]*m/, "", t); gsub(/[\200-\277]/, "", t); return length(t) }
+    { if (vis($0) <= W) { print; next }
+      lead = ""; rest = $0; if (match(rest, /^\033\[[0-9;]*m/)) { lead = substr(rest, 1, RLENGTH); rest = substr(rest, RLENGTH + 1) }
+      ind = ""; if (match(rest, /^ +/)) ind = substr(rest, 1, RLENGTH)
+      n = split(rest, w, " "); line = ""
+      for (i = 1; i <= n; i++) { cand = (line == "" ? lead ind w[i] : line " " w[i])
+        if (line != "" && vis(cand) > W) { print line (lead != "" ? "\033[0m" : ""); line = lead ind "  " w[i] } else line = cand }
+      print line }'
+}
 # ui_field LABEL VALUE CHECK [RULE] [PREVIEW] [INTRO] → the value on enter (status 1 on esc). CHECK runs in fzf's shell on
-# every key, builtins only: name:<file of taken names> | lname:<file> (lowercase only) | addr | port | project | text | equals:<word> | any.
+# every key, builtins only: name:<file of taken names> | lname:<file> (lowercase only) | gname:<file> (group: lowercase, no ".") | addr | port | project | text | equals:<word> | any.
 # PREVIEW is shown in the list box; every %s in it becomes the typed value.
 ui_field(){
   local label=$1 value=$2 check=$3 rule=${4:-} prev=${5:-} intro=${6:-} d f keys v out tk rc
@@ -196,6 +209,8 @@ ui_field(){
   case $check in
     name:*) v='case $q in "") m=$HB_E_EMPTY;; *" "*) m=$HB_E_SPACE;; *[!A-Za-z0-9._-]*) m=$HB_E_CHARS;; *) '"$tk"';; esac';;
     lname:*) v='case $q in "") m=$HB_E_EMPTY;; *[!a-z0-9._-]*) m=$HB_E_LOWER;; *) '"$tk"';; esac';;
+    # groups: no ".", tmux turns it into "-" in session names, so shop.prod and shop-prod would share one session
+    gname:*) v='case $q in "") m=$HB_E_EMPTY;; *[!a-z0-9_-]*) m=$HB_E_GROUP;; *) '"$tk"';; esac';;
     port) v='case $q in ""|*[!0-9]*) m=$HB_E_PORT;; *) if [ "$q" -ge 1 ] && [ "$q" -le 65535 ]; then m=; else m=$HB_E_PORT; fi;; esac';;
     project) v='case $q in ""|*[!a-z0-9-]*) m=$HB_E_PROJECT;; *) m=;; esac';;
     addr) v='case $q in "") m=$HB_E_EMPTY;; *[!A-Za-z0-9._@:-]*|*@*@*|@*|*@|*@:*|:*|*:|*:*[!0-9]*) m=$HB_E_ADDR;; *) m=;; esac';;
@@ -215,7 +230,7 @@ SH
   } > "$f"
   out=$(export HB_SELF="$(printf %q "$f")" HB_PREV="$prev" HB_ARG="${check#*:}" HB_FOOT="${rule:+$CD$rule$C0$'\n'}$keys" HB_KEYS="$keys" \
       HB_ERR="$CR$ICON_ERR " HB_C0="$C0" HB_E_EMPTY="$(t err_empty)" HB_E_SPACE="$(t err_name_space)" HB_E_CHARS="$(t err_name_chars)" \
-      HB_E_TAKEN="$(t "${UI_TAKEN:-err_name_taken}")" HB_E_LOWER="$(t err_name_lower)" HB_E_PORT="$(t err_port)" HB_E_PROJECT="$(t err_project)" HB_E_EQUALS="$(t err_equals)" HB_E_ADDR="$(t err_addr)"
+      HB_E_TAKEN="$(t "${UI_TAKEN:-err_name_taken}")" HB_E_LOWER="$(t err_name_lower)" HB_E_GROUP="$(t err_group_chars)" HB_E_PORT="$(t err_port)" HB_E_PROJECT="$(t err_project)" HB_E_EQUALS="$(t err_equals)" HB_E_ADDR="$(t err_addr)"
     : | ui_fzf "$(ui_head "$intro")" --disabled --print-query --query="$value" --prompt='› ' \
       --input-label=" $label " --list-label="${prev:+ $(t preview_label) }" --no-highlight-line --pointer=' ' \
       --footer="${rule:+$CD$rule$C0$'\n'}$keys" --bind "start:transform:sh $(printf %q "$f") change" \
@@ -990,7 +1005,7 @@ vault_recover(){ # [code] [new password] (both arguments are for tests only)
 vault_recovery_code(){ local id new; id=$(vault_identity) || return 1; new=$(printf '%s\n' "$id" | vault_new_recovery) && save_and_sync "Mã khôi phục mới" && show_recovery "$new"; }
 
 # ---------- secrets ----------
-valid_secret_name(){ case $1 in vault|"") return 1;; esac; printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9._-]{0,39}$'; }
+valid_secret_name(){ case $1 in vault|vault.*|"") return 1;; esac; printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9._-]{0,39}$'; }
 secret_exists(){ [ -f "$SEC/$1.meta" ]; }
 secret_meta(){ sed -n "s/^$2=//p" "$SEC/$1.meta" 2>/dev/null | head -1; }
 secret_names(){ local f; for f in "$SEC"/*.meta; do [ -f "$f" ] && basename "$f" .meta; done; return 0; }
@@ -2276,16 +2291,17 @@ pack_index(){ # package-directory → package index (same format as index.tsv)
 }
 # Map package secrets to the local vault. Print "package-name<TAB>local-name<TAB>new|existing|renamed".
 pack_secret_map(){ # package-directory
-  local x=$1 m n fp loc t
+  local x=$1 m n s fp loc t
   for m in "$x"/secrets/*.meta; do [ -f "$m" ] || continue; n=$(basename "$m" .meta)
+    s=$n; valid_secret_name "$s" || s=imported   # a package must never name a secret after the vault's own files
     if grep -q '^type=password' "$m"; then
-      if secret_exists "$n"; then if [ "$(secret_meta "$n" type)" = password ] && [ "$(secret_get "$n")" = "$(cat "$x/secrets/$n.pass")" ]; then printf '%s\t%s\tcó sẵn\n' "$n" "$n"; continue; fi
-        t=$n-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
-      else printf '%s\t%s\tmới\n' "$n" "$n"; fi
+      if secret_exists "$s"; then if [ "$(secret_meta "$s" type)" = password ] && [ "$(secret_get "$s")" = "$(cat "$x/secrets/$n.pass")" ]; then printf '%s\t%s\tcó sẵn\n' "$n" "$s"; continue; fi
+        t=$s-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
+      else printf '%s\t%s\tmới\n' "$n" "$s"; fi
     else fp=$(sed -n 's/^fp=//p' "$m"); loc=$(grep -lxF "fp=$fp" "$SEC"/*.meta 2>/dev/null | head -1)
       if [ -n "$loc" ]; then printf '%s\t%s\tcó sẵn\n' "$n" "$(basename "$loc" .meta)"
-      elif secret_exists "$n"; then t=$n-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
-      else printf '%s\t%s\tmới\n' "$n" "$n"; fi; fi
+      elif secret_exists "$s"; then t=$s-2; while secret_exists "$t"; do t=$t-2; done; printf '%s\t%s\tđổi tên\n' "$n" "$t"
+      else printf '%s\t%s\tmới\n' "$n" "$s"; fi; fi
   done
 }
 # Classify package servers as new | same | diff | ipdup. Print "name<TAB>type<TAB>details".
@@ -2445,7 +2461,7 @@ save_group(){
   kind=$(suggest_group_base "$@"); kind=${kind%%"$TAB"*}; sug=$(suggest_group_name "$@")
   case $kind in tags) why=$(t group_why_tags "$sug");; name) why=$(t group_why_name "$sug");; *) why=$(t group_why_none);; esac
   prev="$(t group_preview '%s' "$#")"$'\n'"$(printf '  • %s\n' "$@")"
-  name=$(UI_TAKEN=err_group_taken ui_field "$(t group_label)" "$sug" "lname:$d/taken" "$(t group_rule)" "$prev" \
+  name=$(UI_TAKEN=err_group_taken ui_field "$(t group_label)" "$sug" "gname:$d/taken" "$(t group_rule)" "$prev" \
     "$(t group_intro "$#" "$hosts")"$'\n'"$CD$(t group_shared)$C0"$'\n'"$CD$why$C0") || return 1
   printf '%s\t\t%s\n' "$name" "$hosts" >> "$GRP"
   save_and_sync "$(t done_group_saved "$name")"
@@ -2832,7 +2848,8 @@ setting_pick(){ # key [heading] [row number to start on]; its own fzf because th
   fi
   # The picker always uses single-line rows; --read0 is only for the server card list.
   out=$(setting_options "$key" | awk -F'\t' '{if(NF==1) print $0 "\t" $0; else print}' |
-    ui_fzf "$(ui_head "$CB$heading$C0")" --delimiter="$TAB" --with-nth=2 --accept-nth=1 --no-input --highlight-line \
+    ui_fzf "$(ui_head "$CB$heading$C0")" --delimiter="$TAB" --with-nth=2 --accept-nth=1 --highlight-line \
+      --prompt='› ' --input-label=" $(t menu_filter) " --ghost="$(t menu_ghost)" \
       --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_save)" "esc:$(t key_cancel)")" --bind 'esc:abort' \
       --preview "$(self_cmd) _demo '$key='{1}" --preview-window='right,65%,wrap,<80(down,55%,wrap)' \
       ${selected:+--bind="load:pos($selected)"}) || return 1

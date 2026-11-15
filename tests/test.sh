@@ -457,6 +457,16 @@ PYEOF
 { echo "# hostbook-share v1 · 1 server · từ x"; AGE_PASSPHRASE=mat-khau-goi age -e -j batchpass -a < "$T/evil.tgz"; } > "$T/evil.hbshare"
 check "gói có đường dẫn ../ bị từ chối" '! B _import_classify "$T/evil.hbshare" >/dev/null 2>&1 && [ ! -f "$T/evil.conf" ] && [ ! -f "$T/../evil.conf" ]'
 
+# A package secret named after the vault's own files must not overwrite them (vault.key.age, vault.recovery.age)
+rm -rf "$T/pkv"; cp -R "$T/pk" "$T/pkv"
+for e in meta pass; do mv "$T/pkv/secrets/mk-x.$e" "$T/pkv/secrets/vault.key.$e"; done
+sed -i.bak 's/^# secret: mk-x$/# secret: vault.key/' "$T"/pkv/conf/*.conf; rm -f "$T"/pkv/conf/*.bak
+(cd "$T/pkv" && tar -czf "$T/vault-name.tgz" .)
+{ echo "# hostbook-share v1 · 1 server · từ x"; AGE_PASSPHRASE=mat-khau-goi age -e -j batchpass -a < "$T/vault-name.tgz"; } > "$T/vault-name.hbshare"
+vk_before=$(cksum < "$T/b/secrets/vault.key.age")
+B _import_apply "$T/vault-name.hbshare" pack >/dev/null 2>&1
+check "gói đặt tên secret trùng file của kho: không ghi đè kho, đổi sang tên khác" '[ "$(cksum < "$T/b/secrets/vault.key.age")" = "$vk_before" ] && [ ! -f "$T/b/secrets/vault.key.meta" ] && [ "$(B _vault_id 2>/dev/null)" = ok ]'
+
 # Stale temp dirs of dead pids are swept at startup; a live pid's entries stay
 sleep 300 & live=$!; mkdir -p "$T/state/tmp/999999.abc" "$T/state/tmp/$live.abc"
 "$S" help >/dev/null 2>&1
