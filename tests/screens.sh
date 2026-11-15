@@ -41,7 +41,7 @@ trap cleanup EXIT
 
 # --- the theme's error colour, as the app computes it (S6)
 sed '/^# ---------- entry point ----------/,$d' "$S" > "$T/lib"
-CR=$(HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=$LANGD HOME=$T XDG_CONFIG_HOME=$T/none HOSTBOOK_STATE=$T/lib-state bash -c ". '$T/lib'; SELF='$S'; apply_theme; printf '%s' \"\$CR\"")
+CR=$(HOSTBOOK_LIB_DIR="$HERE/../lib" HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR=$LANGD HOME=$T XDG_CONFIG_HOME=$T/none HOSTBOOK_STATE=$T/lib-state bash -c ". '$T/lib'; SELF='$S'; apply_theme; printf '%s' \"\$CR\"")
 [ -n "$CR" ] || { echo 'FAIL screens: không lấy được màu lỗi của theme'; exit 1; }
 
 # S11, part 1: both language files define the same keys

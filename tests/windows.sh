@@ -11,7 +11,7 @@ export HOME=$T/home HOSTBOOK_DIR=$T/hosts HOSTBOOK_STATE=$T/state XDG_CONFIG_HOM
 mkdir -p "$HOME" "$HOSTBOOK_DIR"
 export HOSTBOOK_MASTER='windows-vault-fixture'
 S=$HERE/../hostbook
-export HOSTBOOK_LANG_DIR=$HERE/../lang   # the copied lib cannot find lang/ next to itself
+export HOSTBOOK_LIB_DIR="$HERE/../lib" HOSTBOOK_LANG_DIR=$HERE/../lang   # the copied lib cannot find lang/ next to itself
 sed '/^# ---------- entry point ----------/,$d' "$S" > "$T/lib"
 . "$T/lib"; SELF=$S
 trap 'cleanup; rm -rf "$(dirname "$T")"' EXIT

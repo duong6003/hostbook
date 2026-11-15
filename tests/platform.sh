@@ -3,7 +3,7 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-export HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR="$HERE/../lang"   # the library is sourced from a temporary copy: tell it where the texts are
+export HOSTBOOK_LIB_DIR="$HERE/../lib" HOSTBOOK_LANG=vi HOSTBOOK_LANG_DIR="$HERE/../lang"   # the library is sourced from a temporary copy: tell it where the texts are
 export HOME="$T/home" HOSTBOOK_STATE="$T/state" HOSTBOOK_DIR="$T/hosts" XDG_CONFIG_HOME="$T/config"
 mkdir -p "$HOME"
 sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
@@ -13,6 +13,14 @@ trap 'cleanup; rm -rf "$T"' EXIT
 : > "$IDX"
 pass=0; fail=0
 check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
+# Exercise actual installed-style paths from an unrelated working directory.
+app="$T/app space's ü"; mkdir -p "$app" "$T/elsewhere"
+cp "$HERE/../hostbook" "$app/hostbook"
+[ ! -d "$HERE/../lib" ] || cp -R "$HERE/../lib" "$app/lib"
+cp -R "$HERE/../lang" "$app/lang"
+ln -s "$app/hostbook" "$T/hostbook-link"
+check 'installed modules resolve through symlinks outside the app directory' '(cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$T/hostbook-link" --version >/dev/null && bash "$T/hostbook-link" _header >/dev/null && bash "$T/hostbook-link" _preview h:example >/dev/null && printf "one 127.0.0.1\n" | bash "$T/hostbook-link" _import_parse >/dev/null && bash "$T/hostbook-link" _demo >/dev/null)'
+check 'missing required module fails with its path while version still works' '(mv "$app/lib/import.sh" "$app/import.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$T/hostbook-link" --version >/dev/null && ! bash "$T/hostbook-link" _import_parse </dev/null 2>"$T/missing" && grep -F "$app/lib/import.sh" "$T/missing" >/dev/null; result=$?; mv "$app/import.saved" "$app/lib/import.sh"; exit "$result")'
 # Replacing this with raw single quotes breaks callbacks under a path containing apostrophes.
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"
