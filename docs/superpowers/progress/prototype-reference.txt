@@ -1,0 +1,29 @@
+HOSTBOOK PROTOTYPE v3 — REMAINING UI PROPOSALS
+
+Run: bash hostbook-components.command
+One entry point. Requires Python 3 with curses and fzf; tmux only for the local
+opening-mode demonstration. Runtime sample text is Vietnamese.
+
+Only the differences from main ef847ee are demonstrated:
+- Multi-field input and review with long-value wrapping/scrolling.
+- Compact toggle and Space-based checklist without search.
+- Opening-mode diagram, initially Split, with local mock terminals.
+- Import preflight and bounded results (2 or 30 hosts).
+- Search recovery when no items match.
+
+These are synthetic interaction fixtures. No app code is sourced, no SSH runs,
+no Git repository is modified, and no credentials or personal settings are read.
+Selections/drafts last only for one launcher session in a temporary directory.
+Import/review/undo demonstrate UI only; restarting a scenario resets its fixture.
+The undo dialog is a supporting sample, not a replacement for main's richer undo.
+
+Main already owns grouped menus, breadcrumbs, validated single fields, contextual
+confirmations, language selection and safety guards. They are not rebuilt here.
+Production changes must extend main's ui_* helpers and both language files.
+The multi-field/compact frame proposal still differs from docs/design/screens.md.
+See APP-UI-MIGRATION.md for the remaining work and integration constraints.
+
+Old HTML, captures and the previous backend-based launcher are in archive/.
+They are historical references, not supported entry points.
+
+Check: python3 tests/smoke.py (private tmux server, temporary fixtures).
