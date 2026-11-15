@@ -21,6 +21,11 @@ cp -R "$HERE/../lang" "$app/lang"
 ln -s "$app/hostbook" "$T/hostbook-link"
 check 'installed modules resolve through symlinks outside the app directory' '(cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$T/hostbook-link" --version >/dev/null && bash "$T/hostbook-link" _header >/dev/null && bash "$T/hostbook-link" _preview h:example >/dev/null && printf "one 127.0.0.1\n" | bash "$T/hostbook-link" _import_parse >/dev/null && bash "$T/hostbook-link" _demo >/dev/null)'
 check 'missing required module fails with its path while version still works' '(mv "$app/lib/import.sh" "$app/import.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$T/hostbook-link" --version >/dev/null && ! bash "$T/hostbook-link" _import_parse </dev/null 2>"$T/missing" && grep -F "$app/lib/import.sh" "$T/missing" >/dev/null; result=$?; mv "$app/import.saved" "$app/lib/import.sh"; exit "$result")'
+# Unrelated internal callbacks must not parse the import feature.
+mkdir -p "$T/modules"; cp "$HERE/../lib/ui.sh" "$T/modules/ui.sh"
+printf 'return 1\n' > "$T/modules/import.sh"
+check 'unrelated callbacks do not load import' '(export HOSTBOOK_LIB_DIR="$T/modules"; for cmd in _header "_preview h:example" _footer _list _demo; do bash "$app/hostbook" $cmd >/dev/null || exit 1; done)'
+check 'import callbacks require import module' '(! HOSTBOOK_LIB_DIR="$T/modules" bash "$app/hostbook" _import_parse </dev/null >/dev/null 2>&1)'
 # Replacing this with raw single quotes breaks callbacks under a path containing apostrophes.
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"

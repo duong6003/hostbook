@@ -2916,7 +2916,15 @@ sweep_tmp(){
   done
 }
 
-. "$LIBDIR/import.sh" || exit 1
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  . "$LIBDIR/import.sh" || exit 1
+else
+  case ${1:-} in
+    _import_parse|_import_write|_import_classify|_import_apply|_split) . "$LIBDIR/import.sh" || exit 1;;
+    _*) ;;
+    *) . "$LIBDIR/import.sh" || exit 1;;
+  esac
+fi
 
 # ---------- entry point ----------
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac

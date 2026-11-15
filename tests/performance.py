@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import statistics
 import subprocess
 import tempfile
@@ -28,13 +29,13 @@ def main():
     revision = subprocess.run(['git', '-C', str(app.parent), 'rev-parse', 'HEAD'],
                               capture_output=True, text=True).stdout.strip()
     report = {'app': str(app), 'revision': revision, 'machine': platform.platform(),
-              'columns': 100, 'samples': args.samples, 'fixtures': []}
+              'columns': 100, 'lines': 24, 'samples': args.samples, 'fixtures': []}
     with tempfile.TemporaryDirectory(prefix='hb-performance-') as temp:
         base = Path(temp)
         for count in args.sizes:
             root = base/str(count)
             home, hosts, state = root/'home', root/'hosts', root/'state'
-            for folder in (home/'.ssh', hosts, state, root/'config'/'hostbook'):
+            for folder in (home/'.ssh', hosts, state, root/'config'/'hostbook', root/'tmux'):
                 folder.mkdir(parents=True, exist_ok=True)
             sshconfig = root/'ssh_config'
             sshconfig.write_text(f'Include "{hosts}/*.conf"\n')
@@ -45,12 +46,12 @@ def main():
             env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(root/'config'),
                        HOSTBOOK_DIR=str(hosts), HOSTBOOK_STATE=str(state),
                        HOSTBOOK_SSH_CONFIG=str(sshconfig), HOSTBOOK_KEYCHAIN='file:'+str(root/'keychain'),
-                       HOSTBOOK_LANG='vi', HOSTBOOK_LANG_DIR=str(app.parent/'lang'),
-                       COLUMNS='100', LINES='30', TERM='xterm-256color', LC_ALL='en_US.UTF-8',
+                       HOSTBOOK_LANG='vi', HOSTBOOK_LANG_DIR=str(app.parent/'lang'), TMUX_TMPDIR=str(root/'tmux'),
+                       COLUMNS='100', LINES='24', TERM='xterm-256color', LC_ALL='en_US.UTF-8',
                        GIT_AUTHOR_NAME='fixture', GIT_AUTHOR_EMAIL='fixture@example.com',
                        GIT_COMMITTER_NAME='fixture', GIT_COMMITTER_EMAIL='fixture@example.com')
             for key in ('SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'HOSTBOOK_MASTER', 'HOSTBOOK_ONLY',
-                        'HOSTBOOK_LIB_DIR', 'FZF_DEFAULT_OPTS', 'FZF_DEFAULT_OPTS_FILE'):
+                        'HOSTBOOK_LIB_DIR', 'TMUX', 'FZF_DEFAULT_OPTS', 'FZF_DEFAULT_OPTS_FILE'):
                 env.pop(key, None)
             for command in (['git', 'init', '-q', str(hosts)], ['git', '-C', str(hosts), 'add', '.'],
                             ['git', '-C', str(hosts), 'commit', '-qm', 'Performance fixture']):
@@ -67,6 +68,9 @@ def main():
                 return round(elapsed, 3)
 
             fixture = {'hosts': count, 'cold_index_ms': measure(['_index']), 'warm': {}}
+            (state/'index.tsv').unlink(missing_ok=True)
+            shutil.rmtree(state/'idx2', ignore_errors=True)
+            fixture['cold_list_ms'] = measure(['_list'])
             for name, command in [('version', ['--version']), ('preview', ['_preview', 'h:sample-0000']),
                                   ('header', ['_header']), ('footer', ['_footer', 'h:sample-0000']),
                                   ('list', ['_list']), ('demo', ['_demo', 'preset=compact'])]:
