@@ -40,6 +40,9 @@ $runtime = (Get-Content -LiteralPath (Join-Path $root 'install.json') -Raw | Con
 $bash = Join-Path $runtime 'bin\bash.exe'
 $env:PATH = "$root\bin;$runtime\usr\bin;$runtime\mingw64\bin;$runtime\cmd;$env:PATH"
 Assert ((& $launcher --version) -match '^hostbook ') 'native launcher supports version under spaced Unicode path'
+Push-Location $testRoot
+try { Assert ((& $launcher _header | Out-String).Trim().Length -gt 0) 'installed callback works outside the app directory' }
+finally { Pop-Location }
 # A fresh command lookup finds the native executable even when PowerShell script policy is Restricted.
 Assert ((Get-Command hostbook).Source -eq $launcher) 'bare hostbook resolves the native launcher'
 & $bash --noprofile --norc -c 'cd "$1" && bash tests/platform.sh' test $source

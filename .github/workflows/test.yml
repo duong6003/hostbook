@@ -25,6 +25,8 @@ jobs:
           git config --global user.email ci@example.com
           git config --global init.defaultBranch main
           bash install.sh
+      - name: Verify isolated Unix install and update
+        run: bash tests/install.sh
       - name: Run tests
         run: |
           export PATH="$HOME/.local/bin:$PATH"
