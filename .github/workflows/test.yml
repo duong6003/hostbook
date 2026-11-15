@@ -1,5 +1,12 @@
 name: test
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     strategy:
@@ -38,6 +45,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Restore verified archive downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hostbook-downloads
+          key: windows-x64-downloads-${{ hashFiles('install.ps1') }}
       - name: Install managed runtime, test launcher and native boundaries, real SSH, update and uninstall
         shell: powershell
+        env:
+          HOSTBOOK_DOWNLOAD_CACHE: ${{ runner.temp }}/hostbook-downloads
         run: .\tests\windows.ps1

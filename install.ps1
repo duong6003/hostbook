@@ -62,8 +62,24 @@ $temp = Join-Path ([IO.Path]::GetTempPath()) ('hostbook-install-' + [Guid]::NewG
 New-Item -ItemType Directory -Path $temp | Out-Null
 function Download([string]$Url, [string]$Hash) {
     $file = Join-Path $temp ([IO.Path]::GetFileName($Url))
+    $cached = $null
+    if ($env:HOSTBOOK_DOWNLOAD_CACHE) {
+        $cached = Join-Path (Join-Path $env:HOSTBOOK_DOWNLOAD_CACHE $Hash.ToLowerInvariant()) ([IO.Path]::GetFileName($Url))
+        if (Test-Path -LiteralPath $cached) {
+            Copy-Item -LiteralPath $cached -Destination $file
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ieq $Hash) {
+                Write-Host "Verified cached archive: $Url"
+                return $file
+            }
+            Remove-Item -LiteralPath $cached -Force
+        }
+    }
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $file
     if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ine $Hash) { throw "SHA256 mismatch: $Url" }
+    if ($cached) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $cached) | Out-Null
+        Copy-Item -LiteralPath $file -Destination $cached -Force
+    }
     return $file
 }
 function Release-Zip([string]$Repo, [string]$Version, [string]$Name, [string]$Sums, [string]$Hash = '') {
