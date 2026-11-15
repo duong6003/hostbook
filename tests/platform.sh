@@ -18,9 +18,10 @@ app="$T/app space's ü"; mkdir -p "$app" "$T/elsewhere"
 cp "$HERE/../hostbook" "$app/hostbook"
 [ ! -d "$HERE/../lib" ] || cp -R "$HERE/../lib" "$app/lib"
 cp -R "$HERE/../lang" "$app/lang"
-ln -s "$app/hostbook" "$T/hostbook-link"
-check 'installed modules resolve through symlinks outside the app directory' '(cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$T/hostbook-link" --version >/dev/null && bash "$T/hostbook-link" _header >/dev/null && bash "$T/hostbook-link" _preview h:example >/dev/null && printf "one 127.0.0.1\n" | bash "$T/hostbook-link" _import_parse >/dev/null && bash "$T/hostbook-link" _demo >/dev/null)'
-check 'missing required module fails with its path while version still works' '(mv "$app/lib/import.sh" "$app/import.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$T/hostbook-link" --version >/dev/null && ! bash "$T/hostbook-link" _import_parse </dev/null 2>"$T/missing" && grep -F "$app/lib/import.sh" "$T/missing" >/dev/null; result=$?; mv "$app/import.saved" "$app/lib/import.sh"; exit "$result")'
+probe="$app/hostbook"
+if ! is_windows; then ln -s "$app/hostbook" "$T/hostbook-link"; probe="$T/hostbook-link"; fi
+check 'installed modules resolve through symlinks outside the app directory' '(cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && bash "$probe" _header >/dev/null && bash "$probe" _preview h:example >/dev/null && printf "one 127.0.0.1\n" | bash "$probe" _import_parse >/dev/null && bash "$probe" _demo >/dev/null)'
+check 'missing required module fails with its path while version still works' '(mv "$app/lib/import.sh" "$app/import.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && ! bash "$probe" _import_parse </dev/null 2>"$T/missing" && grep -F "$app/lib/import.sh" "$T/missing" >/dev/null; result=$?; mv "$app/import.saved" "$app/lib/import.sh"; exit "$result")'
 # Unrelated internal callbacks must not parse the import feature.
 mkdir -p "$T/modules"; cp "$HERE/../lib/ui.sh" "$T/modules/ui.sh"
 printf 'return 1\n' > "$T/modules/import.sh"
