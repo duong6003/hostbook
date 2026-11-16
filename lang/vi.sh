@@ -940,6 +940,7 @@ L_imp_sc_existing='có sẵn'
 L_imp_sc_renamed='đổi tên'
 L_done_pack_imported='Nhập gói từ %s: +%s ~%s'
 L_err_apply_broken='Không đổi được vì config sẽ lỗi:'
+L_err_apply_restore='Không khôi phục đủ file đã đổi. Bản sao lưu ở %s'
 L_kho_addr_here='máy này'
 L_kho_addr_dir='thư mục %s'
 
