@@ -940,6 +940,7 @@ L_imp_sc_existing='already there'
 L_imp_sc_renamed='renamed'
 L_done_pack_imported='Imported a package from %s: +%s ~%s'
 L_err_apply_broken='Not changed because the config would break:'
+L_err_apply_restore='Could not fully restore changed files. Backups are in %s'
 L_kho_addr_here='this machine'
 L_kho_addr_dir='folder %s'
 
