@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 50514)
-Total output lines: 2861
-
 #!/usr/bin/env bash
 # hostbook: find, connect to, and sync SSH servers.
 #
@@ -1425,7 +1422,31 @@ connect(){
   elif [ $entered = 1 ]; then
     local m=$(( ($(date +%s) - t0) / 60 )) msg
     msg=$(t conn_end "$n" "$( [ $m -gt 0 ] && t conn_min "$m" || t conn_lt_min)")$( [ $rc -ne 0 ] && [ $rc -ne 255 ] && t conn_rc "$rc")
-    printf '%s…514 tokens truncated…re, · not reached
+    printf '%s← %s%s\n' "$CD" "$msg" "$C0"; flash "${CD}$msg${C0}"
+  fi
+  rm -f "$log" "$log.done"; return $rc
+}
+# Read the connection log: stages reached, failure point, and cause.
+explain(){ # name log [pane]
+  local n=$1 f=$2 pane=${3:-} ip user key port j kind="" net=0 banner=0 auth=0 jump_ok=0 need=1 raw lines=() acts=() labels=() b
+  ip=$(host_field "$n" 3); user=$(host_field "$n" 4); key=$(host_field "$n" 7); port=$(host_field "$n" 5); port=${port:-22}; j=$(host_field "$n" 6)
+  local sc sctype=""; sc=$(host_field "$n" 12); [ -n "$sc" ] && sctype=$(secret_meta "$sc" type); [ -n "$sc" ] && key="secret $sc"
+  [ -n "$j" ] && need=2
+  grep -q 'Connection established' "$f" && net=1
+  [ "$(grep -c 'Remote protocol version' "$f")" -ge $need ] && banner=1
+  [ -n "$j" ] && grep -q 'Authenticated to' "$f" && jump_ok=1   # the first "Authenticated to" event belongs to the jump host
+  if grep -qiE 'IDENTIFICATION HAS CHANGED|Host key verification failed' "$f"; then kind=hostkey
+  elif grep -qi 'Permission denied' "$f" && [ "$sctype" = key ] && ! ssh-add -l 2>/dev/null | grep -qF "$(secret_meta "$sc" fp)"; then kind=locked   # the secret key is not loaded in the agent
+  elif grep -qi 'Permission denied' "$f"; then kind=denied
+  elif grep -qi 'Could not resolve hostname' "$f"; then kind=dns
+  elif grep -qi 'Connection refused' "$f"; then kind=refused
+  elif grep -qiE 'No route to host|Network is unreachable|Host is down' "$f"; then kind=unreachable
+  elif grep -qiE 'timed out|hostbook: timeout' "$f"; then kind=timeout
+  elif grep -qiE 'Connection closed|Connection reset|kex_exchange_identification|Broken pipe' "$f"; then kind=closed
+  else kind=cancel; fi
+  raw=$(tr -d '\r' < "$f" | grep -vE '^(debug[0-9]|OpenSSH_|Warning: Permanently added|Killed by signal)' | grep . | tail -2 | tr '\n' ' ' | sed 's/ $//')   # SSH logs "\r\n": remove \r so the cursor cannot return to the start and break the box
+  [ $kind = cancel ] && [ -z "$raw" ] && { flash "${CD}$(t ex_cancelled "$n")${C0}"; return 0; }
+  # connection stages: ✓ completed, ✗ failed here, · not reached
   st(){ if [ "$1" = 1 ]; then printf "%s${ICON_OK}%s %s" "$CG" "$C0" "$2"; elif [ "$1" = x ]; then printf "%s${ICON_ERR} %s%s" "$CR" "$2" "$C0"; else printf '%s· %s%s' "$CD" "$2" "$C0"; fi; }
   local s1 s2 s3 s0=""
   if [ -n "$j" ]; then
