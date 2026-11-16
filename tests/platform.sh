@@ -107,6 +107,112 @@ check 'home Ctrl-Y callback quotes an apostrophe in the state directory' '(
   home
   [ -f "$STATE/share-request" ]
 )'
+# Failed host/secret changes must restore their own files without resetting local work.
+change_fixture(){
+  local tx=$1
+  unset SSH_AUTH_SOCK SSH_AGENT_PID
+  DIR=$tx/hosts; STATE=$tx/state; SSHCFG=$tx/ssh; IDX=$STATE/index.tsv; IDXD=$STATE/idx2
+  HIST=$STATE/history; SEC=$DIR/secrets; GRP=$DIR/groups.tsv; ST=$STATE/status; FLASH=$STATE/flash
+  mkdir -p "$DIR" "$STATE" "$SEC"
+  printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  printf '# secret: credential\nHost old\n  HostName 192.0.2.1\n  User fixture\n' > "$DIR/a.conf"
+  printf 'Host other\n  HostName 192.0.2.2\n  ProxyJump old\n' > "$DIR/b.conf"
+  printf 'group\tsync\told other\n' > "$GRP"; printf '1\told\n' > "$HIST"
+  printf 'synthetic ciphertext\n' > "$SEC/credential.age"; printf 'type=password\n' > "$SEC/credential.meta"
+  printf 'tracked note\n' > "$DIR/note"
+  g init -q; g -c user.name=test -c user.email=test@example.com add -A
+  g -c user.name=test -c user.email=test@example.com commit -qm fixture
+  # Touched and unrelated tracked files both have different staged and working versions.
+  printf '# staged\n' >> "$DIR/a.conf"; printf '# staged\n' >> "$DIR/b.conf"; printf 'staged\n' >> "$DIR/note"; g add -A
+  printf '# unstaged\n' >> "$DIR/a.conf"; printf '# unstaged\n' >> "$DIR/b.conf"; printf 'unstaged\n' >> "$DIR/note"
+  printf 'Host untracked\n  HostName 192.0.2.3\n' > "$DIR/untracked.conf"
+  printf 'untracked secret\n' > "$SEC/local.age"
+  printf 'pre-existing scratch\n' > "$DIR/a.conf.tmp"
+  chmod 640 "$DIR/a.conf"; chmod 400 "$SEC/credential.age"
+  build_index full
+  mkdir "$tx/before"; cp -Rp "$DIR/." "$tx/before/"; cp -p "$HIST" "$tx/history"
+}
+change_preserved(){
+  local tx=$1
+  # Compare all working files and the exact Git index, including untracked files and custom modes.
+  diff -r "$tx/before" "$DIR" && cmp "$tx/history" "$HIST" && [ ! -d "$STATE/sync.lock" ] &&
+    [ "$(perm "$DIR/a.conf")" = "$(perm "$tx/before/a.conf")" ] &&
+    [ "$(perm "$SEC/credential.age")" = "$(perm "$tx/before/secrets/credential.age")" ] &&
+    host_exists old && ! host_exists renamed && [ "$(host_field other 6)" = old ]
+}
+change_failure(){ (
+  local cmd=$1 mode=$2 tx="$T/change $1-$2"
+  change_fixture "$tx" || exit 1
+  local args=(old)
+  case $cmd in
+    rename_host_raw) args+=(renamed);;
+    move_host_raw) args+=(new-project);;
+    set_host_secret) args+=("");;
+    secret_rename_raw) args=(credential renamed);;
+    secret_delete_raw) args=(credential);;
+  esac
+  # Keep raw mutations real, but fail after they have written/deleted/renamed their paths.
+  eval "$(declare -f "$cmd" | sed "1s/^$cmd/original_change/")"
+  eval "$cmd(){ original_change \"\$@\" || return 1; : > \"\$tx/wrote\"; [ \"\$mode\" != command ]; }"
+  if [ "$mode" = validation ]; then
+    eval "$(declare -f validate | sed '1s/^validate/original_validate/')"
+    validate(){
+      if [ -f "$tx/wrote" ]; then printf 'injected validation failure\n'; return 1; fi
+      original_validate
+    }
+  fi
+  ! apply_change fixture "$cmd" "${args[@]}" > "$tx/result" 2>&1 || exit 1
+  [ -f "$tx/wrote" ] && change_preserved "$tx"
+); }
+for change_cmd in delete_host_raw rename_host_raw move_host_raw set_host_secret secret_rename_raw secret_delete_raw; do
+  for change_mode in command validation; do
+    check "$change_cmd: failed $change_mode preserves staged, unstaged and untracked data" 'change_failure "$change_cmd" "$change_mode"'
+  done
+done
+check 'successful changes still validate, index and commit under the lock' '(
+  tx=$T/change-success; change_fixture "$tx"
+  g config user.name fixture; g config user.email fixture@example.com
+  apply_change fixture rename_host_raw old renamed > "$tx/result" 2>&1 &&
+    host_exists renamed && ! host_exists old && [ "$(host_field other 6)" = renamed ] &&
+    grep -q renamed "$HIST" && grep -q renamed "$GRP" && [ -z "$(g status --porcelain)" ] && [ ! -d "$STATE/sync.lock" ]
+)'
+check 'move accepts an existing project with uppercase and underscore characters' '(
+  tx=$T/change-existing-project; change_fixture "$tx"
+  g config user.name fixture; g config user.email fixture@example.com
+  printf "Host resident\n  HostName 192.0.2.4\n" > "$DIR/Prod_eu.conf"
+  apply_change fixture move_host_raw old Prod_eu > "$tx/result" 2>&1 &&
+    [ "$(host_field old 2)" = Prod_eu ] && [ "$(host_field resident 2)" = Prod_eu ] && validate &&
+    [ -z "$(g status --porcelain)" ] && [ ! -d "$STATE/sync.lock" ]
+)'
+check 'move keeps strict new project names and rejects traversal' '(
+  tx=$T/change-new-project; change_fixture "$tx"
+  printf "Host outside\n  HostName 192.0.2.5\n" > "$tx/outside.conf"; cp "$tx/outside.conf" "$tx/outside-before"
+  for project in Prod_new prod_new ../outside; do
+    ! apply_change fixture move_host_raw old "$project" > "$tx/result" 2>&1 || exit 1
+    change_preserved "$tx" && cmp "$tx/outside.conf" "$tx/outside-before" || exit 1
+  done
+)'
+check 'apply rejects invalid pre-existing config under lock before writing' '(
+  tx=$T/change-invalid; change_fixture "$tx"
+  printf "BadConfigOption yes\n" >> "$DIR/b.conf"; cp "$DIR/b.conf" "$tx/before/b.conf"
+  delete_host_raw(){ : > "$tx/wrote"; return 1; }
+  ! apply_change fixture delete_host_raw old > "$tx/result" 2>&1 && [ ! -f "$tx/wrote" ] && change_preserved "$tx"
+)'
+check 'secret rename rejects an occupied orphan destination under lock' '(
+  tx=$T/change-collision; change_fixture "$tx"
+  printf "other instance ciphertext\n" > "$SEC/renamed.age"; cp "$SEC/renamed.age" "$tx/before/secrets/renamed.age"
+  ! apply_change fixture secret_rename_raw credential renamed > "$tx/result" 2>&1 && change_preserved "$tx"
+)'
+check 'apply rechecks a host rename destination under lock' '(
+  tx=$T/change-host-collision; change_fixture "$tx"
+  ! apply_change fixture rename_host_raw old other > "$tx/result" 2>&1 && change_preserved "$tx"
+)'
+check 'apply refuses symlinked scratch destinations without changing their targets' '(
+  tx=$T/change-symlink; change_fixture "$tx"
+  printf "outside fixture\n" > "$tx/outside"; rm "$DIR/a.conf.tmp"; ln -s "$tx/outside" "$DIR/a.conf.tmp"
+  ! apply_change fixture delete_host_raw old > "$tx/result" 2>&1 && [ "$(cat "$tx/outside")" = "outside fixture" ] &&
+    [ -L "$DIR/a.conf.tmp" ] && cmp "$DIR/a.conf" "$tx/before/a.conf" && cmp "$DIR/.git/index" "$tx/before/.git/index" && [ ! -d "$STATE/sync.lock" ]
+)'
 is_windows(){ return 0; }
 export HOSTBOOK_KEYCHAIN="file:$T/cache/identity"
 check 'Windows refuses plaintext file identity cache overrides' '[ "$(kc_backend)" = windows ]'
