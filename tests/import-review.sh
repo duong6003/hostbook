@@ -157,6 +157,62 @@ undo_race_preserves_newer_commit(){ (
   ui_confirm(){ : > "$T/unexpected-confirm"; return 0; }
   import_done 1 0 0 >/dev/null 2>&1 && [ ! -e "$T/unexpected-confirm" ] && [ "$(g log -1 --format=%s)" = race-newer ] && [ "$(cat "$T/count")" = 2 ]
 ); }
+undo_fixture(){
+  DIR="$T/undo-$1"; STATE="$T/undo-$1-state"; SSHCFG="$STATE/ssh-config"
+  IDX="$STATE/index.tsv"; IDXD="$STATE/idx2"; ST="$STATE/status"; GRP="$DIR/groups.tsv"; HIST="$STATE/history"; FLASH="$STATE/flash"
+  mkdir -p "$DIR" "$STATE"
+  printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  printf 'Host undo-target\n  %s 192.0.2.90\n' "${2:-HostNmae}" > "$DIR/target.conf"
+  printf 'original notes\n' > "$DIR/notes"
+  g init -q && g add . && g commit -qm parent || return 1
+  printf 'Host undo-target\n  HostName 192.0.2.99\n' > "$DIR/target.conf"
+  g add target.conf && g commit -qm correction || return 1
+  UNDO_HEAD=$(g rev-parse HEAD)
+  cp "$DIR/target.conf" "$STATE/target.before"
+  printf 'local notes\000without final newline' >> "$DIR/notes"
+  printf 'untracked\000fixture' > "$DIR/local-file"
+  cp "$DIR/notes" "$STATE/notes.before"; cp "$DIR/local-file" "$STATE/local.before"
+  g ls-files --stage > "$STATE/index.before"
+  ui_confirm(){ return 0; }
+}
+undo_local_files_unchanged(){
+  cmp -s "$DIR/notes" "$STATE/notes.before" && cmp -s "$DIR/local-file" "$STATE/local.before" &&
+    g ls-files --stage > "$STATE/index.after" && cmp -s "$STATE/index.before" "$STATE/index.after" &&
+    [ ! -e "$STATE/sync.lock" ] && [ ! -e "$ST.force" ]
+}
+invalid_undo_preserves_unstaged_and_untracked(){ (
+  undo_fixture invalid || exit 1
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  grep -Fq "$(t err_undo_broken)" "$STATE/result" &&
+    [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    undo_local_files_unchanged && validate >/dev/null && [ ! -e "$DIR/.git/REVERT_HEAD" ]
+); }
+undo_preserves_staged_and_unstaged_index(){ (
+  undo_fixture staged || exit 1
+  printf 'staged notes\n' > "$DIR/notes"; g add notes
+  printf 'unstaged notes\000fixture' >> "$DIR/notes"; cp "$DIR/notes" "$STATE/notes.before"
+  g ls-files --stage > "$STATE/index.before"; cp "$DIR/.git/index" "$STATE/index.bytes"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  grep -Fq "$(t err_undo)" "$STATE/result" && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
+    cmp -s "$DIR/target.conf" "$STATE/target.before" && cmp -s "$DIR/.git/index" "$STATE/index.bytes" && undo_local_files_unchanged
+); }
+valid_undo_preserves_local_edits(){ (
+  undo_fixture valid HostName || exit 1
+  # Observe the real validator: the revert must remain uncommitted until it passes.
+  eval "$(declare -f validate | sed '1s/^validate/fixture_validate/')"
+  validate(){ g rev-parse HEAD > "$STATE/validated-head"; fixture_validate; }
+  real_undo >/dev/null 2>&1 || exit 1
+  [ "$(cat "$STATE/validated-head")" = "$UNDO_HEAD" ] && [ "$(g rev-parse HEAD^1)" = "$UNDO_HEAD" ] &&
+    g log -1 --format=%s | grep -q '^Revert ' && grep -q '192.0.2.90' "$DIR/target.conf" &&
+    cmp -s "$DIR/notes" "$STATE/notes.before" && cmp -s "$DIR/local-file" "$STATE/local.before" &&
+    g diff --cached --quiet && [ -e "$ST.force" ] && [ ! -e "$STATE/sync.lock" ]
+); }
+failed_undo_commit_preserves_local_edits(){ (
+  undo_fixture commit-failure HostName || exit 1
+  printf '#!/bin/sh\nexit 1\n' > "$DIR/.git/hooks/pre-commit"; chmod +x "$DIR/.git/hooks/pre-commit"
+  ! real_undo >/dev/null 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" && undo_local_files_unchanged
+); }
 zero_change_has_no_undo(){
   reset; : > "$STATE/last-import"; printf '3\n' > "$T/picks"
   import_done 0 0 30 >/dev/null 2>&1 && [ -e "$T/flashed" ] && [ ! -e "$T/undo-called" ] && [ "$(cat "$T/count")" = 0 ]
@@ -174,6 +230,10 @@ check canceled_undo_returns_to_result
 check stale_undo_does_not_revert_newer_head
 check successful_real_undo
 check undo_race_preserves_newer_commit
+check invalid_undo_preserves_unstaged_and_untracked
+check undo_preserves_staged_and_unstaged_index
+check valid_undo_preserves_local_edits
+check failed_undo_commit_preserves_local_edits
 check zero_change_has_no_undo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
