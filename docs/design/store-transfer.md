@@ -101,8 +101,55 @@ locks in that same order; never acquire a lower-ordered store while holding a
 higher one. Locks have owners; only the owner releases them, and stale recovery
 must establish owner death. A gate holder does not wait for another store in a
 different order. Do not hold gates over user prompts or network waits: persist
-intent, release, then reacquire both and revalidate before applying a result.
-Remote actors are not serialized by these local locks.
+intent and any publication admission described below, release, then reacquire
+both and revalidate before applying a result. Remote actors are not serialized
+by these local locks.
+
+### Publication admission and transition barrier
+
+Rechecking mode after a network response cannot prevent a previously started
+send from taking effect. Before **any** remote write, every publisher (including
+ordinary/background sync, destination addition, source removal and compensation)
+must acquire that store's gate, check the effective mode/connection and transition
+fence, and durably reserve one publication attempt before releasing the gate or
+starting network effects. The reservation binds its owner/attempt ID, store and
+connection generation, remote/ref, expected base and proposed revision. Actual
+remote rights remain enforced by the remote. No sender may start without this
+admission, reuse a settled reservation or change its admitted target/payload.
+
+A request to change mode, remote/connection or active checkout acquires the same
+gate and durably installs a **transition fence** against new admissions. Display
+the request as pending; keep the old effective mode, connection and checkout
+until every admitted attempt is drained. Existing admitted senders may finish,
+but transfer progress pauses at subsequent write boundaries while the fence is
+pending. Release the short gate while waiting; the durable reservations and fence,
+not a held process lock, serialize this interval. Concurrent settings requests
+must reconcile the existing transition rather than bypass its fence.
+
+An attempt is drained only when its sender and transport children are known
+unable to issue further network effects and its exact remote outcome is durably
+reconciled as
+accepted or definitively not accepted. Mere absence from the currently observed
+ref is insufficient if delivery may still be pending. Record settlement under
+the gate.
+Transport exit, owner death, timeout, cancellation and age alone do not prove
+remote rejection; a request already delivered may still be accepted. On crash or
+lost response retain the reservation and fence, establish sender quiescence,
+and reconcile against the admitted remote/ref. If that outcome cannot be proven,
+remain visibly pending and block new admissions/effective transition. Do not
+silently clear reservations, expire them by age or retarget them on restart.
+Historical acceptance plus fresh content revalidation are still required for
+transfer progress; draining does not waive conflict checks.
+
+Only under the gate, after successful draining/reconciliation of all admitted
+attempts, may the requested settings become effective and be reported effective.
+A definitive failed send leaves the old mode/connection unchanged and reports
+the transition failed, consistent with #33; uncertainty leaves it pending. Once
+all attempts are settled, an explicitly cancelled/failed transition may release
+its fence while retaining outcome evidence; another settings attempt needs new
+admission checks. A receive-only mode can therefore never be reported effective
+while a local two-way send remains in flight or uncertain. This barrier governs
+local publishers; independent remote actors can still write.
 
 The confirmation snapshot binds both store identities/active checkouts, source
 record/settings and credential references, destination identity/alias/endpoint
@@ -195,15 +242,16 @@ retain a blocked, recoverable state with the next decision clearly identified.
 ## Documentation examples and remaining scope
 
 [transfer-recovery.json](fixtures/transfer-recovery.json) contains independent
-synthetic failure/restart checkpoints. Run from the repository root:
+synthetic failure/restart checkpoints, publication-barrier examples and deliberate
+invalid barrier counterexamples. Run from the repository root:
 
 ```bash
 python3 docs/design/fixtures/validate-transfer.py
 ```
 
 The static validator checks conceptual fixture consistency and selected safety
-invariants. It performs no storage, encryption, Git, network or runtime tests and
-does not prove a production implementation satisfies this protocol. It reads
+invariants, including rejection of the invalid barrier counterexamples. It
+performs no storage, encryption, Git, network or runtime tests and does not prove a production implementation satisfies this protocol. It reads
 only the adjacent documentation fixture.
 
 Remaining #35 work includes durable encoding/journal representation, reference

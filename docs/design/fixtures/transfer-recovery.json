@@ -179,5 +179,69 @@
       "source": {"local": "absent", "publication": "accepted", "observed": "absent"},
       "expected": {"outcome": "completed", "next": "report-without-replay", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
     }
+  ],
+  "publication_barriers": [
+    {
+      "case": "destination-send-in-flight-when-receive-only-requested",
+      "side": "destination",
+      "effective_mode": "two-way",
+      "requested_mode": "receive-only",
+      "transition": "pending",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "in-flight", "retained": true, "publisher_quiescent": false},
+      "effective_configuration_unchanged": true,
+      "reported_effective": false
+    },
+    {
+      "case": "restart-source-send-uncertain-keeps-transition-pending",
+      "side": "source",
+      "effective_mode": "two-way",
+      "requested_mode": "receive-only",
+      "transition": "pending",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "uncertain", "retained": true, "publisher_quiescent": true},
+      "effective_configuration_unchanged": true,
+      "reported_effective": false
+    },
+    {
+      "case": "source-send-definitively-rejected-mode-stays-unchanged",
+      "side": "source",
+      "effective_mode": "two-way",
+      "requested_mode": "receive-only",
+      "transition": "failed",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "settled-rejected", "retained": true, "publisher_quiescent": true},
+      "effective_configuration_unchanged": true,
+      "reported_effective": false
+    },
+    {
+      "case": "destination-send-accepted-and-drained-before-effective-change",
+      "side": "destination",
+      "effective_mode": "receive-only",
+      "requested_mode": "receive-only",
+      "transition": "effective",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "settled-accepted", "retained": true, "publisher_quiescent": true},
+      "effective_configuration_unchanged": false,
+      "reported_effective": true
+    }
+  ],
+  "invalid_publication_barriers": [
+    {
+      "expected_rejection": "effective-transition-with-unsettled-attempt",
+      "example": {"case": "effective-transition-with-unsettled-attempt", "side": "destination", "effective_mode": "receive-only", "requested_mode": "receive-only", "transition": "effective", "admissions_fenced": true, "new_publication_admitted": false, "reservation": {"persisted_before_send": true, "status": "in-flight", "retained": true, "publisher_quiescent": false}, "effective_configuration_unchanged": true, "reported_effective": true}
+    },
+    {
+      "expected_rejection": "unsettled-reservation-discarded",
+      "example": {"case": "unsettled-reservation-discarded", "side": "source", "effective_mode": "two-way", "requested_mode": "receive-only", "transition": "pending", "admissions_fenced": true, "new_publication_admitted": false, "reservation": {"persisted_before_send": true, "status": "uncertain", "retained": false, "publisher_quiescent": true}, "effective_configuration_unchanged": true, "reported_effective": false}
+    },
+    {
+      "expected_rejection": "new-admission-crosses-transition-fence",
+      "example": {"case": "new-admission-crosses-transition-fence", "side": "destination", "effective_mode": "two-way", "requested_mode": "receive-only", "transition": "pending", "admissions_fenced": true, "new_publication_admitted": true, "reservation": {"persisted_before_send": true, "status": "in-flight", "retained": true, "publisher_quiescent": false}, "effective_configuration_unchanged": true, "reported_effective": false}
+    }
   ]
 }

@@ -12,6 +12,35 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def validate_barrier(case):
+    """Check only conceptual local publication/transition barrier facts."""
+    require(case['side'] in {'source', 'destination'}, 'barrier store side')
+    require(case['requested_mode'] == 'receive-only', 'barrier requested mode')
+    require(case['effective_mode'] in {'two-way', 'receive-only'}, 'barrier mode')
+    require(case['transition'] in {'pending', 'failed', 'effective'}, 'barrier transition')
+    reservation = case['reservation']
+    require(reservation['status'] in {'in-flight', 'uncertain', 'settled-accepted',
+                                      'settled-rejected'}, 'barrier attempt status')
+    require(reservation['persisted_before_send'], 'admission-must-precede-send')
+    require(case['admissions_fenced'], 'transition-must-fence-admissions')
+    require(not case['new_publication_admitted'], 'new-admission-crosses-transition-fence')
+    unsettled = reservation['status'] in {'in-flight', 'uncertain'}
+    require(unsettled or reservation['publisher_quiescent'], 'settlement-requires-quiescence')
+    require(not unsettled or reservation['retained'], 'unsettled-reservation-discarded')
+    if unsettled:
+        require(case['transition'] == 'pending' and case['effective_mode'] == 'two-way' and
+                not case['reported_effective'] and case['effective_configuration_unchanged'],
+                'effective-transition-with-unsettled-attempt')
+    if case['transition'] == 'effective':
+        require(reservation['status'] == 'settled-accepted' and
+                reservation['publisher_quiescent'] and case['effective_mode'] == 'receive-only' and
+                case['reported_effective'], 'effective-transition-requires-successful-drain')
+    if reservation['status'] == 'settled-rejected':
+        require(reservation['publisher_quiescent'] and case['transition'] == 'failed' and
+                case['effective_mode'] == 'two-way' and not case['reported_effective'] and
+                case['effective_configuration_unchanged'], 'failed-send-must-preserve-mode')
+
+
 def validate(data):
     require(data['fixture_kind'] == 'documentation-only', 'documentation marker')
     require(data['contract_version'] == 1, 'unsupported conceptual version')
@@ -93,14 +122,33 @@ def validate(data):
                 'response-lost', 'restart', 'remote-edit', 'same-id-conflict'}
     require(required <= {case['signal'] for case in data['cases']}, 'missing failure coverage')
     require(checkpoints <= {case['checkpoint'] for case in data['cases']}, 'missing checkpoint')
-    return len(names)
+    barriers = data['publication_barriers']
+    require({case['side'] for case in barriers} == {'source', 'destination'},
+            'both publication sides covered')
+    require({'in-flight', 'uncertain', 'settled-accepted', 'settled-rejected'} <=
+            {case['reservation']['status'] for case in barriers}, 'barrier outcome coverage')
+    for case in barriers:
+        validate_barrier(case)
+    negatives = data['invalid_publication_barriers']
+    require({case['expected_rejection'] for case in negatives} ==
+            {'effective-transition-with-unsettled-attempt', 'unsettled-reservation-discarded',
+             'new-admission-crosses-transition-fence'}, 'barrier counterexample coverage')
+    for invalid in negatives:
+        try:
+            validate_barrier(invalid['example'])
+        except ValueError as error:
+            require(str(error) == invalid['expected_rejection'], 'wrong counterexample rejection')
+        else:
+            raise ValueError('accepted invalid barrier: ' + invalid['expected_rejection'])
+    return len(names), len(barriers), len(negatives)
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('transfer-recovery.json')
-        count = validate(json.loads(fixture.read_text()))
+        count, barriers, negatives = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
-    print(f'PASS: {count} conceptual transfer checkpoints (documentation only; no runtime validation)')
+    print(f'PASS: {count} transfer checkpoints, {barriers} publication barriers, '
+          f'{negatives} rejected counterexamples (documentation only; no runtime validation)')
