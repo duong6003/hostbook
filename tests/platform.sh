@@ -11,8 +11,8 @@ sed '/^# ---------- entry point ----------/,$d' "$HERE/../hostbook" > "$T/lib"
 . "$T/lib"
 trap 'cleanup; rm -rf "$T"' EXIT
 : > "$IDX"
-pass=0; fail=0
-check(){ if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; }
+pass=0; fail=0; skipped=0
+check(){ local rc; if eval "$2"; then pass=$((pass+1)); printf 'ok    %s\n' "$1"; else rc=$?; if [ "$rc" = 77 ]; then skipped=$((skipped+1)); printf 'SKIP  %s (fixture capability unavailable)\n' "$1"; else fail=$((fail+1)); printf 'FAIL  %s\n' "$1"; fi; fi; }
 # Exercise actual installed-style paths from an unrelated working directory.
 app="$T/app space's ü"; mkdir -p "$app" "$T/elsewhere"
 cp "$HERE/../hostbook" "$app/hostbook"
@@ -135,7 +135,9 @@ change_fixture(){
 change_preserved(){
   local tx=$1
   # Compare all working files and the exact Git index, including untracked files and custom modes.
-  diff -r "$tx/before" "$DIR" && cmp "$tx/history" "$HIST" && [ ! -d "$STATE/sync.lock" ] &&
+  diff -r -x .git "$tx/before" "$DIR" && cmp "$tx/before/.git/index" "$DIR/.git/index" &&
+    [ "$(git -C "$tx/before" rev-parse HEAD)" = "$(g rev-parse HEAD)" ] &&
+    cmp "$tx/history" "$HIST" && [ ! -d "$STATE/sync.lock" ] &&
     [ "$(perm "$DIR/a.conf")" = "$(perm "$tx/before/a.conf")" ] &&
     [ "$(perm "$SEC/credential.age")" = "$(perm "$tx/before/secrets/credential.age")" ] &&
     host_exists old && ! host_exists renamed && [ "$(host_field other 6)" = old ]
@@ -169,12 +171,45 @@ for change_cmd in delete_host_raw rename_host_raw move_host_raw set_host_secret 
     check "$change_cmd: failed $change_mode preserves staged, unstaged and untracked data" 'change_failure "$change_cmd" "$change_mode"'
   done
 done
+change_io_failure(){ (
+  local cmd=$1 tx="$T/io-$1-${2:-first}" target args=(old)
+  change_fixture "$tx" || exit 1
+  case $cmd in
+    rename_host_raw) args+=(renamed);;
+    move_host_raw) args+=(new-project);;
+    set_host_secret) args+=("");;
+    secret_rename_raw) args=(credential renamed);;
+    secret_delete_raw) args=(credential);;
+  esac
+  target=$DIR/a.conf.tmp; [ "$cmd" != secret_rename_raw ] || target=$SEC/credential.age
+  case ${2:-} in late-secret) target=$SEC/credential.meta;; history) target=$HIST.tmp;; esac
+  mv(){ if [ "$1" = "$target" ]; then : > "$tx/io-failed"; return 1; fi; command mv "$@"; }
+  rm(){ local a; for a in "$@"; do if [ "$cmd" = secret_delete_raw ] && [ "$a" = "$SEC/credential.age" ]; then : > "$tx/io-failed"; return 1; fi; done; command rm "$@"; }
+  ! apply_change fixture "$cmd" "${args[@]}" > "$tx/result" 2>&1 && [ -f "$tx/io-failed" ] && change_preserved "$tx"
+); }
+for change_cmd in delete_host_raw rename_host_raw move_host_raw set_host_secret secret_rename_raw secret_delete_raw; do
+  check "$change_cmd: a failed filesystem operation triggers complete rollback" 'change_io_failure "$change_cmd"'
+done
+check 'secret rename rolls back ciphertext already moved before a later metadata failure' 'change_io_failure secret_rename_raw late-secret'
+check 'host rename rolls back config and groups when the final history write fails' 'change_io_failure rename_host_raw history'
+check 'a failed commit restores mutated files and the pre-existing staged index' '(
+  tx=$T/change-commit; change_fixture "$tx"
+  git(){ case " $* " in *" commit "*) return 1;; esac; command git "$@"; }
+  ! apply_change fixture rename_host_raw old renamed > "$tx/result" 2>&1 && change_preserved "$tx"
+)'
 check 'successful changes still validate, index and commit under the lock' '(
   tx=$T/change-success; change_fixture "$tx"
   g config user.name fixture; g config user.email fixture@example.com
   apply_change fixture rename_host_raw old renamed > "$tx/result" 2>&1 &&
     host_exists renamed && ! host_exists old && [ "$(host_field other 6)" = renamed ] &&
     grep -q renamed "$HIST" && grep -q renamed "$GRP" && [ -z "$(g status --porcelain)" ] && [ ! -d "$STATE/sync.lock" ]
+)'
+check 'a failed UI notification never rolls back an already successful data commit' '(
+  tx=$T/change-notice; change_fixture "$tx"
+  g config user.name fixture; g config user.email fixture@example.com
+  flash(){ return 1; }; mkdir "$ST.force"
+  apply_change fixture rename_host_raw old renamed > "$tx/result" 2>&1 &&
+    host_exists renamed && ! host_exists old && [ -z "$(g status --porcelain)" ] && [ ! -d "$STATE/sync.lock" ]
 )'
 check 'move accepts an existing project with uppercase and underscore characters' '(
   tx=$T/change-existing-project; change_fixture "$tx"
@@ -209,7 +244,8 @@ check 'apply rechecks a host rename destination under lock' '(
 )'
 check 'apply refuses symlinked scratch destinations without changing their targets' '(
   tx=$T/change-symlink; change_fixture "$tx"
-  printf "outside fixture\n" > "$tx/outside"; rm "$DIR/a.conf.tmp"; ln -s "$tx/outside" "$DIR/a.conf.tmp"
+  printf "outside fixture\n" > "$tx/outside"; rm "$DIR/a.conf.tmp"; ln -s "$tx/outside" "$DIR/a.conf.tmp" 2>/dev/null || exit 77
+  [ -L "$DIR/a.conf.tmp" ] || exit 77
   ! apply_change fixture delete_host_raw old > "$tx/result" 2>&1 && [ "$(cat "$tx/outside")" = "outside fixture" ] &&
     [ -L "$DIR/a.conf.tmp" ] && cmp "$DIR/a.conf" "$tx/before/a.conf" && cmp "$DIR/.git/index" "$tx/before/.git/index" && [ ! -d "$STATE/sync.lock" ]
 )'
@@ -222,5 +258,5 @@ run_progress "x" 1 "$T/rp.out" bash -c 'sleep 4123 & sleep 4123' 2>/dev/null && 
 check 'run_progress: the time limit stops the job and its grandchild' '[ "$rp" = 124 ] && ! ps -ef | grep -q "[s]leep 4123"'
 { bash -c 'sleep 4124 & sleep 4124' & rpid=$!; sleep 0.3; kill_tree $rpid; wait $rpid || :; } 2>/dev/null
 check 'kill_tree: no survivor among the descendants' '! ps -ef | grep -q "[s]leep 4124"'
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+printf '\n%s passed, %s failed, %s skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" = 0 ]

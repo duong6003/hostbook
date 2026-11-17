@@ -71,7 +71,7 @@ E=$'\033'; C0="$E[0m"; CB="$E[1m"
 LOCK_HELD=""
 # A closing terminal can send SIGHUP twice. Bash's default handling of a second one kills it before the EXIT trap,
 # so trap HUP explicitly, and keep rm/rmdir from dying of it.
-cleanup(){ trap '' HUP; set -- "$STATE/tmp/$$".*; [ ! -e "$1" ] || rm -rf "$@" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$STATE/sync.lock" 2>/dev/null; return 0; }
+cleanup(){ trap '' HUP; set -- "$STATE/tmp/$$".*; [ ! -e "$1" ] || rm -rf "$@" 2>/dev/null; [ -z "$LOCK_HELD" ] || unlock; return 0; }
 trap cleanup EXIT; trap 'exit 129' HUP
 # Only the owner can read temporary directories; plaintext secrets must stay here. Removed automatically on exit.
 tmpd(){ private_dir "$STATE/tmp" || return 1; mktemp -d "$STATE/tmp/$$.XXXXXX"; }
@@ -723,35 +723,66 @@ notify_fzf(){ # [reload]: refresh the header (and the list when asked) without b
 # tmux session rows (s:) are not covered: listing them costs several tmux/grep forks, and a sync never changes them.
 list_sig(){ { cksum < "$IDX"; cksum < "$DIR/groups.tsv"; } 2>/dev/null; }
 visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; list_sig; } 2>/dev/null; }
-# Allow only one sync at a time (mkdir is atomic). Treat locks older than two minutes as abandoned.
-lock(){ local w=${1:-0} i=0 o
+# Allow only one writer. Age alone never evicts a live owner. Serialize reclaimers of the same owner,
+# reread ownership under that guard, then rename the abandoned directory before deleting it.
+lock(){ local w=${1:-0} i=0 o token seen seen_token guard stale old_id= now_id
   while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
-    if [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rm -rf "$STATE/sync.lock" 2>/dev/null; continue; fi
-    # a sync killed outright (closed terminal, SIGKILL) leaves its lock: a recorded owner that is gone frees it now, not in 2 min
-    o=$(cat "$STATE/sync.lock/pid" 2>/dev/null); if [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; then rm -rf "$STATE/sync.lock" 2>/dev/null; continue; fi
+    o=; token=; IFS= read -r o 2>/dev/null < "$STATE/sync.lock/pid" || :
+    IFS= read -r token 2>/dev/null < "$STATE/sync.lock/owner" || :
+    case $o in ''|*[!0-9]*) o=;; esac
+    case $token in *[!0-9.]*) token=;; esac
+    old_id=
+    if { [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; } ||
+       { [ -z "$o" ] && [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; }; then
+      [ -n "$o" ] || old_id=$(stat -c '%d:%i' "$STATE/sync.lock" 2>/dev/null || stat -f '%d:%i' "$STATE/sync.lock" 2>/dev/null)
+      guard=$STATE/sync.lock/reap.${o:-empty}.${token:-legacy}
+      if mkdir "$guard" 2>/dev/null; then
+        seen=; seen_token=; IFS= read -r seen 2>/dev/null < "$STATE/sync.lock/pid" || :
+        IFS= read -r seen_token 2>/dev/null < "$STATE/sync.lock/owner" || :
+        now_id=; [ -z "$old_id" ] || now_id=$(stat -c '%d:%i' "$STATE/sync.lock" 2>/dev/null || stat -f '%d:%i' "$STATE/sync.lock" 2>/dev/null)
+        if [ "$seen" = "$o" ] && [ "$seen_token" = "$token" ] &&
+           { { [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; } || { [ -n "$old_id" ] && [ "$old_id" = "$now_id" ]; }; }; then
+          stale=$STATE/sync-abandoned.$$.$RANDOM
+          if mv "$STATE/sync.lock" "$stale" 2>/dev/null; then rm -rf "$stale"; continue; fi
+        fi
+        rmdir "$guard" 2>/dev/null || :
+      fi
+    fi
     [ $i -ge "$w" ] && return 1; sleep 1; i=$((i+1)); done
-  echo $$ > "$STATE/sync.lock/pid"; LOCK_HELD=1; }   # the owner's pid: a screen that kills a sync may release only its own lock
-unlock(){ rm -rf "$STATE/sync.lock" 2>/dev/null; LOCK_HELD=""; }
+  token=$$.$RANDOM.$RANDOM
+  printf '%s\n' "$token" > "$STATE/sync.lock/owner" && printf '%s\n' "$$" > "$STATE/sync.lock/pid" || return 1
+  LOCK_HELD=$token
+}
+unlock(){
+  local token= o=
+  if [ -n "$LOCK_HELD" ]; then
+    IFS= read -r token 2>/dev/null < "$STATE/sync.lock/owner" || :
+    IFS= read -r o 2>/dev/null < "$STATE/sync.lock/pid" || :
+    [ "$token" != "$LOCK_HELD" ] || [ "$o" != "$$" ] || rm -rf "$STATE/sync.lock" 2>/dev/null
+  fi
+  LOCK_HELD=""
+}
 # Commit all changes in ~/ssh-hosts if the config is valid.
 # Commit messages ("Gộp với kho", apply_change descriptions…) and the share-file header are data written into the user's repo and files, not screen text: they stay as they are.
 commit_all(){ local msg=$1 e
+  if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
   [ -z "$(g status --porcelain)" ] && return 0
   ensure_git_identity || return 1
-  if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
   g add -A && g commit -qm "$msg" >/dev/null
 }
 # Pull, push, and record status. Never prompt, so this can run in the background.
 sync_quiet(){
-  lock "${1:-0}" || return 0
+  lock "${1:-0}" || return 75
   local sig rows rc; sig=$(visible_sig); rows=$(list_sig); PULLED=""
+  if [ "${2:-}" = checking ] && has_remote && [ "$(sed -n 1p "$ST" 2>/dev/null)" != pulled ]; then set_status checking; notify_fzf; fi
   sync_locked; rc=$?; unlock
   if [ -n "$PULLED" ] || [ "$(list_sig)" != "$rows" ]; then notify_fzf reload   # a pull always refreshes, even when the status text repeats
   elif [ "$(visible_sig)" != "$sig" ]; then notify_fzf; fi
   return $rc
 }
 sync_locked(){
-  local before after behind ahead new
-  ensure_merge_setup
+  local before after behind ahead new branch remote_branch remote_head checkpoint e
+  ensure_merge_setup || return 1
   commit_all "Sửa ngoài hostbook" || return 1
   has_remote || return 0
   export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 4)
@@ -759,20 +790,46 @@ sync_locked(){
     ahead=$(g rev-list --count '@{u}..HEAD' 2>/dev/null || g rev-list --count HEAD 2>/dev/null)
     if [ "${ahead:-0}" -gt 0 ]; then set_status pending "$ahead"; else set_status offline; fi; return 1; fi
   if ! g rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
-    if g ls-remote --exit-code origin HEAD >/dev/null 2>&1; then g branch -q --set-upstream-to="origin/$(g symbolic-ref --short HEAD)" 2>/dev/null; fi
+    branch=$(g symbolic-ref --short HEAD) || { set_status conflict; return 1; }
+    if g show-ref --verify --quiet "refs/remotes/origin/$branch"; then remote_branch=$branch
+    else
+      remote_head=$(g ls-remote --symref origin HEAD 2>/dev/null) || { set_status offline; return 1; }
+      remote_branch=$(printf '%s\n' "$remote_head" | awk '$1=="ref:" && $3=="HEAD" {sub(/^refs\/heads\//,"",$2); print $2; exit}')
+    fi
+    if [ -n "$remote_branch" ]; then
+      g branch -q --set-upstream-to="origin/$remote_branch" 2>/dev/null || { set_status conflict; return 1; }
+    elif [ -n "$(g for-each-ref --format='%(refname)' refs/remotes/origin/)" ]; then
+      # A populated remote with no usable HEAD needs an explicit branch, never a silent new history.
+      set_status conflict; return 1
+    fi
   fi
   if ! g rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
-    if g push -q -u origin HEAD 2>/dev/null; then set_status ok; else set_status offline; fi; return 0; fi
+    if g push -q -u origin HEAD 2>/dev/null; then set_status ok; return 0; else set_status pending "$(g rev-list --count HEAD)"; return 1; fi
+  fi
+  branch=$(g symbolic-ref --short HEAD) || { set_status conflict; return 1; }
+  [ "$(g config --get "branch.$branch.remote")" = origin ] || { set_status conflict; return 1; }
+  remote_branch=$(g config --get "branch.$branch.merge"); remote_branch=${remote_branch#refs/heads/}
   behind=$(g rev-list --count 'HEAD..@{u}'); ahead=$(g rev-list --count '@{u}..HEAD')
   if [ "$behind" -gt 0 ]; then
+    checkpoint=$(g rev-parse HEAD) || return 1
     before=$(cut -f1 "$IDX" 2>/dev/null | sort)
     if ! g pull -q --rebase >/dev/null 2>&1; then g rebase --abort 2>/dev/null; set_status conflict; return 1; fi
+    if ! e=$(validate); then
+      # Local edits were committed before pulling. --keep refuses to overwrite concurrent manual edits.
+      g reset -q --keep "$checkpoint" 2>/dev/null || :
+      build_index
+      set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"
+      return 1
+    fi
     build_index; after=$(cut -f1 "$IDX" | sort)
     new=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -5 | tr '\n' ' ')
     PULLED=1
     if [ -n "$new" ]; then set_status pulled "$(t sync_new_servers "$new")"; else set_status pulled "$(t sync_got "$behind")"; fi
   else set_status ok; fi
-  if [ "$ahead" -gt 0 ] || [ "$behind" -gt 0 ]; then g push -q 2>/dev/null || set_status pending "$ahead"; fi
+  if [ "$ahead" -gt 0 ] || [ "$behind" -gt 0 ]; then
+    ahead=$(g rev-list --count '@{u}..HEAD')
+    g push -q origin "HEAD:refs/heads/$remote_branch" 2>/dev/null || { set_status pending "$ahead"; return 1; }
+  fi
   return 0
 }
 cmd_bg_sync(){ # run in the background when opening search; skip if recently synced with no changes to avoid repeated network calls
@@ -781,29 +838,37 @@ cmd_bg_sync(){ # run in the background when opening search; skip if recently syn
   else last=$(sed -n 3p "$ST" 2>/dev/null)
     [ -z "$(g status --porcelain 2>/dev/null)" ] && [ "$(sed -n 1p "$ST" 2>/dev/null)" = ok ] && [ $(( $(date +%s) - ${last:-0} )) -lt 60 ] && return 0
   fi
-  has_remote && [ "$(sed -n 1p "$ST" 2>/dev/null)" != pulled ] && { set_status checking; notify_fzf; }
-  sync_quiet
+  sync_quiet 0 checking
+}
+saved_notice(){ # The data commit already succeeded; a notification failure must never roll it back.
+  if has_remote; then flash "${CG}${ICON_OK} $1${C0}${CD}$(t sync_suffix_syncing)${C0}"; else flash "${CG}${ICON_OK} $1${C0}${CD}$(t sync_suffix_norepo)${C0}"; fi
+  : > "$ST.force"
+  return 0
 }
 save_and_sync(){ # $1 = change description
-  if commit_all "$1"; then
-    if has_remote; then flash "${CG}${ICON_OK} $1${C0}${CD}$(t sync_suffix_syncing)${C0}"; else flash "${CG}${ICON_OK} $1${C0}${CD}$(t sync_suffix_norepo)${C0}"; fi
-    : > "$ST.force"
-  else flash "${CR}${ICON_ERR} $(t err_not_saved)${C0}"; fi
+  if commit_all "$1"; then saved_notice "$1"
+  else flash "${CR}${ICON_ERR} $(t err_not_saved)${C0}"; return 1; fi
 }
 sync_text(){ # → one line about the last sync outcome, from the status file
   local st f; st=$(sed -n 1p "$ST" 2>/dev/null); f=$(sed -n 2p "$ST" 2>/dev/null)
   case $st in ok) t sync_ok;; pulled) t sync_pulled;; pending) t sync_pending "${f:-0}";; offline) t sync_offline;; conflict) t sync_conflict;; invalid) t sync_invalid "$f";; *) t sync_unknown;; esac
 }
 sync_ui(){ # ^s and Tools → Sync now: a progress screen, then a flash with the outcome
-  local d rc c=$CG i=$ICON_OK st o; at "$(t sync_title)"
-  if ! has_remote; then   # nothing to wait for: save local edits and say so
-    sync_quiet 10 >/dev/null 2>&1; flash "${CG}${ICON_OK} $(t sync_norepo)${C0}"; return 0; fi
-  d=$(tmpd) || return 1; rm -f "$ST"; clear; title "$UI_AT"; dimw "$(t sync_intro)"; echo
-  run_progress "$(t sync_running)" 30 "$d/out" bash "$SELF" _sync_now; rc=$?
-  if [ $rc -ge 124 ]; then   # stopped half-way: leave no rebase or lock behind
-    o=$(cat "$STATE/sync.lock/pid" 2>/dev/null)   # a lock whose owner is dead was ours (or abandoned); a live owner is another sync
-    if [ -z "$o" ] || ! kill -0 "$o" 2>/dev/null; then
-      { [ -d "$DIR/.git/rebase-merge" ] || [ -d "$DIR/.git/rebase-apply" ]; } && g rebase --abort >/dev/null 2>&1; rm -rf "$STATE/sync.lock"; fi
+  local d rc c=$CG i=$ICON_OK st; at "$(t sync_title)"
+  d=$(tmpd) || return 1
+  if ! has_remote; then
+    sync_quiet 10 >/dev/null 2>&1; rc=$?
+    if [ "$rc" = 0 ]; then flash "${CG}${ICON_OK} $(t sync_norepo)${C0}"; rm -rf "$d"; return 0; fi
+  else
+    clear; title "$UI_AT"; dimw "$(t sync_intro)"; echo
+    run_progress "$(t sync_running)" 30 "$d/out" bash "$SELF" _sync_now; rc=$?
+  fi
+  if [ "$rc" = 75 ]; then flash "${CY}${ICON_WARN} $(t sync_busy)${C0}"; rm -rf "$d"; return 1; fi
+  if [ $rc -ge 124 ]; then   # clean up abandoned work only while owning the writer lock
+    if lock 0; then
+      { [ -d "$DIR/.git/rebase-merge" ] || [ -d "$DIR/.git/rebase-apply" ]; } && g rebase --abort >/dev/null 2>&1
+      unlock
+    fi
     if [ $rc = 130 ]; then flash "${CD}$(t sync_cancelled)${C0}"; else flash "${CY}${ICON_WARN} $(t sync_timeout 30)${C0}"; fi
     rm -rf "${d:?}"; return 0; fi
   st=$(sed -n 1p "$ST" 2>/dev/null)
@@ -1213,13 +1278,17 @@ secret_set_password(){ # name [password]
 }
 secret_rename_raw(){ # old new
   local o=$1 n=$2 f e; valid_secret_name "$n" && ! secret_exists "$n" || return 1
-  for e in age meta pub; do [ -f "$SEC/$o.$e" ] && mv "$SEC/$o.$e" "$SEC/$n.$e"; done
+  for e in age meta pub; do
+    [ ! -f "$SEC/$o.$e" ] || mv "$SEC/$o.$e" "$SEC/$n.$e" || return 1
+  done
   for f in "$DIR"/*.conf; do [ -f "$f" ] || continue
     awk -v o="$o" -v n="$n" '
       /^[ \t]*#[ \t]*secret:/ { v=$0; sub(/^[ \t]*#[ \t]*secret:[ \t]*/,"",v); sub(/[ \t]+$/,"",v); if (v==o) { print "# secret: " n; next } }
       tolower($1)=="identityfile" { i=index($0, "secrets/" o ".pub"); if (i && (i+length("secrets/" o ".pub")-1==length($0) || substr($0,i+length("secrets/" o ".pub"))=="\"")) { print substr($0,1,i-1) "secrets/" n ".pub" substr($0,i+length("secrets/" o ".pub")); next } }
-      { print }' "$f" > "$f.tmp"; if cmp -s "$f" "$f.tmp"; then rm -f "$f.tmp"; else mv "$f.tmp" "$f"; fi
+      { print }' "$f" > "$f.tmp" || return 1
+    if cmp -s "$f" "$f.tmp"; then rm -f "$f.tmp" || return 1; else mv "$f.tmp" "$f" || return 1; fi
   done
+  return 0
 }
 secret_delete_raw(){ # name: delete the files and remove all login lines written by hostbook for this secret
   local n=${1:?} f ispw="" e; [ "$(secret_meta "$n" type)" = password ] && ispw=1
@@ -1237,9 +1306,10 @@ secret_delete_raw(){ # name: delete the files and remove all login lines written
       { buf[++nb]=$0; key[nb]=$1 }
       /^[ \t]*#[ \t]*secret:/ { v=$0; sub(/^[ \t]*#[ \t]*secret:[ \t]*/,"",v); sub(/[ \t]+$/,"",v); if (v==n) hit=1 }
       tolower($1)=="identityfile" && index($0, "secrets/" n ".pub") { hit=1 }
-      END { flush() }' "$f" > "$f.tmp"; if cmp -s "$f" "$f.tmp"; then rm -f "$f.tmp"; else mv "$f.tmp" "$f"; fi
+      END { flush() }' "$f" > "$f.tmp" || return 1
+    if cmp -s "$f" "$f.tmp"; then rm -f "$f.tmp" || return 1; else mv "$f.tmp" "$f" || return 1; fi
   done
-  for e in age meta pub; do [ -f "${SEC:?}/$n.$e" ] && rm -f "${SEC:?}/${n:?}.$e"; done
+  for e in age meta pub; do [ ! -f "${SEC:?}/$n.$e" ] || rm -f "${SEC:?}/${n:?}.$e" || return 1; done
   return 0
 }
 secret_edit(){
@@ -1632,7 +1702,7 @@ set_host_secret(){ # server-name secret-name(empty = SSH handles it)
   local n=$1 sc=${2:-} f l r old oldpw="" ll
   f=$(host_field "$n" 10); l=$(host_field "$n" 11); r=$(block_range "$n"); old=$(host_field "$n" 12)
   [ -n "$old" ] && [ "$(secret_meta "$old" type)" = password ] && oldpw=1
-  ll=$(tmpd) || return 1; ll=$ll/ll; login_lines "$sc" > "$ll"
+  ll=$(tmpd) || return 1; ll=$ll/ll; login_lines "$sc" > "$ll" || return 1
   awk -v s="${r% *}" -v e="${r#* }" -v l="$l" -v sc="$sc" -v oldpw="$oldpw" -v ll="$ll" '
     NR>=s && NR<=e {
       k=tolower($1); skip=0
@@ -1668,22 +1738,23 @@ delete_host_raw(){ # name [keep-groups]
   local n=$1 f l r
   f=$(host_field "$n" 10); l=$(host_field "$n" 11)
   if host_shared "$n"; then
-    awk -v l="$l" -v n="$n" 'NR==l { out=$1; for (i=2;i<=NF;i++) if ($i!=n) out=out " " $i; print out; next } { print }' "$f" > "$f.tmp"
+    awk -v l="$l" -v n="$n" 'NR==l { out=$1; for (i=2;i<=NF;i++) if ($i!=n) out=out " " $i; print out; next } { print }' "$f" > "$f.tmp" || return 1
   else r=$(block_range "$n")
-    awk -v s="${r% *}" -v e="${r#* }" 'NR>=s && NR<=e { next } { if ($0 ~ /^[ \t]*$/ && prevblank) next; prevblank=($0 ~ /^[ \t]*$/); print }' "$f" > "$f.tmp"
+    awk -v s="${r% *}" -v e="${r#* }" 'NR>=s && NR<=e { next } { if ($0 ~ /^[ \t]*$/ && prevblank) next; prevblank=($0 ~ /^[ \t]*$/); print }' "$f" > "$f.tmp" || return 1
   fi
-  mv "$f.tmp" "$f"; [ -s "$f" ] && grep -q '[^[:space:]]' "$f" || rm -f "$f"   # remove files containing only blank lines
+  mv "$f.tmp" "$f" || return 1
+  if ! grep -q '[^[:space:]]' "$f"; then rm -f "$f" || return 1; fi   # remove files containing only blank lines
   [ -n "${2:-}" ] || groups_rename "$n"
 }
 rename_host_raw(){ # old new: rename in the Host line, other servers ProxyJump entries, groups, and history
   local o=$1 n=$2 f l c
   f=$(host_field "$o" 10); l=$(host_field "$o" 11)
-  awk -v l="$l" -v o="$o" -v n="$n" 'NR==l { for (i=2;i<=NF;i++) if ($i==o) $i=n } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  awk -v l="$l" -v o="$o" -v n="$n" 'NR==l { for (i=2;i<=NF;i++) if ($i==o) $i=n } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || return 1
   for c in "$DIR"/*.conf; do
-    awk -v o="$o" -v n="$n" 'tolower($1)=="proxyjump" { m=split($2,a,","); v=""; for (i=1;i<=m;i++) v=v (i>1?",":"") (a[i]==o?n:a[i]); match($0,/^[ \t]*/); print substr($0,1,RLENGTH) $1 " " v; next } { print }' "$c" > "$c.tmp"
-    cmp -s "$c" "$c.tmp" && rm -f "$c.tmp" || mv "$c.tmp" "$c"
+    awk -v o="$o" -v n="$n" 'tolower($1)=="proxyjump" { m=split($2,a,","); v=""; for (i=1;i<=m;i++) v=v (i>1?",":"") (a[i]==o?n:a[i]); match($0,/^[ \t]*/); print substr($0,1,RLENGTH) $1 " " v; next } { print }' "$c" > "$c.tmp" || return 1
+    if cmp -s "$c" "$c.tmp"; then rm -f "$c.tmp" || return 1; else mv "$c.tmp" "$c" || return 1; fi
   done
-  groups_rename "$o" "$n"
+  groups_rename "$o" "$n" || return 1
   awk -F'\t' -v OFS='\t' -v o="$o" -v n="$n" '$2==o{$2=n} {print}' "$HIST" > "$HIST.tmp" && mv "$HIST.tmp" "$HIST"
 }
 effective(){ sshx -G "$1" 2>/dev/null | awk '$1=="hostname"||$1=="user"||$1=="port"||$1=="proxyjump" {print $1 " " $2} $1=="identityfile"&&!k {k=1; print $1 " " $2}'; }
@@ -1691,16 +1762,18 @@ move_host_raw(){ # name project: move the entire block, then make values inherit
   local n=$1 to=$2 f r blk before after line k v nf nl
   host_shared "$n" && { echo "shared"; return 1; }
   f=$(host_field "$n" 10); r=$(block_range "$n"); before=$(effective "$n")
-  blk=$(mktemp); sed -n "${r% *},${r#* }p" "$f" > "$blk"
-  delete_host_raw "$n" keep; write_host "$to" "$blk"; rm -f "$blk"
+  blk=$(tmpd) || return 1; blk=$blk/block
+  sed -n "${r% *},${r#* }p" "$f" > "$blk" || return 1
+  delete_host_raw "$n" keep && write_host "$to" "$blk" || return 1
   after=$(effective "$n"); [ "$before" = "$after" ] && return 0
   nf=$DIR/$to.conf; nl=$(awk -v n="$n" 'tolower($1)=="host" { for (i=2;i<=NF;i++) if ($i==n) { print NR; exit } }' "$nf")
   printf '%s\n' "$before" | while read -r k v; do
     printf '%s\n' "$after" | grep -qx "$k $v" && continue
     case $k in hostname) k=HostName;; user) k=User;; port) k=Port;; proxyjump) k=ProxyJump;; identityfile) k=IdentityFile;; esac
     printf '  %s %s\n' "$k" "$v"
-  done > "$nf.extra"
-  awk -v l="$nl" -v x="$nf.extra" '{ print } NR==l { while ((getline y < x) > 0) print y }' "$nf" > "$nf.tmp" && mv "$nf.tmp" "$nf"; rm -f "$nf.extra"
+  done > "$nf.extra" || return 1
+  awk -v l="$nl" -v x="$nf.extra" '{ print } NR==l { while ((getline y < x) > 0) print y }' "$nf" > "$nf.tmp" && mv "$nf.tmp" "$nf" || return 1
+  rm -f "$nf.extra"
 }
 # Recheck names under the sync lock and list only paths these operations can write (including scratch files).
 change_paths(){ # command args... -> NUL-separated absolute paths
@@ -1759,6 +1832,9 @@ change_locked(){ # description command...; caller owns the sync lock
   if [ "$failed" = 0 ]; then
     if ! e=$(validate); then failed=1; err "$(t err_apply_broken)"; dim "$e"; fi
   fi
+  if [ "$failed" = 0 ]; then
+    build_index && commit_all "$msg" || { failed=1; flash "${CR}${ICON_ERR} $(t err_not_saved)${C0}"; }
+  fi
   if [ "$failed" = 1 ]; then
     i=0
     while IFS= read -r -d '' f; do
@@ -1772,7 +1848,8 @@ change_locked(){ # description command...; caller owns the sync lock
     return 1
   fi
   rm -rf "$rollback"
-  build_index; save_and_sync "$msg"
+  saved_notice "$msg"
+  return 0
 }
 apply_change(){ # description command...
   local rc
@@ -2237,7 +2314,7 @@ discover(){
     cat "$tmp"/r.* 2>/dev/null | sed -n 's/.*reached at \([^ ]*\)\.:[0-9]*.*/\1/p' | sort -u | grep -vx "$me" | sed "s/\$/|$lan/"
   elif have avahi-browse; then avahi-browse -tpr _ssh._tcp 2>/dev/null | awk -F';' '$1=="=" {print $7}' | sort -u | grep -vx "$(hostname).local" | sed "s/\$/|$lan/"; fi
   # phones (iOS, Android) cannot host a repository, so omit them
-  if have tailscale; then tailscale status 2>/dev/null | awk 'NR>1 && $1 ~ /^100\./ && !/offline/ && tolower($4) !~ /^(ios|android)$/ {print $2 "|" ts}' ts="$(t disc_ts)"; fi
+  if have tailscale; then tailscale status 2>/dev/null | awk 'NR>1 && $1 ~ /^100\./ && $5!="offline" && tolower($4) !~ /^(ios|android)$/ {print $1 "|" $2 " · " ts}' ts="$(t disc_ts)"; fi
   rm -rf "$tmp"
 }
 pick_machine(){ # header [url] [intro] → print one "user@host" line (or a git URL if allowed) to stdout; screens go to the terminal because callers use $(...)
@@ -2265,7 +2342,8 @@ pick_machine(){ # header [url] [intro] → print one "user@host" line (or a git 
          is_url "$m" || { e="$CR$ICON_ERR $(t err_kho_url)$C0"; continue; }
          break; done
        UI_AT=$base; printf '%s\n' "$m"; return 0;;
-    a) at "${base:+$base|}$(t act_machine_other)"
+    a|m) if [ "${kinds[$i]}" = m ]; then m=${vals[$i]}; at "${base:+$base|}$(t disc_title)"
+       else at "${base:+$base|}$(t act_machine_other)"; fi
        while :; do
          m=$(ui_field "$(t kho_addr_label)" "$m" addr "$(t kho_addr_rule "$ME")"$'\n'"$(t example "$(t kho_addr_example)")" "" "$e") || { UI_AT=$base; return 1; }
          case $m in *@*) f=$m;; *) f="$ME@$m";; esac
@@ -2284,8 +2362,12 @@ ensure_key(){ # ensure a key can log in to machine $1; otherwise create one and 
   ssh-copy-id ${SSHCFG:+-F "$SSHCFG"} "$m" || { err "$(t err_ek_login "$m")"; return 1; }
   ok "$(t ek_added "$m")"
 }
+restore_origin(){ # previous URL and upstream; caller owns the writer lock
+  if [ -n "$1" ]; then g remote set-url origin "$1"; else g remote remove origin; fi
+  if [ -n "$2" ]; then g branch -q --set-upstream-to="$2" 2>/dev/null; else g branch --unset-upstream 2>/dev/null || :; fi
+}
 connect_kho(){ # connect ~/ssh-hosts to a repository on another machine
-  local m url
+  local m url old_url old_upstream checkpoint e
   at "$(has_remote && t kho_title_change || t kho_title_connect)"
   m=$(pick_machine "$(t kho_where)" url "$(t kho_intro)") || return 1
   if is_url "$m"; then url=$m   # the remote is an existing git repo (private GitHub, Gitea…): no need to create it
@@ -2299,16 +2381,26 @@ connect_kho(){ # connect ~/ssh-hosts to a repository on another machine
     fi
     url="$m:repos/ssh-hosts.git"
   fi
-  if has_remote; then g remote set-url origin "$url"; else g remote add origin "$url"; fi
   export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 8)
   lock 10 || { shown; err "$(t err_kho_busy)"; pause; return 1; }
+  old_url=$(remote_url) || old_url=
+  old_upstream=$(g rev-parse --abbrev-ref '@{u}' 2>/dev/null) || old_upstream=
+  if [ -n "$old_url" ]; then g remote set-url origin "$url"; else g remote add origin "$url"; fi || { unlock; shown; err "$(t err_kho_read "$url")"; pause; return 1; }
   ensure_merge_setup
-  if ! g ls-remote origin >/dev/null 2>&1; then unlock; shown; err "$(t err_kho_read "$url")"; pause; return 1; fi
+  if ! g ls-remote origin >/dev/null 2>&1; then restore_origin "$old_url" "$old_upstream"; unlock; shown; err "$(t err_kho_read "$url")"; pause; return 1; fi
+  checkpoint=$(g rev-parse HEAD) || { restore_origin "$old_url" "$old_upstream"; unlock; return 1; }
   if g fetch -q origin 2>/dev/null && g ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
     # the repository already has data: merge with the local list (--allow-unrelated-histories handles separate histories)
-    g branch -q --set-upstream-to="origin/$(g symbolic-ref --short HEAD)" 2>/dev/null || { g fetch -q origin "+refs/heads/*:refs/remotes/origin/*"; g branch -q --set-upstream-to="origin/$(g remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')"; }
+    if ! { g branch -q --set-upstream-to="origin/$(g symbolic-ref --short HEAD)" 2>/dev/null || { g fetch -q origin "+refs/heads/*:refs/remotes/origin/*" && g branch -q --set-upstream-to="origin/$(g remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')"; }; }; then
+      restore_origin "$old_url" "$old_upstream"; unlock; shown; err "$(t err_kho_merge)"; pause; return 1
+    fi
     if ! g merge -q --no-edit --allow-unrelated-histories '@{u}' >/dev/null 2>&1; then
-      g merge --abort 2>/dev/null; unlock; shown; err "$(t err_kho_merge)"; pause; return 1
+      g merge --abort 2>/dev/null; restore_origin "$old_url" "$old_upstream"; unlock; shown; err "$(t err_kho_merge)"; pause; return 1
+    fi
+    if ! e=$(validate); then
+      g reset -q --keep "$checkpoint" 2>/dev/null || :
+      restore_origin "$old_url" "$old_upstream"; build_index; set_status invalid "$(printf '%s' "$e" | head -1)"
+      unlock; shown; err "$(t err_kho_merge)"; dim "$e"; pause; return 1
     fi
   fi
   sync_locked; unlock; build_index
@@ -2836,7 +2928,7 @@ case ${1:-} in
   _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/check/run.tsv";;
   share) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then share_flow $(search_hosts "$*"); else share_flow $(cut -f1 "$IDX"); fi;;
   check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi; exit $?;;
-  _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) rm -f "$ST"; sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
+  _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
   _suggest_host) suggest "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-}";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;
   _rename) ensure_index; apply_change "đổi tên" rename_host_raw "$2" "$3";; _move) ensure_index; apply_change "chuyển" move_host_raw "$2" "$3";;
@@ -2844,7 +2936,7 @@ case ${1:-} in
   _split) split_config "$2" "$3" "$4";; _resolve) resolve_conflict "$2";; _kho_addr) kho_addr;; _block) shift; host_block "$@";; _validate) validate;;
   --version|-v|version) echo "hostbook $VERSION";;
   add) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; add_host "${2:-}" "${3:-}";;
-  sync) "$SELF" _sync_now; "$SELF" _header | sed -n 1p;;
+  sync) "$SELF" _sync_now; rc=$?; "$SELF" _header | sed -n 1p; exit "$rc";;
   import) check_deps || exit 1; [ -d "$DIR" ] || { err "$(t err_no_dir)"; exit 1; }; ensure_index; import_flow "${2:-}" || exit $?; [ -z "${ONLY_NEXT:-}" ] || { vault_init && home; };;
   doctor) doctor;; setup) setup;; update) update;; kho) check_deps || exit 1; connect_kho;; help|-h|--help) show_help;;
   *) case ${1:-} in _*) . "$LIBDIR/import.sh" || exit 1; . "$LIBDIR/settings.sh" || exit 1; . "$LIBDIR/hosts.sh" || exit 1;; esac

@@ -178,7 +178,7 @@ machine_picker_controls(){ (
   run_progress(){ local j; : > "$3"; for ((j=1;j<=count;j++)); do printf 'node%s.example|fixture\n' "$j" >> "$3"; done; }
   ui_choice(){ printf choice > "$T/picker-kind"; printf '%s' "$selected"; }
   ui_menu(){ printf menu > "$T/picker-kind"; printf '%s' "$selected"; }
-  ui_field(){ printf 'https://example.invalid/hosts.git'; }
+  ui_field(){ if [ "$1" = "$(t kho_url_label)" ]; then printf 'https://example.invalid/hosts.git'; else printf '%s' "$2"; fi; }
   result=$(pick_machine Pick url) || exit 1
   [ "$result" = https://example.invalid/hosts.git ] && [ "$(cat "$T/picker-kind")" = choice ] || exit 1
   count=2

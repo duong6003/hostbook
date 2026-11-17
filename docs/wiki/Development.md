@@ -19,6 +19,7 @@ Core files:
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
 | `install.ps1`, `windows/` | Managed Windows runtime, native launcher, and OS boundaries. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and Git identity regressions. |
+| `tests/sync.sh`, `tests/discovery.sh` | Isolated sync/locking failures and synthetic VPN discovery/address controls. |
 | `tests/install.sh` | Isolated Unix installation and update using a local Git repository. |
 | `tests/windows.ps1` | Native Windows install, security, fzf, SSH, update, and uninstall checks. |
 | `tests/test.sh` | Core regression tests with isolated data. |
@@ -43,7 +44,7 @@ Core files:
 bash -n hostbook
 bash -n install.sh
 bash tests/install.sh
-for t in test platform hosts-module settings-module ui file-input menu-empty controls open-mode \
+for t in test platform sync discovery hosts-module settings-module ui file-input menu-empty controls open-mode \
          home-recovery import import-keys import-input import-package import-review import-tui \
          onboarding tui screens; do bash tests/$t.sh || break; done
 bash tests/e2e.sh

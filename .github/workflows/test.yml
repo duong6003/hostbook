@@ -42,6 +42,8 @@ jobs:
           for tool in tmux fzf gum; do command -v "$tool" >/dev/null || exit 1; done
           bash tests/test.sh
           bash tests/platform.sh
+          bash tests/sync.sh
+          bash tests/discovery.sh
           bash tests/hosts-module.sh
           bash tests/settings-module.sh
           bash tests/ui.sh
