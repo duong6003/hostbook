@@ -1,0 +1,72 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "note": "Conceptual transfer evidence and decisions, not a transaction record format. Any write also requires the affected store's mode to allow it.",
+  "source_store_id": "10000000-0000-4000-8000-000000000001",
+  "destination_store_id": "10000000-0000-4000-8000-000000000002",
+  "source_host": {
+    "host_id": "20000000-0000-4000-8000-000000000021",
+    "alias": "web-east",
+    "effective_endpoint": {"address": "192.0.2.21", "port": 22, "login": "example"}
+  },
+  "independent_cases": [
+    {
+      "case": "successful-move",
+      "destination_hosts_before": [],
+      "expected": {
+        "destination_host_id": "20000000-0000-4000-8000-000000000021",
+        "source_host_present_after_success": false,
+        "destination_host_count_after_success": 1,
+        "lookup_key_changes_store_component": true
+      }
+    },
+    {
+      "case": "retry-after-destination-written-before-source-removed",
+      "prior_transfer_intent": "same-source-host-and-destination-store",
+      "destination_hosts_before": [
+        {
+          "host_id": "20000000-0000-4000-8000-000000000021",
+          "alias": "web-east",
+          "effective_endpoint": {"address": "192.0.2.21", "port": 22, "login": "example"}
+        }
+      ],
+      "expected": {
+        "classification": "same-identity-retry-candidate",
+        "decision": "reconcile-transfer-evidence-before-source-removal",
+        "destination_host_count_after_recovery": 1,
+        "create_another_host": false
+      }
+    },
+    {
+      "case": "same-id-with-conflicting-content",
+      "destination_hosts_before": [
+        {
+          "host_id": "20000000-0000-4000-8000-000000000021",
+          "alias": "web-other",
+          "effective_endpoint": {"address": "198.51.100.21", "port": 2222, "login": "other-example"}
+        }
+      ],
+      "expected": {
+        "classification": "same-identity-collision-or-conflict",
+        "decision": "require-explicit-reconciliation",
+        "overwrite_or_duplicate_automatically": false,
+        "remove_source_automatically": false
+      }
+    },
+    {
+      "case": "independently-created-potential-duplicate",
+      "destination_hosts_before": [
+        {
+          "host_id": "20000000-0000-4000-8000-000000000022",
+          "alias": "web-existing",
+          "effective_endpoint": {"address": "192.0.2.21", "port": 22, "login": "example"}
+        }
+      ],
+      "expected": {
+        "classification": "potential-duplicate-with-different-identity",
+        "choices": ["keep-both-with-valid-names", "explicitly-reconcile-with-existing", "cancel"],
+        "silently_merge_duplicate_or_overwrite": false
+      }
+    }
+  ]
+}

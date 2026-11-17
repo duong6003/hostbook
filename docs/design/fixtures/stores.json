@@ -1,0 +1,54 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "stores": [
+    {
+      "store_id": "10000000-0000-4000-8000-000000000001",
+      "label": "Private",
+      "role": "private",
+      "hosts": [
+        {
+          "host_id": "20000000-0000-4000-8000-000000000001",
+          "alias": "web",
+          "effective_endpoint": {"address": "192.0.2.10", "port": 22, "login": "example"}
+        }
+      ]
+    },
+    {
+      "store_id": "10000000-0000-4000-8000-000000000002",
+      "label": "Shared A",
+      "role": "shared",
+      "default_mode": "receive-only",
+      "hosts": [
+        {
+          "host_id": "20000000-0000-4000-8000-000000000002",
+          "alias": "web",
+          "effective_endpoint": {"address": "198.51.100.10", "port": 22, "login": "example"}
+        }
+      ]
+    },
+    {
+      "store_id": "10000000-0000-4000-8000-000000000003",
+      "label": "Shared B",
+      "role": "shared",
+      "default_mode": "receive-only",
+      "hosts": [
+        {
+          "host_id": "20000000-0000-4000-8000-000000000003",
+          "alias": "web",
+          "effective_endpoint": {"address": "203.0.113.10", "port": 2222, "login": "example-b"}
+        }
+      ]
+    }
+  ],
+  "selected_key": {
+    "store_id": "10000000-0000-4000-8000-000000000003",
+    "host_id": "20000000-0000-4000-8000-000000000003"
+  },
+  "expected": {
+    "valid": true,
+    "preview_and_connect_endpoint": {"address": "203.0.113.10", "port": 2222, "login": "example-b"},
+    "bare_web_without_store_context": "require-explicit-store-choice",
+    "new_and_import_default_store_id": "10000000-0000-4000-8000-000000000001"
+  }
+}
