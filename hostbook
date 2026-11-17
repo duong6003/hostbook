@@ -2473,9 +2473,15 @@ undo_last(){
   lines+=(" " "$CD$(t undo_effect)$C0")
   at "$(t tools_title)|$(t act_undo)"
   ui_confirm --default=false --affirmative "$(t undo_yes)" --negative "$(t cancel)" "$(t undo_q)" "${lines[@]}" || return 1
-  [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] || { shown; err "$(t err_undo_moved)"; pause; return 1; }   # a background sync added a change meanwhile
-  g revert --no-edit $m "$id" >/dev/null 2>&1 || { g revert --abort >/dev/null 2>&1; shown; err "$(t err_undo)"; pause; return 1; }
-  if ! validate >/dev/null; then [ "$(g rev-parse HEAD~1 2>/dev/null)" = "$id" ] && g reset -q --hard HEAD~1; shown; err "$(t err_undo_broken)"; pause; return 1; fi
+  lock 10 || { shown; err "$(t sync_busy)"; pause; return 1; }
+  [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] || { unlock; shown; err "$(t err_undo_moved)"; pause; return 1; }   # a background sync added a change meanwhile
+  # As with a normal revert, require a clean index so unrelated staged edits cannot enter the undo commit.
+  if ! g diff --cached --quiet; then unlock; shown; err "$(t err_undo)"; pause; return 1; fi
+  g revert --no-commit $m "$id" >/dev/null 2>&1 || { g revert --abort >/dev/null 2>&1; unlock; shown; err "$(t err_undo)"; pause; return 1; }
+  # Validate before publishing. --merge restores the revert's paths while retaining unrelated local edits.
+  if ! validate >/dev/null; then g reset -q --merge "$id"; unlock; shown; err "$(t err_undo_broken)"; pause; return 1; fi
+  if ! g commit --no-edit >/dev/null 2>&1; then g reset -q --merge "$id"; unlock; shown; err "$(t err_undo)"; pause; return 1; fi
+  unlock
   build_index; flash "${CG}${ICON_OK} $(t done_undone)${C0}"; : > "$ST.force"
 }
 doctor(){ # Report: grouped sections; every problem line carries "→ fix"
