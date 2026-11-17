@@ -119,7 +119,8 @@ stable host ID while changing the store component of its lookup key. Store-bound
 references must be reconciled explicitly; an old source key must not silently
 resolve by alias in another store. Cross-store move semantics differ from the
 current move between project files. The source is removed only after destination
-success is established; recovery and transaction ordering remain deferred.
+success is established; [Cross-store transfer transaction](store-transfer.md)
+defines the proposed ordering, publication evidence and recovery contract.
 
 Retry recognition uses the preserved host ID, the source/destination store IDs
 and recorded transfer intent. If the destination already has that host ID,
@@ -128,7 +129,7 @@ content, never create a second record or silently overwrite. ID equality alone
 does not prove that a transfer committed or that the source may be deleted. A
 different payload with that ID is a collision/conflict requiring an explicit
 decision, not permission to replace it. Durable retry evidence, concurrency and
-crash recovery are part of the deferred transaction design.
+crash recovery are specified in the proposed transfer transaction contract.
 
 Different IDs with equal effective (address, port, login) are **potential
 duplicates**, not the same identity. Use resolved SSH values (including defaults)
@@ -156,7 +157,7 @@ no credentials and must not be loaded as runtime configuration.
 
 Within #35, still deferred: select and version the durable identity encoding;
 map legacy SSH and share-package admission/migration (including multi-alias
-stanzas); define transfer transactions, durable retry evidence and recovery;
+stanzas); select the transfer journal representation and recovery retention policy;
 map all write boundaries to store mode checks, including reconciliation and
 imports; specify store-specific cache/vault/lock/status and SSH resolution
 contracts; and map those contracts to implementation-independent fixtures.

@@ -1,0 +1,183 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "note": "Independent conceptual checkpoints, not journal encoding or executable runtime traces. Each case has the common protected recovery and identity below. Accepted means evidenced historical acceptance; observed is the latest separate read.",
+  "transfer_id": "30000000-0000-4000-8000-000000000001",
+  "source_store_id": "10000000-0000-4000-8000-000000000002",
+  "destination_store_id": "10000000-0000-4000-8000-000000000003",
+  "host_id": "20000000-0000-4000-8000-000000000021",
+  "source_role": "shared",
+  "destination_role": "shared",
+  "recovery": "vault-protected-original-retained",
+  "connection_settings": {
+    "alias": "web-east",
+    "address": "192.0.2.21",
+    "port": 22,
+    "login": "example",
+    "ProxyJump": "example-jump"
+  },
+  "cases": [
+    {
+      "case": "encryption-fails-before-destination-save",
+      "checkpoint": "prepared",
+      "signal": "encryption-failed",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": false, "verified": false, "publication": "not-attempted", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "retry-encryption", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "cancel-before-effects",
+      "checkpoint": "prepared",
+      "signal": "cancel",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": false, "verified": false, "publication": "not-attempted", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "cancelled", "next": "none", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "receive-only-at-write-boundary",
+      "checkpoint": "prepared",
+      "signal": "mode-changed",
+      "modes": {"source": "two-way", "destination": "receive-only"},
+      "destination": {"durable": false, "verified": false, "publication": "not-attempted", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "review-mode", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-offline-after-local-save",
+      "checkpoint": "destination-saved",
+      "signal": "offline",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "pending", "observed": "unknown"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "reconcile-destination-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-publication-rejected",
+      "checkpoint": "destination-saved",
+      "signal": "rejected",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "rejected", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "reconcile-destination-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-destination-acceptance-lost-response",
+      "checkpoint": "destination-saved",
+      "signal": "response-lost",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "uncertain", "observed": "unknown"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "reconcile-destination-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "restart-proves-destination-acceptance",
+      "checkpoint": "destination-confirmed",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "recoverable", "next": "revalidate-and-remove-source", "may_remove_source": true, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-edited-after-acknowledgement",
+      "checkpoint": "destination-confirmed",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "changed"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "source-edited-after-destination-acknowledgement",
+      "checkpoint": "destination-confirmed",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "changed", "publication": "not-attempted", "observed": "changed"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "same-id-collision-on-restart",
+      "checkpoint": "prepared",
+      "signal": "same-id-conflict",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": false, "publication": "not-attempted", "observed": "changed"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "cancel-after-destination-publication",
+      "checkpoint": "destination-confirmed",
+      "signal": "cancel",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "recoverable", "next": "review-compensation", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-local-source-removal",
+      "checkpoint": "source-removed-local",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "recoverable", "next": "revalidate-and-publish-source", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "source-removal-publication-rejected",
+      "checkpoint": "source-removed-local",
+      "signal": "rejected",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "rejected", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "retry-or-restore-source", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-source-acceptance-lost-response",
+      "checkpoint": "source-removed-local",
+      "signal": "response-lost",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "uncertain", "observed": "unknown"},
+      "expected": {"outcome": "blocked", "next": "reconcile-source-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-edited-before-source-publication",
+      "checkpoint": "source-removed-local",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "changed"},
+      "source": {"local": "absent", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "source-reintroduced-before-removal-publication",
+      "checkpoint": "source-removed-local",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "not-attempted", "observed": "changed"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-source-acceptance-before-completion",
+      "checkpoint": "source-confirmed",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "accepted", "observed": "absent"},
+      "expected": {"outcome": "recoverable", "next": "revalidate-and-complete", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "all-required-steps-and-final-observations-agree",
+      "checkpoint": "completed",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "accepted", "observed": "absent"},
+      "expected": {"outcome": "completed", "next": "report-without-replay", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    }
+  ]
+}
