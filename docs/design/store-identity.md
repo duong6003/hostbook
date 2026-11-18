@@ -147,6 +147,8 @@ any reuse/rename decision need explicit review without exposing secret material.
 [Store mutation and resource ownership](store-mutations.md) maps current writer
 families to proposed per-store authorization and resource isolation. Its synthetic
 permission examples do not assert that the current single-store code enforces them.
+[Legacy store migration and recovery](store-migration.md) defines classification,
+protected backup, interruption/rollback and old/new writer compatibility gates.
 
 All fixture values are synthetic; addresses use documentation ranges. The files
 describe expected decisions, including deliberately invalid cases. They contain
@@ -164,8 +166,8 @@ map legacy SSH and share-package admission/migration (including multi-alias
 stanzas); select the transfer journal representation and recovery retention policy;
 finish the implementation-level write-boundary audit beyond the bounded mutation
 inventory; specify durable cache/vault/lock/status and SSH resolution mechanisms;
-and complete the parent acceptance-to-fixture mapping. Migration/backup/rollback
-design and old/new writer compatibility remain #35 contracts to define.
+and complete the parent acceptance-to-fixture mapping. The migration contract
+leaves concrete backup/restore, writer isolation and upgrade representations open.
 Runtime implementation and regression suites belong to downstream #36–#46,
 not this design slice or #35. No fixture asserts that these behaviors exist at
 the baseline.

@@ -170,8 +170,10 @@ snapshot and publication-fence counterexamples. It never sources the app, touche
 real configuration, unlocks a vault, invokes SSH/Git or proves runtime enforcement.
 The earlier transfer fixture owns detailed reservation/drain/restart examples.
 
-Remaining #35 work: durable identity/registration/permission encoding and upgrade
-policy; migration/backup/rollback design and old/new writer compatibility;
+The [migration contract](store-migration.md) defines classification, verified
+backup/restore, rollback boundaries and honest old/new writer compatibility gates.
+Remaining #35 work: durable identity/registration/permission encoding and concrete
+upgrade/isolation and backup/restore mechanisms;
 legacy SSH/share-package admission (including multi-alias mapping);
 transfer journal and recovery retention; reference reconciliation/update-existing
 lineage; implementation-level lock/cache/vault/SSH-resolution design; complete
