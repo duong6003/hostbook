@@ -144,6 +144,10 @@ any reuse/rename decision need explicit review without exposing secret material.
 
 ## Synthetic examples and remaining work
 
+[Store mutation and resource ownership](store-mutations.md) maps current writer
+families to proposed per-store authorization and resource isolation. Its synthetic
+permission examples do not assert that the current single-store code enforces them.
+
 All fixture values are synthetic; addresses use documentation ranges. The files
 describe expected decisions, including deliberately invalid cases. They contain
 no credentials and must not be loaded as runtime configuration.
@@ -158,9 +162,10 @@ no credentials and must not be loaded as runtime configuration.
 Within #35, still deferred: select and version the durable identity encoding;
 map legacy SSH and share-package admission/migration (including multi-alias
 stanzas); select the transfer journal representation and recovery retention policy;
-map all write boundaries to store mode checks, including reconciliation and
-imports; specify store-specific cache/vault/lock/status and SSH resolution
-contracts; and map those contracts to implementation-independent fixtures.
+finish the implementation-level write-boundary audit beyond the bounded mutation
+inventory; specify durable cache/vault/lock/status and SSH resolution mechanisms;
+and complete the parent acceptance-to-fixture mapping. Migration/backup/rollback
+design and old/new writer compatibility remain #35 contracts to define.
 Runtime implementation and regression suites belong to downstream #36–#46,
 not this design slice or #35. No fixture asserts that these behaviors exist at
 the baseline.

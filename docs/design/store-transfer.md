@@ -6,6 +6,8 @@ Status: **proposed**, documentation only; second bounded design slice of
 [Store and host identity](store-identity.md), whose identity rules still apply.
 This is a logical protocol, not an on-disk journal format or implemented behavior.
 There is no atomic transaction across disks, vaults or remote repositories.
+[Store mutation and resource ownership](store-mutations.md) maps ordinary writers,
+callbacks and sync to the same proposed guards and publication barrier.
 
 ## Outcome and authorization
 
@@ -255,8 +257,10 @@ performs no storage, encryption, Git, network or runtime tests and does not prov
 only the adjacent documentation fixture.
 
 Remaining #35 work includes durable encoding/journal representation, reference
-reconciliation, update-existing lineage, full write-boundary inventory, vault and
-lock implementation contracts, recovery retention/collection policy, legacy
+reconciliation, update-existing lineage, implementation-level audit beyond the
+bounded mutation inventory, vault and lock implementation contracts, recovery
+retention/collection policy, migration/backup/rollback and old/new writer
+compatibility contracts, legacy
 migration/admission and store-specific SSH resolution. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
 neither selects those mechanisms nor completes #35.
