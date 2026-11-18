@@ -112,6 +112,48 @@ rejected_push(){
     [ "$(head -1 "$ST")" = pending ] && [ "$(sed -n 2p "$ST")" -gt 0 ] &&
     [ -z "$(g status --porcelain)" ] && [ ! -d "$STATE/sync.lock" ]
 }
+resolved_rejected_push(){ # automatic|ours: convergent or conflicting final host blocks
+  local mode=$1 remote checkpoint merged ahead rc output
+  remote_fixture "resolved-$mode" || return 1
+  remote=${PEER%/*}/remote.git; output=${DIR%/*}/resolver-output
+  printf 'Host local\n  HostName 192.0.2.2\n  User fixture\n' > "$DIR/local.conf"
+  g add -A && g commit -qm intermediate || return 1
+  printf 'Host local\n  HostName 192.0.2.3\n  User fixture\n' > "$DIR/local.conf"
+  g add -A && g commit -qm final || return 1
+  if [ "$mode" = automatic ]; then
+    cp "$DIR/local.conf" "$PEER/local.conf"
+  else
+    printf 'Host local\n  HostName 192.0.2.4\n  User fixture\n' > "$PEER/local.conf"
+  fi
+  git -C "$PEER" add -A && git -C "$PEER" commit -qm peer && git -C "$PEER" push -q || return 1
+  checkpoint=$(git --git-dir="$remote" rev-parse main)
+  printf '#!/bin/sh\nexit 1\n' > "$remote/hooks/pre-receive"; chmod +x "$remote/hooks/pre-receive"
+  ! sync_quiet && [ "$(head -1 "$ST")" = conflict ] || return 1
+  resolve_conflict ours > "$output" 2>&1; rc=$?
+  merged=$(g rev-parse HEAD); ahead=$(g rev-list --count '@{u}..HEAD')
+  [ "$rc" = 1 ] && [ "$(head -1 "$ST")" = pending ] && [ "$(sed -n 2p "$ST")" = "$ahead" ] &&
+    [ "$ahead" = 3 ] && [ "$(g rev-list --parents -n 1 HEAD | awk '{print NF}')" = 3 ] &&
+    [ "$(git --git-dir="$remote" rev-parse main)" = "$checkpoint" ] &&
+    [ "$(host_field local 3)" = 192.0.2.3 ] && validate &&
+    [ -z "$(g status --porcelain)" ] && [ ! -d "$STATE/sync.lock" ] || return 1
+  if [ "$mode" = automatic ]; then
+    grep -F "$(t rc_pending "$ahead")" "$output" >/dev/null &&
+      ! grep -F "$(t rc_merged)" "$output" >/dev/null || return 1
+  else
+    grep -F "$(t rc_pending "$ahead")" "$FLASH" >/dev/null &&
+      ! grep -F "$(t done_merged)" "$FLASH" >/dev/null || return 1
+  fi
+  [ "$(sync_text)" = "$(t sync_pending "$ahead")" ] || return 1
+  # A fresh pending status must retry immediately, rather than take the 60-second ok shortcut.
+  ! cmd_bg_sync && [ "$(head -1 "$ST")" = pending ] && [ "$(sed -n 2p "$ST")" = "$ahead" ] &&
+    [ "$(g rev-parse HEAD)" = "$merged" ] && [ "$(git --git-dir="$remote" rev-parse main)" = "$checkpoint" ] || return 1
+  rm "$remote/hooks/pre-receive"
+  cmd_bg_sync && [ "$(head -1 "$ST")" = ok ] && [ "$(g rev-parse HEAD)" = "$merged" ] &&
+    [ "$(git --git-dir="$remote" rev-parse main)" = "$merged" ] &&
+    [ "$(g rev-list --count '@{u}..HEAD')" = 0 ] && [ ! -d "$STATE/sync.lock" ]
+}
+automatic_rejected_push(){ resolved_rejected_push automatic; }
+selected_rejected_push(){ resolved_rejected_push ours; }
 link_controls(){ clear(){ :; }; title(){ :; }; shown(){ :; }; pause(){ :; }; }
 failed_link(){
   remote_fixture failed-link || return 1
@@ -129,6 +171,6 @@ invalid_link(){
   ! connect_kho >/dev/null 2>&1 && [ "$(g rev-parse HEAD)" = "$checkpoint" ] &&
     [ "$(remote_url)" = "$previous" ] && [ ! -f "$DIR/broken.conf" ] && validate && [ ! -d "$STATE/sync.lock" ]
 }
-for test in live_lock foreign_unlock dead_lock empty_lock busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push failed_link invalid_link; do check "$test"; done
+for test in live_lock foreign_unlock dead_lock empty_lock busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
