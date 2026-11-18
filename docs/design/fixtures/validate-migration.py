@@ -87,6 +87,37 @@ def validate(data):
     for gate in required:
         changed = dict(gates, **{gate: False})
         require(not all(changed.values()), 'missing gate admitted: ' + gate)
+    handoff = data['migration_handoff']
+    drain, cutover, reserve, lost = handoff['sequence']
+    require([s['step'] for s in handoff['sequence']] ==
+            ['drain', 'cutover', 'reserve', 'lost-ack'], 'handoff sequence')
+
+    def can_handoff(state):
+        return (state['guard'] == 'transition-fence' and state['old_quiescent'] and
+                state['old_reconciled'] and not state['new_admission'])
+
+    def can_reserve(state):
+        return (state['guard'] == 'migration-owned' and state['actor'] == 'migration' and
+                state['intent'] == handoff['intent'] and state['target'] == handoff['target'] and
+                state['generation'] == handoff['new_generation'] and
+                state['effective_two_way'] and state['actual_write_rights'] and
+                state['snapshot_fresh'] and state['reservation_durable'])
+
+    require(can_handoff(drain) and cutover['guard'] == 'migration-owned' and
+            cutover['handoff_durable'] and cutover['generation'] == handoff['new_generation'] and
+            can_reserve(reserve), 'durable authorized handoff/admission')
+    require(lost['guard'] == 'migration-owned' and lost['ownership_retained'] and
+            lost['reservation_retained'] and lost['outcome'] == 'uncertain' and
+            not lost['reported_complete'], 'lost acknowledgement retains ownership')
+    require(set(handoff['rejected']) == {'premature-handoff', 'ordinary-publisher'},
+            'handoff counterexamples')
+    for changed in ({'old_quiescent': False}, {'old_reconciled': False}):
+        require(not can_handoff(dict(drain, **changed)), 'premature handoff admitted')
+    for changed in ({'actor': 'ordinary'}, {'guard': 'transition-fence'},
+                    {'intent': 'other-intent'}, {'target': 'other-target'}, {'generation': 1},
+                    {'effective_two_way': False}, {'actual_write_rights': False},
+                    {'snapshot_fresh': False}):
+        require(not can_reserve(dict(reserve, **changed)), 'unowned publication admitted')
     return len(names), len(required)
 
 
@@ -97,5 +128,6 @@ if __name__ == '__main__':
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
-    print(f'PASS: {count} synthetic migration cases, {gates} preflight counterexamples '
+    print(f'PASS: {count} synthetic migration cases, {gates} preflight counterexamples, '
+          '4 handoff checkpoints and rejected premature/ordinary admissions '
           '(documentation only; no runtime validation)')

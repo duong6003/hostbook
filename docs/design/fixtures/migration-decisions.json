@@ -17,6 +17,16 @@
     {"case": "accepted-send-response-lost", "checkpoint": "publication-pending", "event": "lost-acknowledgement", "original_retained": true, "backup_verified": true, "reservation_retained": true, "publisher_quiescent": true, "remote_outcome": "uncertain", "reported_complete": false, "expected": "reconcile-exact-remote-attempt"},
     {"case": "rollback-finds-newer-work", "checkpoint": "rollback-pending", "event": "newer-work", "original_retained": true, "backup_verified": true, "overwrite_allowed": false, "reported_rolled_back": false, "expected": "stop-compare-and-reconcile"}
   ],
+  "migration_handoff": {
+    "intent": "synthetic-migration-A", "target": "synthetic-shared-A/ref", "new_generation": 2,
+    "sequence": [
+      {"step": "drain", "guard": "transition-fence", "old_quiescent": true, "old_reconciled": true, "new_admission": false},
+      {"step": "cutover", "guard": "migration-owned", "handoff_durable": true, "generation": 2},
+      {"step": "reserve", "guard": "migration-owned", "actor": "migration", "intent": "synthetic-migration-A", "target": "synthetic-shared-A/ref", "generation": 2, "effective_two_way": true, "actual_write_rights": true, "snapshot_fresh": true, "reservation_durable": true},
+      {"step": "lost-ack", "guard": "migration-owned", "reservation_retained": true, "ownership_retained": true, "outcome": "uncertain", "reported_complete": false}
+    ],
+    "rejected": ["premature-handoff", "ordinary-publisher"]
+  },
   "mutation_preflight": {
     "backup_verified": true,
     "snapshot_fresh": true,

@@ -120,6 +120,10 @@ starting network effects. The reservation binds its owner/attempt ID, store and
 connection generation, remote/ref, expected base and proposed revision. Actual
 remote rights remain enforced by the remote. No sender may start without this
 admission, reuse a settled reservation or change its admitted target/payload.
+Admission also checks any durable migration ownership: ordinary publishers are
+excluded; only the exact authorized intent/target/generation described in the
+[migration handoff](store-migration.md#writers-ordered-gates-and-upgrade-boundary)
+may reserve its migration send. This never bypasses a pending transition fence.
 
 A request to change mode, remote/connection or active checkout acquires the same
 gate and durably installs a **transition fence** against new admissions. Display
@@ -129,6 +133,9 @@ but transfer progress pauses at subsequent write boundaries while the fence is
 pending. Release the short gate while waiting; the durable reservations and fence,
 not a held process lock, serialize this interval. Concurrent settings requests
 must reconcile the existing transition rather than bypass its fence.
+Migration may replace a fully drained/reconciled fence with narrowly scoped
+durable ownership under the gates before cutover, as specified in that handoff;
+it cannot create new reservations while the drain fence remains pending.
 
 An attempt is drained only when its sender and transport children are known
 unable to issue further network effects and its exact remote outcome is durably

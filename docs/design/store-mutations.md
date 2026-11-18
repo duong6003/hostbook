@@ -100,6 +100,11 @@ ordinary/background/direct publisher obeys it. Mode, remote/ref, disconnect,
 registration and active-checkout changes fence new admissions and cannot become
 effective while an admitted send is in flight or uncertain. Read-only connection
 changes may be requested in receive-only; they never implicitly grant USER rights.
+After a fully drained migration fence, an explicit durable
+[ownership handoff](store-migration.md#writers-ordered-gates-and-upgrade-boundary)
+permits only that intent's exact authorized target/generation admissions and
+blocks ordinary publishers/settings changes. No pending fence admits a new send;
+ownership does not waive USER rights, two-way mode or fresh snapshot checks.
 
 Capture store ID, registration/checkout/connection generations, selected host ID,
 record/settings revision, vault generation and relevant mode/rights inputs before

@@ -102,6 +102,21 @@ explicit provisional registration ordering before legacy IDs exist), then their
 subordinate vault/recovery locks in the same order. Owner-checked release and
 stale-owner proof follow transfer. Never hold gates during prompts/network waits.
 
+After every old attempt is quiescent and durably reconciled, revalidate the plan
+under the ordered gates and **durably replace** the drain fence with migration
+ownership before cutover. This is a recorded handoff, not an exemption allowing
+publication through a pending transition fence. Ownership binds the exact intent,
+store, remote/ref, expected base and proposed checkout/connection generation;
+record the resulting generation at cutover. It excludes ordinary writers,
+publishers and settings/registration changes. Only that intent's reviewed writes
+and exact generation/target publication reservations may be admitted, with fresh
+snapshots, effective two-way mode and actual rights. Receive-only grants none.
+No process gate is held across network waits; durable ownership persists instead.
+Restart must reconcile its owner, generations and attempts; uncertainty retains
+ownership and recovery, never clears them by age. Release ownership durably under
+the gates only after a reconciled terminal completion/cancellation/rollback and
+all sends are quiescent/settled; blocked recovery cannot reopen ordinary writers.
+
 Future identity-aware writers must reject unknown metadata versions and missing,
 malformed or ambiguous associations rather than downgrade or regenerate IDs.
 A legacy binary cannot be made to honor a marker or lock it never understood.
@@ -135,8 +150,8 @@ possible and must be visible; there is no atomic disk/vault/remote transaction.
 | `prepared` | Classification, compatible writer isolation, confirmed plan, stable snapshot and verified complete recovery set. Original remains authoritative and intact; cancel without migration effects. |
 | `staged` | Build isolated candidate from the snapshot; retain stable identities, SSH behavior/history and mappings. Re-encrypt required credentials only with all participating vaults unlocked; no promotion/publication. Failed encryption leaves original untouched. |
 | `verified` | Check candidate completeness, unique identities, encrypted vault bindings/decryptability, preserved SSH settings/references and restore access. Revalidate original and remote snapshots under gates. Failed validation retains evidence; never promote partial output. |
-| `cutover-local` | Under ordered gates and fresh USER guards, durably record a recoverable intent then conditionally switch the exact registration/checkout/metadata generation. Retain original snapshot/history; record each completed local effect. Crash between effect and evidence requires comparison, not blind replay. |
-| `publication-pending` | Every required remote effect has exact target/base/proposed revision and admission reservation. Publish conditionally and retain recovery/fence until sender quiescence and acceptance/rejection are reconciled. Offline/rejected/uncertain is blocked, never completed. |
+| `cutover-local` | After durable drain-fence → migration-ownership handoff, under ordered gates and fresh USER guards, record a recoverable intent then conditionally switch the exact registration/checkout/metadata generation. Retain original snapshot/history; record each effect and resulting owned generation. Crash between effect and evidence requires comparison, not blind replay. |
+| `publication-pending` | Under migration ownership (no pending transition fence), each exact target/base/proposed revision and owned generation receives its own authorized admission reservation. Publish conditionally; retain ownership/recovery until sender quiescence and acceptance/rejection are reconciled. Offline/rejected/uncertain is blocked, never completed. |
 | `completed` | Required local effects and remote acknowledgements are durable; fresh observations match the plan and identity/vault/SSH checks still pass. Record exact revisions and report boundaries; later external edits remain possible. |
 | `rollback-pending` / `rolled-back` | Revalidate intent-owned changes and newer work, restore conditionally from verified recovery and verify full restore. Required shared compensations need fresh authorization and acknowledgement. Only all successful required effects justify rolled-back. |
 
@@ -170,6 +185,8 @@ python3 docs/design/fixtures/validate-migration.py
 The retained static validator reads only adjacent synthetic JSON and checks
 selected conceptual decisions/invariants; it does not call the app, Git, vault,
 SSH or network and does not prove enforcement, encryption or crash safety.
+Its four handoff checkpoints cover drain, cutover, authorized reservation and lost
+acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
 Remaining before implementation: durable identity/registration/version encoding,
 legacy multi-alias/package admission, concrete writer isolation/upgrade negotiation,
 backup/journal layout and retention, platform ACL/lock/restore mechanics, identity
