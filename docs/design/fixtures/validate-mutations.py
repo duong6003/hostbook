@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 USER = {'new', 'import', 'undo', 'vault-recovery', 'vault-bootstrap',
-        'internal-callback', 'rollback', 'ordinary-publish', 'background-publish'}
+        'internal-callback', 'rollback', 'ordinary-edit', 'ordinary-publish', 'background-publish'}
 PUBLISH = {'ordinary-publish', 'background-publish'}
 LOCAL = {'derived', 'unlock-existing', 'local-settings'}
 RESOURCES = {'directory', 'vault', 'unlock_cache', 'index_cache', 'writer_gate',
@@ -34,11 +34,20 @@ def decision(case, stores):
         return 'reject-resource'
     rights = case.get('rights', store['rights'])
     require(rights in {'none', 'read', 'read-write', 'unknown'}, 'rights')
+    preflight = case.get('preflight', 'available')
+    require(preflight in {'available', 'attempted-unavailable'}, 'preflight')
     if op in USER and store['role'] == 'shared':
         if not case.get('explicit_destination', False):
             return 'reject-destination'
         if store['mode'] != 'two-way':
             return 'reject-mode'
+        if preflight == 'attempted-unavailable' and rights == 'unknown':
+            if op == 'ordinary-edit':
+                if case.get('fenced', False):
+                    return 'reject-fence'
+                if case.get('prior_write_snapshot') == 'same-store-and-generations':
+                    return 'pending-local'
+            return 'reject-offline'
         if rights != 'read-write':
             return 'reject-rights'
     if op == 'receive':
@@ -79,9 +88,20 @@ def validate(data):
         names.add(name)
         operations.add(case['operation'])
         require(decision(case, stores) == case['expected'], name + ': decision mismatch')
+        if case['expected'] == 'pending-local' or case.get('pending_before', False):
+            require(case['pending_retained'] and not case['reported_published'],
+                    name + ': preserve pending without publication claim')
+        if case['expected'] == 'pending-local':
+            for override in ({'snapshot': 'stale-checkout'}, {'captured_store': 0},
+                             {'fenced': True}, {'prior_write_snapshot': None},
+                             {'rights': 'read'}, {'operation': 'vault-recovery'},
+                             {'operation': 'rollback'}, {'operation': 'import'}):
+                require(decision(dict(case, **override), stores) != 'pending-local',
+                        name + ': outage exception crossed a guard')
     require({'new', 'import', 'undo', 'vault-recovery', 'internal-callback',
              'receive', 'derived', 'ordinary-publish'} <= operations, 'missing operation family')
-    require({'reject-mode', 'reject-rights', 'reject-snapshot', 'reject-fence', 'allow'} <=
+    require({'reject-mode', 'reject-rights', 'reject-snapshot', 'reject-fence',
+             'reject-offline', 'pending-local', 'allow'} <=
             {c['expected'] for c in data['cases']}, 'missing decision family')
     return len(data['cases'])
 
