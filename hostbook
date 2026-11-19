@@ -2238,7 +2238,7 @@ pane_fingerprint(){ # hash connection configuration and safety classification; n
 }
 session_hosts_match(){ # require the same aliases, live connection identities and PROD classifications
   local s=$1 actual expected="" host fingerprint; shift
-  actual=$(tmux list-panes -s -t "=$s" -F '#{@hostbook_host}|#{@hostbook_fingerprint}|') || return 1
+  actual=$(tmux list-panes -s -t "=$s:" -F '#{@hostbook_host}|#{@hostbook_fingerprint}|') || return 1
   # The suffix preserves missing metadata, including a blank final pane, through command substitution.
   actual=$(printf '%s\n' "$actual" | LC_ALL=C sort) || return 1
   for host in "$@"; do
@@ -2255,14 +2255,14 @@ session_mode(){ # preserve live panes/layout; change broadcast mode before attac
   for w in $windows; do tmux set-window-option -t "$w" synchronize-panes off >/dev/null || return 1; done
   pfx=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pfx=${pfx:-^b}
   hint=$(t tmux_hint "$pfx" "$pfx")
-  tmux set -t "=$s" status-right " $hint " >/dev/null || return 1
+  tmux set -t "=$s:" status-right " $hint " >/dev/null || return 1
   if [ "$mode" = sync ]; then
     if ! session_hosts_match "$s" "$@"; then
       flash "${CR}${ICON_ERR} $(t err_open_session_sync)${C0}"; return 1
     fi
-    tmux set-window-option -t "=$s" synchronize-panes on >/dev/null || return 1
+    tmux set-window-option -t "=$s:" synchronize-panes on >/dev/null || return 1
     hint=$(t tmux_hint_sync "$pfx")
-    tmux set -t "=$s" status-right " $hint " >/dev/null || return 1
+    tmux set -t "=$s:" status-right " $hint " >/dev/null || return 1
   fi
   return 0
 }
