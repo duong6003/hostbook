@@ -265,10 +265,11 @@ invariants, including rejection of the invalid barrier counterexamples. It
 performs no storage, encryption, Git, network or runtime tests and does not prove a production implementation satisfies this protocol. It reads
 only the adjacent documentation fixture.
 
-Remaining #35 work includes durable encoding/journal representation, reference
+The [format/admission proposal](store-format.md) selects identity encoding and
+legacy mapping. Remaining #35 work includes journal representation, reference
 reconciliation, update-existing lineage, implementation-level audit beyond the
 bounded mutation inventory, vault and lock implementation contracts, recovery
 retention/collection policy, concrete migration backup/restore and writer-upgrade
-mechanisms, legacy admission and store-specific SSH resolution. Broader #35 fixtures and
+mechanisms and store-specific SSH resolution. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
 neither selects those mechanisms nor completes #35.

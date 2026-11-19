@@ -5,7 +5,8 @@ Status: **proposed**, documentation only; fourth bounded design slice of
 [#33](https://github.com/duong6003/hostbook/issues/33). Extends
 [identity](store-identity.md), [transfer](store-transfer.md) and
 [mutation ownership](store-mutations.md). These are logical requirements, not an
-implemented migration, durable encoding or assertion that #35 is complete.
+implemented migration or assertion that #35 is complete. The subsequent
+[format/admission proposal](store-format.md) selects identity encoding and legacy mapping.
 
 ## Classification before creation
 
@@ -187,8 +188,8 @@ selected conceptual decisions/invariants; it does not call the app, Git, vault,
 SSH or network and does not prove enforcement, encryption or crash safety.
 Its four handoff checkpoints cover drain, cutover, authorized reservation and lost
 acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
-Remaining before implementation: durable identity/registration/version encoding,
-legacy multi-alias/package admission, concrete writer isolation/upgrade negotiation,
+Remaining before implementation: registration/permission encoding, concrete writer
+isolation/upgrade negotiation,
 backup/journal layout and retention, platform ACL/lock/restore mechanics, identity
 reconciliation/update-existing lineage, store SSH resolution and complete parent
 acceptance fixtures. These representation and compatibility choices must satisfy

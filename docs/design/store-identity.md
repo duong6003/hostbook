@@ -65,8 +65,8 @@ with choosing a Hostbook search result by the first matching alias.
 Call these logical semantics **identity contract version 1**. The JSON examples
 below use `contract_version` to label that proposal; they are documentation
 fixtures, not a new production file format, parser specification or share-package
-version. No metadata filename, SSH comment spelling, generated alias or sidecar
-layout is selected here.
+version. The subsequent [format and admission proposal](store-format.md) selects a
+versioned sidecar; it is proposed separately from these original logical fixtures.
 
 Persistent identity must survive restart, rename, file moves, sync and transfer.
 A chosen representation will need a separately versioned encoding with an
@@ -86,13 +86,11 @@ omit identity only with an explicit loss-of-lineage explanation. Neither an
 unrecognized package member nor a new required comment is silently assumed
 compatible with today's readers.
 
-SSH ignores comments, which makes them a possible encoding, but editors and
-exporters can strip them. A sidecar avoids altering SSH blocks but can lose its
-association after manual edits. Generated aliases could avoid collisions but
-would change SSH-visible names and references. A representation decision must
-show how these compatibility problems are handled before implementation. Legacy
-multi-alias `Host` stanzas also need an explicit mapping policy; do not silently
-collapse their aliases into one identity or split/rewrite their SSH behavior.
+The [format proposal](store-format.md) compares comments and sidecars and chooses
+a guarded sidecar with explicit occurrence bindings. It maps multi-alias stanzas
+to concrete selection names while preserving every contributing SSH block.
+Association loss, manual changes and incompatible writers require explicit
+reconciliation; generated aliases and silent block rewriting are not repairs.
 
 ## Invalid data and manual edits
 
@@ -161,9 +159,9 @@ no credentials and must not be loaded as runtime configuration.
 | [invalid-records.json](fixtures/invalid-records.json) | Same-store duplicate aliases, case variants and duplicate IDs are rejected. |
 | [transfer.json](fixtures/transfer.json) | Preserved transfer identity, retry, conflicting same ID and independently created potential duplicate. |
 
-Within #35, still deferred: select and version the durable identity encoding;
-map legacy SSH and share-package admission/migration (including multi-alias
-stanzas); select the transfer journal representation and recovery retention policy;
+The [format and admission slice](store-format.md) selects durable v1 identity
+encoding and legacy SSH/package admission, including multi-alias mapping.
+Within #35, still deferred: select the transfer journal representation and recovery retention policy;
 finish the implementation-level write-boundary audit beyond the bounded mutation
 inventory; specify durable cache/vault/lock/status and SSH resolution mechanisms;
 and complete the parent acceptance-to-fixture mapping. The migration contract
