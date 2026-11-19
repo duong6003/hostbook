@@ -296,6 +296,7 @@ host_save_respects_undo_lock(){ (
 ); }
 valid_undo_preserves_local_edits(){ (
   undo_fixture valid HostName || exit 1
+  g config diff.context 0 || exit 1
   # Observe the real validator: the revert must remain uncommitted until it passes.
   eval "$(declare -f validate | sed '1s/^validate/fixture_validate/')"
   validate(){ g rev-parse HEAD > "$STATE/validated-head"; fixture_validate; }
@@ -304,6 +305,14 @@ valid_undo_preserves_local_edits(){ (
     g log -1 --format=%s | grep -q '^Revert ' && grep -q '192.0.2.90' "$DIR/target.conf" &&
     cmp -s "$DIR/notes" "$STATE/notes.before" && cmp -s "$DIR/local-file" "$STATE/local.before" &&
     g diff --cached --quiet && [ -e "$ST.force" ] && [ ! -e "$STATE/sync.lock" ]
+); }
+undo_preserves_case_only_rename(){ (
+  undo_fixture case-rename HostName || exit 1
+  printf 'case rename\n' > "$DIR/Example"
+  g add Example && g commit -qm source &&
+    g mv Example intermediate && g mv intermediate example && g commit -qm rename || exit 1
+  real_undo >/dev/null 2>&1 && [ "$(g ls-files -- example Example)" = Example ] &&
+    [ "$(cat "$DIR/Example")" = 'case rename' ] && g diff --cached --quiet
 ); }
 failed_undo_commit_preserves_local_edits(){ (
   undo_fixture commit-failure HostName || exit 1
@@ -350,6 +359,7 @@ check undo_preserves_concurrent_git_commit
 check undo_preserves_concurrently_staged_change
 check host_save_respects_undo_lock
 check valid_undo_preserves_local_edits
+check undo_preserves_case_only_rename
 check failed_undo_commit_preserves_local_edits
 check failed_undo_rollback_preserves_new_edit
 check zero_change_has_no_undo
