@@ -121,11 +121,11 @@ if command -v tmux >/dev/null 2>&1; then
       printf 'SKIP real tmux resume checks (private server unavailable: %s)\n' "$(cat "$T/tmux-start-error")"
       exit 0
     fi
-    tmux split-window -t '=hb-saved' 'cat'
-    tmux new-window -t '=hb-saved' -n second 'cat'
-    tmux split-window -t '=hb-saved' 'cat'
+    tmux split-window -t '=hb-saved:' 'cat'
+    tmux new-window -t '=hb-saved:' -n second 'cat'
+    tmux split-window -t '=hb-saved:' 'cat'
     tmux set-window-option -g synchronize-panes on
-    tmux list-panes -s -t '=hb-saved' -F '#{pane_id}' > "$T/panes.before"
+    tmux list-panes -s -t '=hb-saved:' -F '#{pane_id}' > "$T/panes.before"
     set -- a b c d
     while IFS= read -r pane; do
       tmux set -p -t "$pane" @hostbook_host "$1"
@@ -136,16 +136,16 @@ if command -v tmux >/dev/null 2>&1; then
       for window in $(tmux list-windows -t '=hb-saved' -F '#{window_id}'); do tmux set-window-option -t "$window" synchronize-panes on; done
       GROUP_MODE=$mode PROD=1 open_many saved a b c d
       [ "$(tmux list-windows -t '=hb-saved' -F '#{synchronize-panes}' | sort -u)" = 0 ] || { echo "FAIL real resumed $mode stayed synchronized"; exit 1; }
-      tmux list-panes -s -t '=hb-saved' -F '#{pane_id}' > "$T/panes.after"
+      tmux list-panes -s -t '=hb-saved:' -F '#{pane_id}' > "$T/panes.after"
       cmp "$T/panes.before" "$T/panes.after" || exit 1
-      case $(tmux show-options -v -t '=hb-saved' status-right) in *'ALL AT ONCE'*) echo 'FAIL stale sync hint'; exit 1;; esac
+      case $(tmux show-options -v -t '=hb-saved:' status-right) in *'ALL AT ONCE'*) echo 'FAIL stale sync hint'; exit 1;; esac
     done
     GROUP_MODE=sync PROD=0 open_many saved a b c && { echo 'FAIL real removed pane accepted for sync'; exit 1; }
     [ "$(tmux list-windows -t '=hb-saved' -F '#{synchronize-panes}' | sort -u)" = 0 ] || exit 1
     GROUP_MODE=sync PROD=0 open_many saved a b c d && { echo 'FAIL real reclassified pane accepted for sync'; exit 1; }
     [ "$(tmux list-windows -t '=hb-saved' -F '#{synchronize-panes}' | sort -u)" = 0 ] || exit 1
     GROUP_MODE=sync PROD=1 ALLOW_PROD=1 open_many saved a b c d
-    [ "$(tmux display-message -p -t '=hb-saved' '#{synchronize-panes}')" = 1 ] || { echo 'FAIL real resumed sync not enabled'; exit 1; }
+    [ "$(tmux display-message -p -t '=hb-saved:' '#{synchronize-panes}')" = 1 ] || { echo 'FAIL real resumed sync not enabled'; exit 1; }
     echo 'PASS real tmux stale sync disabled across windows, live panes retained, sync restored after approval'
   )
 else
