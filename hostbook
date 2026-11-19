@@ -2172,7 +2172,7 @@ need_tmux(){
 }
 open_many(){ # group-name-or-empty host...
   local grp=$1; shift
-  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh diagram d0 d1 d2
+  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh diagram d0 d1 d2 fingerprint
   need_tmux || return 1
   for h in "$@"; do if valid_name "$h" && host_exists "$h"; then ok_hosts="$ok_hosts $h"; else missing="$missing $h"; fi; done
   set -- $ok_hosts; [ $# -gt 0 ] || { flash "${CR}${ICON_ERR} $(t err_open_none)${C0}"; return 1; }
@@ -2204,24 +2204,67 @@ open_many(){ # group-name-or-empty host...
   if [ -n "$grp" ]; then s="hb-$grp"; elif [ $# -eq 1 ]; then s="hb-$1"
   else s="hb-$1+$(( $# - 1 ))-$(printf '%s\n' "$@" | sort | cksum | cut -c1-4)"; fi
   s=$(printf '%s' "$s" | tr -c 'a-zA-Z0-9_+-' '-')
-  if tmux has-session -t "=$s" 2>/dev/null; then attach "$s"; return; fi
+  if tmux has-session -t "=$s" 2>/dev/null; then
+    session_mode "$s" "$mode" "$@" || return 1
+    attach "$s"; return
+  fi
   prepare_login "$@" || { pause; return 1; }   # unlock and load keys once here so panes do not prompt simultaneously
   record "$@"
   sshcmd=$(pane_cmd)
   for h in "$@"; do
+    fingerprint=$(pane_fingerprint "$h") || return 1
     if [ $first = 1 ]; then tmux new-session -d -s "$s" -n "${grp:-$h}" "$sshcmd $(printf %q "$h")"; first=0
     elif [ "$mode" = tabs ]; then tmux new-window -t "$s" -n "$h" "$sshcmd $(printf %q "$h")"
     else tmux split-window -t "$s" "$sshcmd $(printf %q "$h")"; tmux select-layout -t "$s" tiled >/dev/null; fi
     tmux select-pane -t "$s" -T "$h$(is_prod "$h" && echo ' · PROD')"
+    tmux set -p -t "$s" @hostbook_host "$h" || return 1
+    tmux set -p -t "$s" @hostbook_fingerprint "$fingerprint" || return 1
     is_prod "$h" && tmux set -p -t "$s" pane-border-style "fg=$(tmux_color "$TH_ERR")" \; set -p -t "$s" pane-active-border-style "fg=$(tmux_color "$TH_ERR"),bold" 2>/dev/null
   done
-  local pfx; pfx=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pfx=${pfx:-^b}
   tmux set -t "$s" remain-on-exit on \; set -t "$s" pane-border-status top \; set -t "$s" pane-border-format ' #{pane_title} ' \; \
     set -t "$s" status-style "bg=$(tmux_color "$TH_OK"),fg=$(tmux_color "$TH_CHIP_FG")" \; set -t "$s" status-left "[${s#hb-}] " \; \
-    set -t "$s" status-right " $(t tmux_hint "$pfx" "$pfx") " \; set -t "$s" status-left-length 30 >/dev/null
-  if [ "$mode" = sync ]; then tmux set-window-option -t "$s" synchronize-panes on >/dev/null; tmux set -t "$s" status-right " $(t tmux_hint_sync "$pfx") " >/dev/null; fi
+    set -t "$s" status-left-length 30 >/dev/null
+  session_mode "$s" "$mode" "$@" || return 1
   [ "$mode" = tabs ] && tmux select-window -t "$s:^" 2>/dev/null
   attach "$s"
+}
+pane_fingerprint(){ # hash connection configuration and safety classification; never persist raw SSH configuration
+  local host=$1 effective prod=0 digest
+  is_prod "$host" && prod=1
+  effective=$(sshx -G "$host" 2>/dev/null) && [ -n "$effective" ] || return 1
+  digest=$(printf 'hostbook-pane-v1\n%s\n%s\n%s\n' "$host" "$prod" "$effective" | sha256) || return 1
+  [[ $digest =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+session_hosts_match(){ # require the same aliases, live connection identities and PROD classifications
+  local s=$1 actual expected="" host fingerprint; shift
+  actual=$(tmux list-panes -s -t "=$s" -F '#{@hostbook_host}|#{@hostbook_fingerprint}|') || return 1
+  # The suffix preserves missing metadata, including a blank final pane, through command substitution.
+  actual=$(printf '%s\n' "$actual" | LC_ALL=C sort) || return 1
+  for host in "$@"; do
+    fingerprint=$(pane_fingerprint "$host") || return 1
+    expected="$expected$host|$fingerprint|$NL"
+  done
+  expected=$(printf '%s' "$expected" | LC_ALL=C sort) || return 1
+  [ "$actual" = "$expected" ]
+}
+session_mode(){ # preserve live panes/layout; change broadcast mode before attaching
+  local s=$1 mode=$2 windows w pfx hint; shift 2
+  windows=$(tmux list-windows -t "=$s" -F '#{window_id}') && [ -n "$windows" ] || return 1
+  # synchronize-panes is a window option; the session may have inactive windows or inherit it globally.
+  for w in $windows; do tmux set-window-option -t "$w" synchronize-panes off >/dev/null || return 1; done
+  pfx=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pfx=${pfx:-^b}
+  hint=$(t tmux_hint "$pfx" "$pfx")
+  tmux set -t "=$s" status-right " $hint " >/dev/null || return 1
+  if [ "$mode" = sync ]; then
+    if ! session_hosts_match "$s" "$@"; then
+      flash "${CR}${ICON_ERR} $(t err_open_session_sync)${C0}"; return 1
+    fi
+    tmux set-window-option -t "=$s" synchronize-panes on >/dev/null || return 1
+    hint=$(t tmux_hint_sync "$pfx")
+    tmux set -t "=$s" status-right " $hint " >/dev/null || return 1
+  fi
+  return 0
 }
 # Each tmux pane runs hostbook itself, providing connection progress and error explanations.
 # The tmux server may predate this process and lack its environment variables, so pass them explicitly.
