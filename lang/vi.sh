@@ -1114,6 +1114,7 @@ L_impf_guess='Đoán theo dải IP từng server'
 # resolve conflict
 L_rc_offline='Không kết nối được kho'
 L_rc_merged='Đã gộp, không còn xung đột'
+L_rc_pending='Đã lưu bản gộp trên máy · chưa gửi được %s thay đổi lên kho · nhấn ^s để thử lại'
 L_rc_title='Gộp xung đột'
 L_rc_both='Kho và máy này cùng sửa: %s'
 L_rc_keep='Giữ bản nào? Server chỉ sửa ở một bên đã được gộp sẵn.'
