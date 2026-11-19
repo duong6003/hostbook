@@ -32,6 +32,12 @@ Merging works per host. Independent host changes can merge automatically; confli
 changes to the same host add **Merge conflicts** (`Gộp xung đột`) to Tools, where you choose a version or
 edit it. Invalid SSH configuration is rejected rather than silently propagated.
 
+If Hostbook reports that it could not restore the previous state after Undo, it pauses
+automatic publication while Git still has the revert in progress. In the store repository,
+use `git status`, `git diff` and `git diff --cached` to review both unstaged and staged
+changes. Preserve any edits you want to keep and restore the unintended Undo changes
+before running `git revert --quit` to clear the recovery state. Then try **Sync now** again.
+
 ## Share selected hosts
 
 Use the search box to narrow the list. Select individual hosts with Tab if needed,

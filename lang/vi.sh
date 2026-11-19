@@ -393,6 +393,7 @@ L_ago_day='%s ngày trước'
 L_act_undo_hint='lần đổi %s'
 L_err_undo='Không hoàn tác được'
 L_err_undo_broken='Hoàn tác sẽ làm hỏng config nên đã dừng'
+L_err_undo_restore='Không khôi phục được trạng thái trước khi hoàn tác · kiểm tra thay đổi trên máy trước khi đồng bộ'
 L_done_undone='Đã hoàn tác thay đổi gần nhất'
 
 # tự tạo theme

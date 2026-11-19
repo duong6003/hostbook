@@ -92,8 +92,8 @@ Run-Check 'Isolated vault onboarding' {
     Assert ($LASTEXITCODE -eq 0) 'vault onboarding and canceled imports preserve fixture data'
 }
 Run-Check 'Import transactions and key handling' {
-    # import-input/import-review (parsing and review logic, platform-neutral) run on Unix only
-    foreach ($suite in @('hosts-module', 'settings-module', 'sync', 'discovery', 'import', 'import-keys')) {
+    # Import review also exercises Undo against the native Git index and working tree.
+    foreach ($suite in @('hosts-module', 'settings-module', 'sync', 'discovery', 'import', 'import-keys', 'import-review')) {
         & $bash --noprofile --norc (Join-Path $source "tests\$suite.sh")
         Assert ($LASTEXITCODE -eq 0) "$suite isolated regressions"
     }

@@ -157,6 +157,180 @@ undo_race_preserves_newer_commit(){ (
   ui_confirm(){ : > "$T/unexpected-confirm"; return 0; }
   import_done 1 0 0 >/dev/null 2>&1 && [ ! -e "$T/unexpected-confirm" ] && [ "$(g log -1 --format=%s)" = race-newer ] && [ "$(cat "$T/count")" = 2 ]
 ); }
+undo_fixture(){
+  DIR="$T/undo-$1"; STATE="$T/undo-$1-state"; SSHCFG="$STATE/ssh-config"
+  IDX="$STATE/index.tsv"; IDXD="$STATE/idx2"; ST="$STATE/status"; GRP="$DIR/groups.tsv"; HIST="$STATE/history"; FLASH="$STATE/flash"
+  mkdir -p "$DIR" "$STATE"
+  printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
+  printf 'Host undo-target\n  %s 192.0.2.90\n' "${2:-HostNmae}" > "$DIR/target.conf"
+  printf 'original notes\n' > "$DIR/notes"
+  g init -q && g config core.autocrlf false && g add . && g commit -qm parent || return 1
+  printf 'Host undo-target\n  HostName 192.0.2.99\n' > "$DIR/target.conf"
+  g add target.conf && g commit -qm correction || return 1
+  UNDO_HEAD=$(g rev-parse HEAD)
+  cp "$DIR/target.conf" "$STATE/target.before"
+  printf 'local notes\000without final newline' >> "$DIR/notes"
+  printf 'untracked\000fixture' > "$DIR/local-file"
+  cp "$DIR/notes" "$STATE/notes.before"; cp "$DIR/local-file" "$STATE/local.before"
+  g ls-files --stage > "$STATE/index.before"
+  ui_confirm(){ return 0; }
+}
+undo_local_files_unchanged(){
+  cmp -s "$DIR/notes" "$STATE/notes.before" && cmp -s "$DIR/local-file" "$STATE/local.before" &&
+    g ls-files --stage > "$STATE/index.after" && cmp -s "$STATE/index.before" "$STATE/index.after" &&
+    [ ! -e "$STATE/sync.lock" ] && [ ! -e "$ST.force" ]
+}
+invalid_undo_preserves_unstaged_and_untracked(){ (
+  undo_fixture invalid || exit 1
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  grep -Fq "$(t err_undo_broken)" "$STATE/result" &&
+    [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    undo_local_files_unchanged && validate >/dev/null && [ ! -e "$DIR/.git/REVERT_HEAD" ]
+); }
+undo_preserves_staged_and_unstaged_index(){ (
+  undo_fixture staged || exit 1
+  printf 'staged notes\n' > "$DIR/notes"; g add notes
+  printf 'unstaged notes\000fixture' >> "$DIR/notes"; cp "$DIR/notes" "$STATE/notes.before"
+  g ls-files --stage > "$STATE/index.before"; cp "$DIR/.git/index" "$STATE/index.bytes"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  grep -Fq "$(t err_undo)" "$STATE/result" && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
+    cmp -s "$DIR/target.conf" "$STATE/target.before" && cmp -s "$DIR/.git/index" "$STATE/index.bytes" && undo_local_files_unchanged
+); }
+undo_preserves_intent_to_add(){ (
+  undo_fixture intent || exit 1
+  g add -N local-file || exit 1
+  g ls-files --stage > "$STATE/index.before"; cp "$DIR/.git/index" "$STATE/index.bytes"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    cmp -s "$DIR/.git/index" "$STATE/index.bytes" && undo_local_files_unchanged && validate >/dev/null
+); }
+undo_preserves_ignored_file(){ (
+  undo_fixture ignored || exit 1
+  g reset --hard HEAD^ >/dev/null || exit 1
+  printf 'target.conf\n' > "$DIR/.gitignore"
+  g add .gitignore && g commit -qm ignore && g rm -q target.conf && g commit -qm remove || exit 1
+  UNDO_HEAD=$(g rev-parse HEAD)
+  printf 'Host local-only\n  HostName 192.0.2.110\n' > "$DIR/target.conf"
+  cp "$DIR/target.conf" "$STATE/local-target"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/local-target" &&
+    g diff --cached --quiet && [ ! -e "$DIR/.git/REVERT_HEAD" ]
+); }
+undo_preserves_ignored_path_collisions(){ (
+  undo_fixture ignored-tree HostName || exit 1
+  printf '/tree\n' > "$DIR/.gitignore"
+  mkdir "$DIR/tree"
+  printf 'tracked\n' > "$DIR/tree/item"
+  g add .gitignore && g add -f tree/item && g commit -qm directory &&
+    g rm -q tree/item && g commit -qm remove || exit 1
+  printf 'local ancestor\n' > "$DIR/tree"
+  ! real_undo > "$STATE/result" 2>&1 && [ "$(cat "$DIR/tree")" = 'local ancestor' ] || exit 1
+
+  g add -f tree && g commit -qm file && g rm -q tree || exit 1
+  mkdir "$DIR/tree"
+  printf 'tracked\n' > "$DIR/tree/item"
+  g add -f tree/item && g commit -qm directory || exit 1
+  printf 'local descendant\n' > "$DIR/tree/local"
+  ! real_undo > "$STATE/result" 2>&1 && [ "$(cat "$DIR/tree/local")" = 'local descendant' ] &&
+    [ "$(cat "$DIR/tree/item")" = tracked ] && g diff --cached --quiet
+); }
+undo_rejects_index_different_from_validated_file(){ (
+  undo_fixture changed-during-validation || exit 1
+  eval "$(declare -f validate | sed '1s/^validate/fixture_validate/')"
+  validate(){
+    cp "$STATE/target.before" "$DIR/target.conf" && fixture_validate
+  }
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    grep -Fq "$(t err_undo_restore)" "$STATE/result"
+); }
+partial_undo_blocks_automatic_sync(){ (
+  undo_fixture partial HostName || exit 1
+  g reset --hard HEAD^ >/dev/null || exit 1
+  printf 'z.conf filter=fixture\n' > "$DIR/.gitattributes"
+  printf 'Host z\n  HostName 192.0.2.101\n' > "$DIR/z.conf"
+  g add .gitattributes z.conf && g commit -qm before || exit 1
+  printf 'Host undo-target\n  HostName 192.0.2.99\n' > "$DIR/target.conf"
+  printf 'Host z\n  HostName 192.0.2.102\n' > "$DIR/z.conf"
+  g add target.conf z.conf && g commit -qm after || exit 1
+  UNDO_HEAD=$(g rev-parse HEAD)
+  g config filter.fixture.clean cat &&
+    g config filter.fixture.smudge false &&
+    g config filter.fixture.required true || exit 1
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  grep -Fq "$(t err_undo_restore)" "$STATE/result" &&
+    ! sync_quiet && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
+    [ "$(head -1 "$ST")" = invalid ] && [ ! -e "$STATE/sync.lock" ]
+); }
+undo_preserves_concurrent_git_commit(){ (
+  undo_fixture concurrent HostName || exit 1
+  validate(){
+    printf 'Host concurrent\n  HostName 192.0.2.110\n' > "$DIR/concurrent.conf"
+    g add concurrent.conf && g commit -qm concurrent &&
+      g rev-parse HEAD > "$STATE/concurrent-head"
+  }
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$(cat "$STATE/concurrent-head")" ] &&
+    g show HEAD:concurrent.conf > "$STATE/concurrent-committed" &&
+    cmp -s "$DIR/concurrent.conf" "$STATE/concurrent-committed" && [ ! -e "$STATE/sync.lock" ]
+); }
+undo_preserves_concurrently_staged_change(){ (
+  undo_fixture concurrent-stage HostName || exit 1
+  validate(){ g add -- notes; }
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    g show :notes > "$STATE/staged-notes" && cmp -s "$STATE/staged-notes" "$STATE/notes.before" &&
+    [ ! -e "$DIR/.git/REVERT_HEAD" ] && [ ! -e "$STATE/sync.lock" ]
+); }
+host_save_respects_undo_lock(){ (
+  undo_fixture locked HostName || exit 1
+  lock 0 || exit 1
+  printf 'Host concurrent\n  HostName 192.0.2.110\n' > "$DIR/concurrent.conf"
+  if ( LOCK_HELD=; eval "$(declare -f lock | sed '1s/^lock/fixture_lock/')"
+    lock(){ fixture_lock 0; }
+    save_and_sync concurrent
+  ); then exit 1; fi
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && [ -f "$DIR/concurrent.conf" ] && g diff --cached --quiet || exit 1
+  unlock
+  save_and_sync concurrent && g show HEAD:concurrent.conf >/dev/null && [ ! -e "$STATE/sync.lock" ]
+); }
+valid_undo_preserves_local_edits(){ (
+  undo_fixture valid HostName || exit 1
+  g config diff.context 0 || exit 1
+  # Observe the real validator: the revert must remain uncommitted until it passes.
+  eval "$(declare -f validate | sed '1s/^validate/fixture_validate/')"
+  validate(){ g rev-parse HEAD > "$STATE/validated-head"; fixture_validate; }
+  real_undo >/dev/null 2>&1 || exit 1
+  [ "$(cat "$STATE/validated-head")" = "$UNDO_HEAD" ] && [ "$(g rev-parse HEAD^1)" = "$UNDO_HEAD" ] &&
+    g log -1 --format=%s | grep -q '^Revert ' && grep -q '192.0.2.90' "$DIR/target.conf" &&
+    cmp -s "$DIR/notes" "$STATE/notes.before" && cmp -s "$DIR/local-file" "$STATE/local.before" &&
+    g diff --cached --quiet && [ -e "$ST.force" ] && [ ! -e "$STATE/sync.lock" ]
+); }
+undo_preserves_case_only_rename(){ (
+  undo_fixture case-rename HostName || exit 1
+  printf 'case rename\n' > "$DIR/Example"
+  g add Example && g commit -qm source &&
+    g mv Example intermediate && g mv intermediate example && g commit -qm rename || exit 1
+  real_undo >/dev/null 2>&1 && [ "$(g ls-files -- example Example)" = Example ] &&
+    [ "$(cat "$DIR/Example")" = 'case rename' ] && g diff --cached --quiet
+); }
+failed_undo_commit_preserves_local_edits(){ (
+  undo_fixture commit-failure HostName || exit 1
+  printf '#!/bin/sh\nexit 1\n' > "$DIR/.git/hooks/pre-commit"; chmod +x "$DIR/.git/hooks/pre-commit"
+  ! real_undo >/dev/null 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" && undo_local_files_unchanged
+); }
+failed_undo_rollback_preserves_new_edit(){ (
+  undo_fixture rollback-failure HostName || exit 1
+  printf '#!/bin/sh\nprintf "\\n# concurrent edit\\n" >> target.conf\nexit 1\n' > "$DIR/.git/hooks/pre-commit"
+  chmod +x "$DIR/.git/hooks/pre-commit"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  rm "$DIR/.git/hooks/pre-commit"
+  grep -Fq "$(t err_undo_restore)" "$STATE/result" && grep -Fq '# concurrent edit' "$DIR/target.conf" &&
+    [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && [ ! -e "$STATE/sync.lock" ] &&
+    ! sync_quiet && [ "$(head -1 "$ST")" = invalid ] && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
+    g rev-parse -q --verify REVERT_HEAD >/dev/null
+); }
 zero_change_has_no_undo(){
   reset; : > "$STATE/last-import"; printf '3\n' > "$T/picks"
   import_done 0 0 30 >/dev/null 2>&1 && [ -e "$T/flashed" ] && [ ! -e "$T/undo-called" ] && [ "$(cat "$T/count")" = 0 ]
@@ -174,6 +348,20 @@ check canceled_undo_returns_to_result
 check stale_undo_does_not_revert_newer_head
 check successful_real_undo
 check undo_race_preserves_newer_commit
+check invalid_undo_preserves_unstaged_and_untracked
+check undo_preserves_staged_and_unstaged_index
+check undo_preserves_intent_to_add
+check undo_preserves_ignored_file
+check undo_preserves_ignored_path_collisions
+check undo_rejects_index_different_from_validated_file
+check partial_undo_blocks_automatic_sync
+check undo_preserves_concurrent_git_commit
+check undo_preserves_concurrently_staged_change
+check host_save_respects_undo_lock
+check valid_undo_preserves_local_edits
+check undo_preserves_case_only_rename
+check failed_undo_commit_preserves_local_edits
+check failed_undo_rollback_preserves_new_edit
 check zero_change_has_no_undo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
