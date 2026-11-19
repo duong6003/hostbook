@@ -164,7 +164,7 @@ undo_fixture(){
   printf 'Include "%s/*.conf"\n' "$DIR" > "$SSHCFG"
   printf 'Host undo-target\n  %s 192.0.2.90\n' "${2:-HostNmae}" > "$DIR/target.conf"
   printf 'original notes\n' > "$DIR/notes"
-  g init -q && g add . && g commit -qm parent || return 1
+  g init -q && g config core.autocrlf false && g add . && g commit -qm parent || return 1
   printf 'Host undo-target\n  HostName 192.0.2.99\n' > "$DIR/target.conf"
   g add target.conf && g commit -qm correction || return 1
   UNDO_HEAD=$(g rev-parse HEAD)
@@ -203,6 +203,64 @@ undo_preserves_intent_to_add(){ (
   ! real_undo > "$STATE/result" 2>&1 || exit 1
   [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
     cmp -s "$DIR/.git/index" "$STATE/index.bytes" && undo_local_files_unchanged && validate >/dev/null
+); }
+undo_preserves_ignored_file(){ (
+  undo_fixture ignored || exit 1
+  g reset --hard HEAD^ >/dev/null || exit 1
+  printf 'target.conf\n' > "$DIR/.gitignore"
+  g add .gitignore && g commit -qm ignore && g rm -q target.conf && g commit -qm remove || exit 1
+  UNDO_HEAD=$(g rev-parse HEAD)
+  printf 'Host local-only\n  HostName 192.0.2.110\n' > "$DIR/target.conf"
+  cp "$DIR/target.conf" "$STATE/local-target"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/local-target" &&
+    g diff --cached --quiet && [ ! -e "$DIR/.git/REVERT_HEAD" ]
+); }
+undo_preserves_ignored_path_collisions(){ (
+  undo_fixture ignored-tree HostName || exit 1
+  printf '/tree\n' > "$DIR/.gitignore"
+  mkdir "$DIR/tree"
+  printf 'tracked\n' > "$DIR/tree/item"
+  g add .gitignore && g add -f tree/item && g commit -qm directory &&
+    g rm -q tree/item && g commit -qm remove || exit 1
+  printf 'local ancestor\n' > "$DIR/tree"
+  ! real_undo > "$STATE/result" 2>&1 && [ "$(cat "$DIR/tree")" = 'local ancestor' ] || exit 1
+
+  g add -f tree && g commit -qm file && g rm -q tree || exit 1
+  mkdir "$DIR/tree"
+  printf 'tracked\n' > "$DIR/tree/item"
+  g add -f tree/item && g commit -qm directory || exit 1
+  printf 'local descendant\n' > "$DIR/tree/local"
+  ! real_undo > "$STATE/result" 2>&1 && [ "$(cat "$DIR/tree/local")" = 'local descendant' ] &&
+    [ "$(cat "$DIR/tree/item")" = tracked ] && g diff --cached --quiet
+); }
+undo_rejects_index_different_from_validated_file(){ (
+  undo_fixture changed-during-validation || exit 1
+  eval "$(declare -f validate | sed '1s/^validate/fixture_validate/')"
+  validate(){
+    cp "$STATE/target.before" "$DIR/target.conf" && fixture_validate
+  }
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    grep -Fq "$(t err_undo_restore)" "$STATE/result"
+); }
+partial_undo_blocks_automatic_sync(){ (
+  undo_fixture partial HostName || exit 1
+  g reset --hard HEAD^ >/dev/null || exit 1
+  printf 'z.conf filter=fixture\n' > "$DIR/.gitattributes"
+  printf 'Host z\n  HostName 192.0.2.101\n' > "$DIR/z.conf"
+  g add .gitattributes z.conf && g commit -qm before || exit 1
+  printf 'Host undo-target\n  HostName 192.0.2.99\n' > "$DIR/target.conf"
+  printf 'Host z\n  HostName 192.0.2.102\n' > "$DIR/z.conf"
+  g add target.conf z.conf && g commit -qm after || exit 1
+  UNDO_HEAD=$(g rev-parse HEAD)
+  g config filter.fixture.clean cat &&
+    g config filter.fixture.smudge false &&
+    g config filter.fixture.required true || exit 1
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  grep -Fq "$(t err_undo_restore)" "$STATE/result" &&
+    ! sync_quiet && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
+    [ "$(head -1 "$ST")" = invalid ] && [ ! -e "$STATE/sync.lock" ]
 ); }
 undo_preserves_concurrent_git_commit(){ (
   undo_fixture concurrent HostName || exit 1
@@ -284,6 +342,10 @@ check undo_race_preserves_newer_commit
 check invalid_undo_preserves_unstaged_and_untracked
 check undo_preserves_staged_and_unstaged_index
 check undo_preserves_intent_to_add
+check undo_preserves_ignored_file
+check undo_preserves_ignored_path_collisions
+check undo_rejects_index_different_from_validated_file
+check partial_undo_blocks_automatic_sync
 check undo_preserves_concurrent_git_commit
 check undo_preserves_concurrently_staged_change
 check host_save_respects_undo_lock
