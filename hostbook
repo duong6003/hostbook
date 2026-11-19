@@ -1871,12 +1871,18 @@ host_where(){ # server → "file.conf line N · groups g1, g2" for previews
 # ---------- shared repository conflicts ----------
 # Merge rather than rebase to preserve nonconflicting changes from both sides.
 resolve_conflict(){ # [ours|theirs] for noninteractive operation (tests)
-  local how=${1:-} files e f
+  local how=${1:-} files e f ahead
   export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 8)
   lock 10 || { err "$(t sync_busy)"; [ -z "$how" ] && pause; return 1; }
   g fetch -q origin 2>/dev/null || { unlock; err "$(t rc_offline)"; [ -z "$how" ] && pause; return 1; }
   ensure_merge_setup
-  if g merge -q --no-edit '@{u}' >/dev/null 2>&1 && validate >/dev/null; then g push -q 2>/dev/null; set_status ok; unlock; build_index; ok "$(t rc_merged)"; [ -z "$how" ] && pause; return 0; fi
+  if g merge -q --no-edit '@{u}' >/dev/null 2>&1 && validate >/dev/null; then
+    if ! g push -q 2>/dev/null; then
+      ahead=$(g rev-list --count '@{u}..HEAD'); set_status pending "$ahead"
+      unlock; build_index; warn "$(t rc_pending "$ahead")"; [ -z "$how" ] && pause; return 1
+    fi
+    set_status ok; unlock; build_index; ok "$(t rc_merged)"; [ -z "$how" ] && pause; return 0
+  fi
   files=$(g diff --name-only --diff-filter=U | tr '\n' ' ')
   if [ -z "$how" ]; then
     title "$(t rc_title)"
@@ -1906,7 +1912,11 @@ resolve_conflict(){ # [ours|theirs] for noninteractive operation (tests)
       done;;
   esac
   if ! e=$(validate); then g reset -q --hard ORIG_HEAD 2>/dev/null; unlock; err "$(t rc_undone "$e")"; return 1; fi
-  g push -q 2>/dev/null && set_status ok || set_status pending 1
+  if ! g push -q 2>/dev/null; then
+    ahead=$(g rev-list --count '@{u}..HEAD'); set_status pending "$ahead"
+    unlock; build_index; flash "${CY}${ICON_WARN} $(t rc_pending "$ahead")${C0}"; return 1
+  fi
+  set_status ok
   unlock; build_index; flash "${CG}${ICON_OK} $(t done_merged)${C0}"
 }
 

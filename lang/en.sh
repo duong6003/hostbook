@@ -1115,6 +1115,7 @@ L_impf_guess='Guess from each server'\''s IP range'
 # resolve conflict
 L_rc_offline='Cannot reach the store'
 L_rc_merged='Merged, no conflicts left'
+L_rc_pending='Merge saved locally · could not send %s changes to the store · press ^s to retry'
 L_rc_title='Resolve conflict'
 L_rc_both='The store and this machine both changed: %s'
 L_rc_keep='Which version to keep? Servers changed on one side only are already merged.'
