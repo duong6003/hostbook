@@ -178,9 +178,9 @@ The earlier transfer fixture owns detailed reservation/drain/restart examples.
 The [migration contract](store-migration.md) defines classification, verified
 backup/restore, rollback boundaries and honest old/new writer compatibility gates.
 The [format/admission proposal](store-format.md) selects durable identity encoding
-and legacy SSH/share-package mapping. Remaining #35 work: registration/permission
-encoding and concrete upgrade/isolation and backup/restore mechanisms;
-transfer journal and recovery retention; reference reconciliation/update-existing
+and legacy SSH/share-package mapping; [journal/retention](store-journal.md) selects
+local authority and protected payloads. Remaining #35 work: registration/permission
+encoding, concrete upgrade/isolation and restore mechanisms; reference reconciliation/update-existing
 lineage; implementation-level lock/cache/vault/SSH-resolution design; complete
 platform writer mapping and mapping all parent #33 acceptance scenarios to fixtures.
 This bounded inventory does not choose those mechanisms or close #35. Downstream

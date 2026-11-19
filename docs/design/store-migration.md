@@ -81,7 +81,7 @@ staging: compare working-tree/index distinctions, refs/history, identity/vault
 bindings and dependency resolution; verify necessary secret decryptability without
 displaying plaintext. A backup that exists but cannot be restored fails preflight.
 Keep original encrypted data and this verified recovery set until explicit safe
-retention resolution; automatic cleanup policy remains undecided.
+retention resolution under the [journal/retention policy](store-journal.md#retention-and-collection-decision).
 
 No secrets, recovery codes, secret-derived hashes or complete sensitive SSH
 settings in journals, logs, argv, environment, UI or unprotected temporary files.
@@ -190,8 +190,9 @@ Its four handoff checkpoints cover drain, cutover, authorized reservation and lo
 acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
 Remaining before implementation: registration/permission encoding, concrete writer
 isolation/upgrade negotiation,
-backup/journal layout and retention, platform ACL/lock/restore mechanics, identity
+platform ACL/lock/restore mechanics, identity
 reconciliation/update-existing lineage, store SSH resolution and complete parent
-acceptance fixtures. These representation and compatibility choices must satisfy
+acceptance fixtures. [Journal/retention](store-journal.md) selects device-local
+authority, protected payload layout and collection policy. Remaining representation and compatibility choices must satisfy
 this contract and be reviewed; this slice does not choose them or complete #35.
 Downstream #36–#46 still own runtime migration and isolated regression coverage.

@@ -10,6 +10,7 @@ There is no atomic transaction across disks, vaults or remote repositories.
 callbacks and sync to the same proposed guards and publication barrier.
 [Legacy store migration and recovery](store-migration.md) applies these barriers
 to installation upgrades, protected backups and conditional rollback.
+The [journal/retention proposal](store-journal.md) selects their device-local encoding.
 
 ## Outcome and authorization
 
@@ -208,7 +209,7 @@ or cancellation can leave a checkpoint with a blocked/uncertain outcome.
 | `destination-confirmed` | Required destination publication is evidenced (or private save verified). Refresh both stores, then conditionally remove source locally. |
 | `source-removed-local` | Source host is locally absent; protected original remains recoverable. Publish removal if shared; otherwise establish local source confirmation. |
 | `source-confirmed` | Required source removal publication is evidenced (or private deletion verified). Revalidate current destination and source, then durably mark completion. |
-| `completed` | All required steps succeeded and final observations agree. Retain outcome evidence for retry recognition; recovery-payload retention/collection policy is deferred. |
+| `completed` | All required steps succeeded and final observations agree. Retain retry evidence and follow the [journal retention policy](store-journal.md#retention-and-collection-decision). |
 | `cancelled` / `rolled-back` | Cancellation before effects, or explicitly reconciled compensation, respectively. Neither implies a completed move. |
 
 A crash during destination save may leave partial local files/credentials; inspect
@@ -266,10 +267,10 @@ performs no storage, encryption, Git, network or runtime tests and does not prov
 only the adjacent documentation fixture.
 
 The [format/admission proposal](store-format.md) selects identity encoding and
-legacy mapping. Remaining #35 work includes journal representation, reference
-reconciliation, update-existing lineage, implementation-level audit beyond the
-bounded mutation inventory, vault and lock implementation contracts, recovery
-retention/collection policy, concrete migration backup/restore and writer-upgrade
-mechanisms and store-specific SSH resolution. Broader #35 fixtures and
+legacy mapping; [journal/retention](store-journal.md) selects local authority and protected payloads.
+Remaining #35 work includes reference reconciliation, update-existing lineage,
+implementation-level audit beyond the bounded mutation inventory, vault and lock
+implementation contracts, concrete migration restore and writer-upgrade mechanisms
+and store-specific SSH resolution. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
 neither selects those mechanisms nor completes #35.

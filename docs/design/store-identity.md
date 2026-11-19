@@ -161,7 +161,9 @@ no credentials and must not be loaded as runtime configuration.
 
 The [format and admission slice](store-format.md) selects durable v1 identity
 encoding and legacy SSH/package admission, including multi-alias mapping.
-Within #35, still deferred: select the transfer journal representation and recovery retention policy;
+The [journal/retention slice](store-journal.md) selects device-local transaction
+authority, protected recovery payloads and explicit collection policy.
+Within #35, still deferred:
 finish the implementation-level write-boundary audit beyond the bounded mutation
 inventory; specify durable cache/vault/lock/status and SSH resolution mechanisms;
 and complete the parent acceptance-to-fixture mapping. The migration contract

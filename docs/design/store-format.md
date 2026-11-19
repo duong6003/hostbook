@@ -202,6 +202,7 @@ PY
 Broad runtime suites provide no evidence for an unimplemented format.
 These examples are decision cases, not a parser,
 crash-safety proof or complete parent acceptance map. Remaining #35 work includes
-journal/backup encoding and retention, registration/permission representation,
+registration/permission representation,
 lineage/update-existing, concrete writer isolation/restore, platform mechanisms,
-SSH resolver and full acceptance mapping. Downstream #36–#46 own runtime work.
+SSH resolver and full acceptance mapping. The [journal/retention proposal](store-journal.md)
+selects device-local recovery encoding and collection. Downstream #36–#46 own runtime work.
