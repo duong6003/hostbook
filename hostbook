@@ -87,6 +87,7 @@ clip_get(){ if is_windows; then windows_tool clipboard-get; elif have pbpaste; t
 sha256(){ if have sha256sum; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 export GIT_OPTIONAL_LOCKS=0   # background git status must not contend for the index lock with another sync
 g(){ if is_windows; then git -C "$(native_path "$DIR")" "$@"; else git -C "$DIR" "$@"; fi; }
+revert_in_progress(){ g rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
 scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
 git_ssh(){ printf 'ssh%s -o BatchMode=yes -o ConnectTimeout=%s' "${SSHCFG:+ -F $(printf %q "$SSHCFG")}" "${1:-4}"; }
@@ -700,6 +701,7 @@ ensure_git_identity(){
 }
 ensure_merge_setup(){ # register the merger for the data repo (git config is machine-local; .gitattributes is synced)
   [ -d "$DIR/.git" ] || return 0
+  revert_in_progress && return 0   # a path-limited commit would clear the revert state
   ensure_git_identity || return 1
   if is_windows; then g config core.autocrlf false; fi
   g config merge.hostbook.name "hostbook: merge per server"   # git config in the user's repo (data, not screen text)
@@ -765,6 +767,7 @@ unlock(){
 # Commit all changes in ~/ssh-hosts if the config is valid.
 # Commit messages ("Gộp với kho", apply_change descriptions…) and the share-file header are data written into the user's repo and files, not screen text: they stay as they are.
 commit_all(){ local msg=$1 e
+  if revert_in_progress; then set_status invalid "$(t err_undo_restore)"; return 1; fi
   if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
   [ -z "$(g status --porcelain)" ] && return 0
   ensure_git_identity || return 1
@@ -846,7 +849,11 @@ saved_notice(){ # The data commit already succeeded; a notification failure must
   return 0
 }
 save_and_sync(){ # $1 = change description
-  if commit_all "$1"; then saved_notice "$1"
+  local rc
+  lock 10 || { flash "${CY}${ICON_WARN} $(t sync_busy)${C0}"; return 1; }
+  commit_all "$1"; rc=$?
+  unlock
+  if [ "$rc" = 0 ]; then saved_notice "$1"
   else flash "${CR}${ICON_ERR} $(t err_not_saved)${C0}"; return 1; fi
 }
 sync_text(){ # → one line about the last sync outcome, from the status file
@@ -2449,11 +2456,36 @@ undo_hosts(){ # old-file new-file
             if (a[1] == "o") { if (!(("n" SUBSEP a[2]) in txt)) print "-" a[2]; else if (txt[k] != txt["n", a[2]]) print "~" a[2] }
             else if (!(("o" SUBSEP a[2]) in txt)) print "+" a[2] } }' "$1" "$2" | sort
 }
+undo_locked(){ # caller owns the sync lock; print the translation key on failure
+  local id=$1 gitdir tree failure=err_undo
+  shift
+  [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] || { echo err_undo_moved; return 1; }
+  gitdir=$(g rev-parse --absolute-git-dir) || { echo err_undo; return 1; }
+  gitdir=$(unix_path "$gitdir") || { echo err_undo; return 1; }
+  if [ -e "$gitdir/MERGE_HEAD" ] || [ -e "$gitdir/REVERT_HEAD" ] || [ -e "$gitdir/CHERRY_PICK_HEAD" ] ||
+     [ -d "$gitdir/sequencer" ] || [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ] ||
+     ! g diff --cached --ita-visible-in-index --quiet; then echo err_undo; return 1; fi
+  if ! g revert --no-commit "$@" "$id" >/dev/null 2>&1; then
+    if [ -e "$gitdir/REVERT_HEAD" ]; then echo err_undo_restore; else echo err_undo; fi
+    return 1
+  fi
+  tree=$(g write-tree 2>/dev/null) || { echo err_undo_restore; return 1; }
+  if ! validate >/dev/null; then failure=err_undo_broken
+  elif [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] &&
+       [ "$(g write-tree 2>/dev/null)" = "$tree" ] &&
+       g commit --no-edit >/dev/null 2>&1; then return 0; fi
+  # Reverse only the staged revert, preserving unstaged edits and leaving HEAD untouched.
+  if [ "$(g rev-parse HEAD 2>/dev/null)" != "$id" ] ||
+     ! g read-tree -m -u "$tree" "$id" >/dev/null 2>&1 ||
+     ! g revert --quit >/dev/null 2>&1; then failure=err_undo_restore; fi
+  printf '%s\n' "$failure"
+  return 1
+}
 undo_last(){
-  local id par m="" files f sec="" grp="" lines=() d h c o n add="" rem="" edt="" r
+  local id par m=() files f sec="" grp="" lines=() d h c o n add="" rem="" edt="" r
   id=$(g rev-parse -q --verify HEAD 2>/dev/null) || return 1
   [ -z "${1:-}" ] || [ "$id" = "$1" ] || { shown; err "$(t err_undo_moved)"; pause; return 1; }
-  par=$(g rev-parse -q --verify "$id^1" 2>/dev/null); [ -z "$(g rev-parse -q --verify "$id^2" 2>/dev/null)" ] || m="-m 1"
+  par=$(g rev-parse -q --verify "$id^1" 2>/dev/null); [ -z "$(g rev-parse -q --verify "$id^2" 2>/dev/null)" ] || m=(-m 1)
   if [ -n "$par" ]; then files=$(g diff --no-color --name-only "$par" "$id"); else files=$(g show --no-color --name-only --format= "$id"); fi
   d=$(tmpd) || return 1
   for f in $files; do
@@ -2466,7 +2498,7 @@ undo_last(){
     esac
   done
   lines=("$(t undo_when "$(undo_when "$id")")")
-  [ -z "$m" ] || lines+=("$(t undo_merge)")
+  [ "${#m[@]}" -eq 0 ] || lines+=("$(t undo_merge)")
   [ -z "$add" ] || lines+=("$(t undo_added "${add# }")"); [ -z "$rem" ] || lines+=("$(t undo_removed "${rem# }")"); [ -z "$edt" ] || lines+=("$(t undo_edited "${edt# }")")
   [ -z "$grp" ] || lines+=("$(t undo_groups)"); [ -z "$sec" ] || lines+=("$(t undo_secrets "${sec# }")")
   [ ${#lines[@]} -gt 1 ] || [ -z "$files" ] || lines+=("$(t undo_files "$(printf '%s ' $files | sed 's/ $//')")")
@@ -2474,13 +2506,7 @@ undo_last(){
   at "$(t tools_title)|$(t act_undo)"
   ui_confirm --default=false --affirmative "$(t undo_yes)" --negative "$(t cancel)" "$(t undo_q)" "${lines[@]}" || return 1
   lock 10 || { shown; err "$(t sync_busy)"; pause; return 1; }
-  [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] || { unlock; shown; err "$(t err_undo_moved)"; pause; return 1; }   # a background sync added a change meanwhile
-  # As with a normal revert, require a clean index so unrelated staged edits cannot enter the undo commit.
-  if ! g diff --cached --quiet; then unlock; shown; err "$(t err_undo)"; pause; return 1; fi
-  g revert --no-commit $m "$id" >/dev/null 2>&1 || { g revert --abort >/dev/null 2>&1; unlock; shown; err "$(t err_undo)"; pause; return 1; }
-  # Validate before publishing. --merge restores the revert's paths while retaining unrelated local edits.
-  if ! validate >/dev/null; then g reset -q --merge "$id"; unlock; shown; err "$(t err_undo_broken)"; pause; return 1; fi
-  if ! g commit --no-edit >/dev/null 2>&1; then g reset -q --merge "$id"; unlock; shown; err "$(t err_undo)"; pause; return 1; fi
+  if ! r=$(undo_locked "$id" ${m[@]+"${m[@]}"}); then unlock; shown; err "$(t "$r")"; pause; return 1; fi
   unlock
   build_index; flash "${CG}${ICON_OK} $(t done_undone)${C0}"; : > "$ST.force"
 }

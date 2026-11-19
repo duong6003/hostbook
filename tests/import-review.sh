@@ -196,6 +196,46 @@ undo_preserves_staged_and_unstaged_index(){ (
   grep -Fq "$(t err_undo)" "$STATE/result" && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
     cmp -s "$DIR/target.conf" "$STATE/target.before" && cmp -s "$DIR/.git/index" "$STATE/index.bytes" && undo_local_files_unchanged
 ); }
+undo_preserves_intent_to_add(){ (
+  undo_fixture intent || exit 1
+  g add -N local-file || exit 1
+  g ls-files --stage > "$STATE/index.before"; cp "$DIR/.git/index" "$STATE/index.bytes"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    cmp -s "$DIR/.git/index" "$STATE/index.bytes" && undo_local_files_unchanged && validate >/dev/null
+); }
+undo_preserves_concurrent_git_commit(){ (
+  undo_fixture concurrent HostName || exit 1
+  validate(){
+    printf 'Host concurrent\n  HostName 192.0.2.110\n' > "$DIR/concurrent.conf"
+    g add concurrent.conf && g commit -qm concurrent &&
+      g rev-parse HEAD > "$STATE/concurrent-head"
+  }
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$(cat "$STATE/concurrent-head")" ] &&
+    g show HEAD:concurrent.conf > "$STATE/concurrent-committed" &&
+    cmp -s "$DIR/concurrent.conf" "$STATE/concurrent-committed" && [ ! -e "$STATE/sync.lock" ]
+); }
+undo_preserves_concurrently_staged_change(){ (
+  undo_fixture concurrent-stage HostName || exit 1
+  validate(){ g add -- notes; }
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" &&
+    g show :notes > "$STATE/staged-notes" && cmp -s "$STATE/staged-notes" "$STATE/notes.before" &&
+    [ ! -e "$DIR/.git/REVERT_HEAD" ] && [ ! -e "$STATE/sync.lock" ]
+); }
+host_save_respects_undo_lock(){ (
+  undo_fixture locked HostName || exit 1
+  lock 0 || exit 1
+  printf 'Host concurrent\n  HostName 192.0.2.110\n' > "$DIR/concurrent.conf"
+  if ( LOCK_HELD=; eval "$(declare -f lock | sed '1s/^lock/fixture_lock/')"
+    lock(){ fixture_lock 0; }
+    save_and_sync concurrent
+  ); then exit 1; fi
+  [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && [ -f "$DIR/concurrent.conf" ] && g diff --cached --quiet || exit 1
+  unlock
+  save_and_sync concurrent && g show HEAD:concurrent.conf >/dev/null && [ ! -e "$STATE/sync.lock" ]
+); }
 valid_undo_preserves_local_edits(){ (
   undo_fixture valid HostName || exit 1
   # Observe the real validator: the revert must remain uncommitted until it passes.
@@ -212,6 +252,17 @@ failed_undo_commit_preserves_local_edits(){ (
   printf '#!/bin/sh\nexit 1\n' > "$DIR/.git/hooks/pre-commit"; chmod +x "$DIR/.git/hooks/pre-commit"
   ! real_undo >/dev/null 2>&1 || exit 1
   [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && cmp -s "$DIR/target.conf" "$STATE/target.before" && undo_local_files_unchanged
+); }
+failed_undo_rollback_preserves_new_edit(){ (
+  undo_fixture rollback-failure HostName || exit 1
+  printf '#!/bin/sh\nprintf "\\n# concurrent edit\\n" >> target.conf\nexit 1\n' > "$DIR/.git/hooks/pre-commit"
+  chmod +x "$DIR/.git/hooks/pre-commit"
+  ! real_undo > "$STATE/result" 2>&1 || exit 1
+  rm "$DIR/.git/hooks/pre-commit"
+  grep -Fq "$(t err_undo_restore)" "$STATE/result" && grep -Fq '# concurrent edit' "$DIR/target.conf" &&
+    [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] && [ ! -e "$STATE/sync.lock" ] &&
+    ! sync_quiet && [ "$(head -1 "$ST")" = invalid ] && [ "$(g rev-parse HEAD)" = "$UNDO_HEAD" ] &&
+    g rev-parse -q --verify REVERT_HEAD >/dev/null
 ); }
 zero_change_has_no_undo(){
   reset; : > "$STATE/last-import"; printf '3\n' > "$T/picks"
@@ -232,8 +283,13 @@ check successful_real_undo
 check undo_race_preserves_newer_commit
 check invalid_undo_preserves_unstaged_and_untracked
 check undo_preserves_staged_and_unstaged_index
+check undo_preserves_intent_to_add
+check undo_preserves_concurrent_git_commit
+check undo_preserves_concurrently_staged_change
+check host_save_respects_undo_lock
 check valid_undo_preserves_local_edits
 check failed_undo_commit_preserves_local_edits
+check failed_undo_rollback_preserves_new_edit
 check zero_change_has_no_undo
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -225,6 +225,7 @@ import_discard_secret(){
 }
 import_commit_secret(){ # commit only a newly confirmed import key, preserving unrelated staged changes
   local name=$1 rollback idxfile failed=0 restore=0
+  revert_in_progress && return 1
   validate >/dev/null || return 1
   rollback=$(mktemp -d "$STATE/import-key-rollback.XXXXXX") || return 1
   idxfile=$(g rev-parse --git-path index) || return 1; case $idxfile in /*) ;; *) idxfile=$DIR/$idxfile;; esac

@@ -393,6 +393,7 @@ L_ago_day='%s days ago'
 L_act_undo_hint='change made %s'
 L_err_undo='Could not undo'
 L_err_undo_broken='Undoing would break the config, so it was stopped'
+L_err_undo_restore='Could not restore the previous state after Undo · check local changes before syncing'
 L_done_undone='Undid the latest change'
 
 # custom theme
