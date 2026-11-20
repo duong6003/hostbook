@@ -110,6 +110,50 @@ Where a manual edit makes association uncertain, require reconciliation rather
 than guessing from filename, line number, alias or address. Reconciliation that
 writes data must obey the store mode, including receive-only defaults.
 
+## Concurrent revisions of one host
+
+Each `(store_id, host_id)` has one accepted current revision. An edit carries the
+revision it started from. After the usual [write checks](store-mutations.md#proposed-admission-rules),
+accept an edit only if its base still matches the current revision for that key.
+For a shared store, a local save can be pending. The first publication accepted
+at the bound remote/ref advances the shared state. Use the existing [publication
+protocol](store-transfer.md#publication-admission-and-transition-barrier) and
+revalidate against fresh remote state if the branch tip moved. A different host's
+edit can be merged if the target host's revision and other preconditions still hold.
+
+When the same host has advanced, preserve the accepted state and the pending edit
+for comparison. Require the user to choose or combine the changes before retrying
+with the current revision as the new base. A retry must pass the same checks again.
+The two versions represent one logical host. Duplicate live records for one key
+remain invalid. The revision is distinct from the sidecar's schema `version` and
+its store-wide `generation`. The numbers below are illustrative. Durable revision
+encoding and the conflict UI belong to downstream work.
+
+Run this documentation fixture with `python3`. It models only the revision
+decision after authorization, with no file, checkout or network access.
+
+```python
+current = {('shared-a', 'db-id'): (7, 'original'),
+           ('shared-a', 'web-id'): (3, 'original'),
+           ('shared-b', 'db-id'): (4, 'original')}
+
+def apply(key, base, edit):
+    revision, accepted = current[key]
+    if base != revision:
+        return ('conflict', (revision, accepted), (base, edit))
+    current[key] = (revision + 1, edit)
+    return ('accepted', current[key])
+
+db = ('shared-a', 'db-id')
+assert apply(db, 7, 'A') == ('accepted', (8, 'A'))
+assert apply(db, 7, 'B') == ('conflict', (8, 'A'), (7, 'B'))
+assert current[db] == (8, 'A')
+assert apply(('shared-a', 'web-id'), 3, 'C') == ('accepted', (4, 'C'))
+assert current[('shared-b', 'db-id')] == (4, 'original')
+assert apply(db, 8, 'reviewed A+B') == ('accepted', (9, 'reviewed A+B'))
+print('PASS: stale same-host edit preserved, independent hosts unaffected, reviewed retry accepted')
+```
+
 ## Transfer identity and duplicate decisions
 
 A cross-store transfer **moves**, rather than copies, a host. It preserves its
