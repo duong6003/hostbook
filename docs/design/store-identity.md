@@ -115,8 +115,9 @@ writes data must obey the store mode, including receive-only defaults.
 Each `(store_id, host_id)` has one accepted current revision. An edit carries the
 revision it started from. After the usual [write checks](store-mutations.md#proposed-admission-rules),
 accept an edit only if its base still matches the current revision for that key.
-For a shared store, a local save can be pending. The first publication accepted
-at the bound remote/ref advances the shared state. Use the existing [publication
+For a shared store, an edit admitted after successful online preflight can
+remain pending if the send fails. The first publication accepted at the bound
+remote/ref advances the shared state. Use the existing [publication
 protocol](store-transfer.md#publication-admission-and-transition-barrier) and
 revalidate against fresh remote state if the branch tip moved. A different host's
 edit can be merged if the target host's revision and other preconditions still hold.

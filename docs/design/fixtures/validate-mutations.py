@@ -41,12 +41,7 @@ def decision(case, stores):
             return 'reject-destination'
         if store['mode'] != 'two-way':
             return 'reject-mode'
-        if preflight == 'attempted-unavailable' and rights == 'unknown':
-            if op == 'ordinary-edit':
-                if case.get('fenced', False):
-                    return 'reject-fence'
-                if case.get('prior_write_snapshot') == 'same-store-and-generations':
-                    return 'pending-local'
+        if preflight == 'attempted-unavailable':
             return 'reject-offline'
         if rights != 'read-write':
             return 'reject-rights'
@@ -88,20 +83,13 @@ def validate(data):
         names.add(name)
         operations.add(case['operation'])
         require(decision(case, stores) == case['expected'], name + ': decision mismatch')
-        if case['expected'] == 'pending-local' or case.get('pending_before', False):
+        if case.get('pending_before', False):
             require(case['pending_retained'] and not case['reported_published'],
                     name + ': preserve pending without publication claim')
-        if case['expected'] == 'pending-local':
-            for override in ({'snapshot': 'stale-checkout'}, {'captured_store': 0},
-                             {'fenced': True}, {'prior_write_snapshot': None},
-                             {'rights': 'read'}, {'operation': 'vault-recovery'},
-                             {'operation': 'rollback'}, {'operation': 'import'}):
-                require(decision(dict(case, **override), stores) != 'pending-local',
-                        name + ': outage exception crossed a guard')
     require({'new', 'import', 'undo', 'vault-recovery', 'internal-callback',
              'receive', 'derived', 'ordinary-publish'} <= operations, 'missing operation family')
     require({'reject-mode', 'reject-rights', 'reject-snapshot', 'reject-fence',
-             'reject-offline', 'pending-local', 'allow'} <=
+             'reject-offline', 'allow'} <=
             {c['expected'] for c in data['cases']}, 'missing decision family')
     return len(data['cases'])
 

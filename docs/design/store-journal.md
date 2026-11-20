@@ -176,9 +176,9 @@ reservation/target in this authority before send. Migration durably hands a full
 ownership; its sends reserve under that ownership after the fence is replaced, never through a pending fence.
 Unknown/lost acknowledgement preserves reservation and ownership, blocks effective transition/replay/source
 deletion/collection, and requires exact remote reconciliation plus current content checks. Rejection/offline is not
-success. USER guards apply at every shared write, including restore/cleanup; stricter transfer/migration admission
-and the bounded ordinary-edit outage exception remain unchanged. A journal cannot grant rights or bypass a changed
-sidecar/source snapshot.
+success. USER guards apply at every shared write, including restore/cleanup. New shared edits require successful live
+preflight, and transfer/migration retain their stricter admission rules. A journal cannot grant rights or bypass a
+changed sidecar/source snapshot.
 
 ## Retention and collection decision
 

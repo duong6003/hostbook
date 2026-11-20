@@ -139,16 +139,27 @@
       "snapshot": "stale-vault"
     },
     {
-      "case": "ordinary-offline-visibly-pending",
+      "case": "ordinary-shared-offline-rejected-despite-earlier-rights",
       "operation": "ordinary-edit",
       "store": 2,
       "explicit_destination": true,
-      "rights": "unknown",
+      "rights": "read-write",
       "preflight": "attempted-unavailable",
-      "prior_write_snapshot": "same-store-and-generations",
-      "pending_retained": true,
-      "reported_published": false,
-      "expected": "pending-local"
+      "expected": "reject-offline"
+    },
+    {
+      "case": "ordinary-shared-online-authorized",
+      "operation": "ordinary-edit",
+      "store": 2,
+      "explicit_destination": true,
+      "expected": "allow"
+    },
+    {
+      "case": "ordinary-private-offline-allowed",
+      "operation": "ordinary-edit",
+      "store": 0,
+      "preflight": "attempted-unavailable",
+      "expected": "allow"
     },
     {
       "case": "publish-offline-blocked-preserves-pending",

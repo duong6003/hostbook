@@ -50,31 +50,22 @@ The [registration contract](store-registration.md) defines the device-local regi
 **USER** means any user data write: hosts/settings/groups, vault envelopes or
 credentials, metadata, commits, undo, repair, import and compensation. New hosts
 and imports default to private, even while a shared row is selected. Writing to
-a shared destination normally requires explicit destination intent, effective
-two-way mode and current actual remote write rights. Selection alone is not destination intent;
+a shared destination requires explicit destination intent, effective two-way mode,
+a successful live preflight and current write rights on the bound remote/ref.
+Selection alone is not destination intent;
 confirmation does not grant rights. Existing-host actions bind their selected
 store explicitly. Apply the rule to every affected store and every write boundary,
 including internal/sourced callbacks and partial-failure restore paths. A cached
-rights observation cannot override denial at the remote. Explicit current denial
-rejects new shared USER writes; unknown rights block them except for the bounded
-ordinary-edit outage admission below. Neither rejection nor outage discards or
-rewrites existing unsent work; retain it visibly pending and recoverable.
+rights observation cannot substitute for a successful current preflight. Denial,
+unknown rights and network unavailability all block new shared USER writes.
 
-Ordinary host/group edits may be saved **locally pending** during an outage in an
-explicitly selected, previously authorized shared store with effective two-way
-mode. First attempt live sync/rights preflight; network unavailability is distinct
-from permission denial. Under the store gate, require fresh captured context,
-unchanged registration/checkout/connection generations, no transition fence and
-a prior verified write-access snapshot for that same store and those generations.
-Revalidate record/vault revisions and preserve unrelated pending edits. Missing
-or stale evidence blocks new writes. This limited local admission is not a claim
-of current remote authorization: show pending, never published. On reconnect,
-fresh sync, rights, revision and conflict checks precede publication admission;
-remote rejection is authoritative and pending work remains recoverable. Transfers,
-compensation/rollback, migration, imports, credential/vault writes and vault
-recovery retain their stricter preconditions and never inherit this exception.
-An internal callback qualifies only for the same explicitly bound ordinary edit;
-its invocation mechanism cannot expand the exception. Receive-only never qualifies.
+Private edits can be saved offline. For a shared edit that loses connectivity
+before admission, keep the input in the open editor/form and report the failed
+save. The user retries explicitly with fresh online checks and the original
+base revision. Closing the editor does not create a durable draft or enqueue a
+shared write. Preserve any already-admitted unsent work if publishing fails or
+its outcome is uncertain. It remains visibly pending and recoverable under the
+existing publication rules. A successful preflight cannot guarantee acceptance.
 
 Receive-only forbids **all USER writes**, even local-only edits that might be
 published later. **RECEIVE** may fetch and apply validated remote content in that
@@ -126,8 +117,8 @@ authority; credentials acquired during staging are already vault USER writes.
 
 Guards in the last column are requirements, **not present behavior**. All USER
 rows also revalidate the captured snapshot under the owning gate; shared targets
-require explicit intent, two-way and rights, subject only to ordinary local-pending
-admission above. Publication always adds PUBLISH and needs fresh online checks.
+require explicit intent, two-way, live preflight and current rights. Publication
+always adds PUBLISH and needs fresh online checks.
 
 | Current path + symbol(s) | Followed callers / dispatch | Scope and actual resource written | Proposed guard |
 | --- | --- | --- | --- |
@@ -163,8 +154,9 @@ resolution behavior; this slice introduces no store-specific jump restrictions.
 [mutation-permissions.json](fixtures/mutation-permissions.json) describes private
 plus two independent shared stores, resource separation, denied receive-only
 callback/undo/import/recovery, permitted receiving/derived state and explicit
-two-way rights checks, ordinary outage pending admission and preserved unsent work
-after permission denial. Run from the repository root:
+two-way rights checks, offline rejection for new shared edits, offline private
+edits and preserved unsent work after an admitted change fails to publish. Run
+from the repository root:
 
 ```bash
 python3 docs/design/fixtures/validate-mutations.py

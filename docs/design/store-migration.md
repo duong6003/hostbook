@@ -17,8 +17,8 @@ makes it **private by default**, not proof that its content was never published.
 An explicit later change of role never erases publication history. Separate the
 private store and every independent shared store, including their vaults, caches,
 locks, connections and pending work. New hosts/imports still default to private;
-shared registration defaults to receive-only. A migration is not an ordinary
-edit and cannot use the mutation contract's offline local-pending exception.
+shared registration defaults to receive-only. Shared migration writes require
+successful live preflight and current remote write rights.
 
 The following rows are cumulative gates, not a first-match decision algorithm.
 An observation must identify its checkout, remote/ref and revision; an unknown

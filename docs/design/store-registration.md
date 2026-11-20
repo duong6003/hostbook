@@ -89,8 +89,8 @@ remain prerequisites to runtime use.
   and unknown access. Network unavailability is an outcome of the current
   preflight, not a persisted write permission. Store only an opaque observation
   reference in the context.
-  Denial supersedes earlier permission for new writes. The bounded offline
-  exception for ordinary edits follows the [mutation rules](store-mutations.md#proposed-admission-rules).
+  New shared writes require successful live preflight and current write rights
+  under the [mutation rules](store-mutations.md#proposed-admission-rules).
 
 ## Callback context and resolution
 
@@ -151,7 +151,7 @@ before cutover. The context is not a security boundary against the user's own OS
 | 8. Two concurrent settings changes for independent stores | Preserve both changes without resetting either generation. Globally increasing registry revision alone does not invalidate the other store's context. |
 | 9. A copied device registry or callback is opened after restart or under a fixture | Require the verified local authority and fresh context. No automatic adoption of the old cache, checkout or recovery owner. |
 | 10. Disconnect, then reconnect the same URL and ref | Reject old callbacks and rights evidence, and keep historical attempts for recovery. The new connection starts receive-only. |
-| 11. With effective two-way, remote denies an ordinary edit while earlier evidence allowed it | Reject the new write and retain existing pending work. Only network unavailability can qualify for the previously authorized ordinary-edit exception. |
+| 11. With effective two-way, the write preflight is denied or the remote is unavailable despite previously verified rights | Reject the new write and retain previously admitted pending work. Keep unsaved input in the open editor for an explicit retry. |
 | 12. Settlement finds the same remote in the registry with a different branch ref | Use the immutable ref from the admitted attempt, never the current registry ref. Keep the outcome unresolved if the original binding cannot be verified. |
 
 These scenarios describe expected decisions for downstream fixtures in
