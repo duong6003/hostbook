@@ -89,6 +89,15 @@ metadata_gate_serializes_acquisition(){
   : > "$STATE/gate-release"
   wait "$child" && [ "$rc" = 0 ] && lock 0 && unlock && [ ! -d "$STATE/sync.lock" ]
 }
+missing_lock_tool_is_reported(){
+  fixture missing-tool || return 1
+  LOCK_TOOL=hostbook-fixture-missing-lock-tool
+  ! lock 0 > "$STATE/lock-output" 2>&1 &&
+    grep -Fq "$(t dep_missing "$LOCK_TOOL")" "$STATE/lock-output" &&
+    ! check_deps report > "$STATE/doctor-output" 2>&1 &&
+    grep -Fq "$(t dep_missing "$LOCK_TOOL")" "$STATE/doctor-output" &&
+    [ ! -e "$STATE/sync.lock" ] && [ ! -e "$STATE/sync.lock.gate" ]
+}
 busy_status(){
   fixture busy || return 1
   set_status ok; lock 0 || return 1
@@ -203,6 +212,6 @@ invalid_link(){
   ! connect_kho >/dev/null 2>&1 && [ "$(g rev-parse HEAD)" = "$checkpoint" ] &&
     [ "$(remote_url)" = "$previous" ] && [ ! -f "$DIR/broken.conf" ] && validate && [ ! -d "$STATE/sync.lock" ]
 }
-for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
+for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition missing_lock_tool_is_reported busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

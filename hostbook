@@ -33,7 +33,7 @@ resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this she
 }
 resolve_self "$0"
 LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
-IS_MAC=; case $OSTYPE in darwin*) IS_MAC=1;; esac
+IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; esac
 private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
@@ -704,9 +704,9 @@ visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; list_sig; } 2>/dev/null; }
 lock_edit(){ (
   local wait=$1; shift
   if is_mac; then
-    if [ "$wait" = 0 ]; then lockf -s -t 0 9; else lockf -s 9; fi
+    if [ "$wait" = 0 ]; then "$LOCK_TOOL" -s -t 0 9; else "$LOCK_TOOL" -s 9; fi
   else
-    if [ "$wait" = 0 ]; then flock -n 9; else flock 9; fi
+    if [ "$wait" = 0 ]; then "$LOCK_TOOL" -n 9; else "$LOCK_TOOL" 9; fi
   fi || return 1
   "$@"
 ) 9>>"$STATE/sync.lock.gate"; }
@@ -748,6 +748,7 @@ lock_try(){
 }
 lock(){
   local w=${1:-0} i=0 token=$$.$RANDOM.$RANDOM
+  have "$LOCK_TOOL" || { err "$(t dep_missing "$LOCK_TOOL")" >&2; return 1; }
   until lock_edit 0 lock_try "$token"; do
     [ "$i" -lt "$w" ] || return 1
     sleep 1; i=$((i+1))
@@ -2800,7 +2801,7 @@ check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "
 deps_cached(){
   local s=$STATE/deps p
   [ -r "$s" ] || return 1
-  { IFS= read -r p && [ "$p" = "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN" ] || return 1
+  { IFS= read -r p && [ "$p" = "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN|$LOCK_TOOL" ] || return 1
     while IFS= read -r p; do [ -x "$p" ] && [ "$s" -nt "$p" ] || return 1; done; } < "$s"   # -x: a symlink whose target is gone fails
   local IFS=:; for p in $PATH; do [ -z "$p" ] || [ "$s" -nt "$p" ] || return 1; done
   return 0
@@ -2809,6 +2810,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   local bad=0 v
   [ "${1:-}" = report ] || ! deps_cached || return 0
   have git || { err "$(t dep_missing git)"; bad=1; }
+  have "$LOCK_TOOL" || { err "$(t dep_missing "$LOCK_TOOL")"; bad=1; }
   if have age && have age-plugin-batchpass; then v=$(age --version | sed 's/^v//'); if ver_ge "$v" "$AGE_MIN"; then [ "${1:-}" = report ] && ok "age $v"; else err "$(t dep_old age "$v" "$AGE_MIN")"; bad=1; fi
   else err "$(t dep_missing_age)"; bad=1; fi
   if have fzf; then v=$(fzf --version | awk '{print $1}')
@@ -2817,7 +2819,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   if have gum; then v=$(gum --version | awk '{print $3}' | sed 's/^v//')
     if ver_ge "$v" "$GUM_MIN"; then [ "${1:-}" = report ] && ok "gum $v"; else err "$(t dep_old gum "$v" "$GUM_MIN")"; bad=1; fi
   else err "$(t dep_missing gum)"; bad=1; fi
-  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN"; type -P git age age-plugin-batchpass fzf gum; } 2>/dev/null > "$STATE/deps"; return 0; }
+  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN|$LOCK_TOOL"; type -P git age age-plugin-batchpass fzf gum "$LOCK_TOOL"; } 2>/dev/null > "$STATE/deps"; return 0; }
   [ "${1:-}" = report ] || dim "$(install_hint)"
   return 1
 }

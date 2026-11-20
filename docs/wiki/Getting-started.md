@@ -97,6 +97,7 @@ Settings respect `XDG_CONFIG_HOME`. For contributor/test overrides, see
 
 Close other running Hostbook sessions before updating. A session started with the
 old locking code can still try to recover a stale lock while the new version is running.
+On Linux, check that `flock` is installed before updating an older installation.
 
 `hostbook update` runs `git pull --ff-only` in the installed clone. To also refresh
 dependencies, rerun the one-line installer or run `bash ~/.local/share/hostbook/install.sh`.
