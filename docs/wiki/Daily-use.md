@@ -71,6 +71,10 @@ every pane), or one tab per server. Save recurring selections with Ctrl-G; a gro
 opens. Existing hostbook tmux sessions appear in the list so you can resume them. Without tmux,
 hostbook offers to install it with Homebrew on macOS.
 
+Opening a group with an existing tmux session in Split or Tabs keeps the panes
+and turns off synchronized typing in every window. To reopen the group in Sync
+mode, close the existing session first.
+
 Hosts tagged `prod` retain a visible production marker. Run in sync across production hosts asks
 "Run on N PROD servers at once?" and defaults to cancel.
 
