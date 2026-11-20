@@ -57,6 +57,38 @@ empty_lock(){
   touch -t 202001010000 "$STATE/sync.lock"
   lock 0 && unlock && [ ! -d "$STATE/sync.lock" ]
 }
+empty_lock_replaced_during_probe(){
+  fixture replaced || return 1
+  mkdir "$STATE/sync.lock" && touch -t 202001010000 "$STATE/sync.lock" || return 1
+  find(){
+    command find "$@" || return 1
+    mv "$STATE/sync.lock" "$STATE/previous" && mkdir "$STATE/sync.lock" &&
+      : > "$STATE/sync.lock/new-writer"
+  }
+  ! lock 0 && [ -f "$STATE/sync.lock/new-writer" ] && [ -z "$LOCK_HELD" ]
+}
+metadata_gate_serializes_acquisition(){
+  fixture gate || return 1
+  local child i=0 rc=0
+  bash -c '. "$1"
+    hold_gate(){
+      local i=0
+      : > "$STATE/gate-ready"
+      until [ -e "$STATE/gate-release" ]; do
+        [ "$i" -lt 250 ] || return 1
+        sleep .02; i=$((i+1))
+      done
+    }
+    lock_edit 0 hold_gate' test "$T/library" &
+  child=$!
+  until [ -e "$STATE/gate-ready" ]; do
+    [ "$i" -lt 100 ] || { wait "$child"; return 1; }
+    sleep .02; i=$((i+1))
+  done
+  if lock 0 || [ -d "$STATE/sync.lock" ]; then rc=1; fi
+  : > "$STATE/gate-release"
+  wait "$child" && [ "$rc" = 0 ] && lock 0 && unlock && [ ! -d "$STATE/sync.lock" ]
+}
 busy_status(){
   fixture busy || return 1
   set_status ok; lock 0 || return 1
@@ -71,7 +103,7 @@ parallel_recovery(){
   mkdir "$STATE/sync.lock"; printf '%s\n' "$dead" > "$STATE/sync.lock/pid"
   local n pid pids= rc=0
   for n in 1 2 3 4 5 6; do
-    bash -c '. "$1"; lock 15 || exit 1; mkdir "$STATE/critical" || exit 2; sleep .05; rmdir "$STATE/critical"; unlock' test "$T/library" &
+    bash -c '. "$1"; lock 15 || exit 1; mkdir "$STATE/critical" || exit 2; sleep .05; rmdir "$STATE/critical" || exit 3; unlock' test "$T/library" &
     pids="$pids $!"
   done
   for pid in $pids; do wait "$pid" || rc=1; done
@@ -171,6 +203,6 @@ invalid_link(){
   ! connect_kho >/dev/null 2>&1 && [ "$(g rev-parse HEAD)" = "$checkpoint" ] &&
     [ "$(remote_url)" = "$previous" ] && [ ! -f "$DIR/broken.conf" ] && validate && [ ! -d "$STATE/sync.lock" ]
 }
-for test in live_lock foreign_unlock dead_lock empty_lock busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
+for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

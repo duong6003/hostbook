@@ -4,7 +4,8 @@
 
 Hostbook supports macOS and Linux.
 
-You need Git, curl, tar, and OpenSSH. The installer supplies fzf, gum, and age when missing
+You need Git, curl, tar, and OpenSSH. Linux also needs `flock` from util-linux.
+The installer supplies fzf, gum, and age when missing
 or too old; tmux is needed for multi-host sessions.
 
 ```bash
