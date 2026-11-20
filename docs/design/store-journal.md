@@ -59,14 +59,17 @@ These records affect one store and have no required host IDs.
 
 | Operation | Exact fields in `detail` and progression |
 | --- | --- |
-| `publish` | `attempt_id`, `connection_generation`, `target_id`, `base_oid`, `proposed_oid`, `sender_state`, `outcome`. The Git object IDs use the registered repository's object format. Only creation of a durable reserved attempt admits a send. Record uncertain outcomes, then settle accepted or not-accepted once both outcome and sender quiescence are established. Never reuse an attempt. |
+| `publish` | `attempt_id`, `connection_generation`, `connection_binding_id`, `base_oid`, `proposed_oid`, `sender_state`, `outcome`. The Git object IDs use the registered repository's object format. Only creation of a durable reserved attempt admits a send. Record uncertain outcomes, then settle accepted or not-accepted once both outcome and sender quiescence are established. Never reuse an attempt. |
 | `registration-transition` | `old_binding_id`, `proposed_binding_id`, `phase` (`fenced`, `applied`, `cancelled`). The immutable local binding references identify the exact old and proposed registry tuples, including requested settings and generations. A durable `fenced` record is itself the fence, even before the registry points to it. Only a drained fence and a verified registry replacement allow `applied`. Only reconciliation confirming the old binding remains effective allows `cancelled`. |
 
 These owner-only control records store opaque references and Git object IDs,
 without checkout paths, remote URLs, settings text or credentials. Verified,
 protected local binding records resolve exact targets and configurations by ID.
-Retain their original versions while referenced so a reconnect cannot change the
-target for a prior attempt. Ordinary sync does not depend on unlocking a store
+Before admission, persist an immutable connection binding that fixes the
+transport and target, exact full branch ref, authentication binding and
+connection generation. Settlement uses that binding independently of the
+current registry. Keep original bindings while their attempts can require
+recovery. Ordinary sync does not depend on unlocking a store
 or transaction vault. Sensitive publication or recovery evidence still needs
 protection appropriate to its content. Transfer and migration attempts keep
 their original encrypted-manifest representation.

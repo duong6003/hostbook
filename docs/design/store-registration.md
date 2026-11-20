@@ -152,6 +152,7 @@ before cutover. The context is not a security boundary against the user's own OS
 | 9. A copied device registry or callback is opened after restart or under a fixture | Require the verified local authority and fresh context. No automatic adoption of the old cache, checkout or recovery owner. |
 | 10. Disconnect, then reconnect the same URL and ref | Reject old callbacks and rights evidence, and keep historical attempts for recovery. The new connection starts receive-only. |
 | 11. With effective two-way, remote denies an ordinary edit while earlier evidence allowed it | Reject the new write and retain existing pending work. Only network unavailability can qualify for the previously authorized ordinary-edit exception. |
+| 12. Settlement finds the same remote in the registry with a different branch ref | Use the immutable ref from the admitted attempt, never the current registry ref. Keep the outcome unresolved if the original binding cannot be verified. |
 
 These scenarios describe expected decisions for downstream fixtures in
 [#36](https://github.com/duong6003/hostbook/issues/36),
