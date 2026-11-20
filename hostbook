@@ -33,7 +33,7 @@ resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this she
 }
 resolve_self "$0"
 LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
-IS_MAC=; case $OSTYPE in darwin*) IS_MAC=1;; esac
+IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; esac
 private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
@@ -699,44 +699,72 @@ notify_fzf(){ # [reload]: refresh the header (and the list when asked) without b
 # tmux session rows (s:) are not covered: listing them costs several tmux/grep forks, and a sync never changes them.
 list_sig(){ { cksum < "$IDX"; cksum < "$DIR/groups.tsv"; } 2>/dev/null; }
 visible_sig(){ { sed -n 1,2p "$ST"; cat "$FLASH"; list_sig; } 2>/dev/null; }
-# Allow only one writer. Age alone never evicts a live owner. Serialize reclaimers of the same owner,
-# reread ownership under that guard, then rename the abandoned directory before deleting it.
-lock(){ local w=${1:-0} i=0 o token seen seen_token guard stale old_id= now_id
-  while ! mkdir "$STATE/sync.lock" 2>/dev/null; do
-    o=; token=; IFS= read -r o 2>/dev/null < "$STATE/sync.lock/pid" || :
-    IFS= read -r token 2>/dev/null < "$STATE/sync.lock/owner" || :
+# Keep the gate inode stable. The kernel lock covers metadata changes only,
+# so editors, Git and SSH invoked by a writer cannot inherit it.
+lock_edit(){ (
+  local wait=$1; shift
+  if is_mac; then
+    if [ "$wait" = 0 ]; then "$LOCK_TOOL" -s -t 0 9; else "$LOCK_TOOL" -s 9; fi
+  else
+    if [ "$wait" = 0 ]; then "$LOCK_TOOL" -n 9; else "$LOCK_TOOL" 9; fi
+  fi || return 1
+  "$@"
+) 9>>"$STATE/sync.lock.gate"; }
+lock_try(){
+  local owner=$1 path=$STATE/sync.lock o= token= seen= seen_token= guard stale identity
+  if ! mkdir "$path" 2>/dev/null; then
+    # Identify the directory before inspecting its contents or age.
+    identity=$(stat -c '%d:%i' "$path" 2>/dev/null || stat -f '%d:%i' "$path" 2>/dev/null) || return 1
+    IFS= read -r o 2>/dev/null < "$path/pid" || :
+    IFS= read -r token 2>/dev/null < "$path/owner" || :
     case $o in ''|*[!0-9]*) o=;; esac
     case $token in *[!0-9.]*) token=;; esac
-    old_id=
-    if { [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; } ||
-       { [ -z "$o" ] && [ -n "$(find "$STATE/sync.lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; }; then
-      [ -n "$o" ] || old_id=$(stat -c '%d:%i' "$STATE/sync.lock" 2>/dev/null || stat -f '%d:%i' "$STATE/sync.lock" 2>/dev/null)
-      guard=$STATE/sync.lock/reap.${o:-empty}.${token:-legacy}
-      if mkdir "$guard" 2>/dev/null; then
-        seen=; seen_token=; IFS= read -r seen 2>/dev/null < "$STATE/sync.lock/pid" || :
-        IFS= read -r seen_token 2>/dev/null < "$STATE/sync.lock/owner" || :
-        now_id=; [ -z "$old_id" ] || now_id=$(stat -c '%d:%i' "$STATE/sync.lock" 2>/dev/null || stat -f '%d:%i' "$STATE/sync.lock" 2>/dev/null)
-        if [ "$seen" = "$o" ] && [ "$seen_token" = "$token" ] &&
-           { { [ -n "$o" ] && ! kill -0 "$o" 2>/dev/null; } || { [ -n "$old_id" ] && [ "$old_id" = "$now_id" ]; }; }; then
-          stale=$STATE/sync-abandoned.$$.$RANDOM
-          if mv "$STATE/sync.lock" "$stale" 2>/dev/null; then rm -rf "$stale"; continue; fi
-        fi
-        rmdir "$guard" 2>/dev/null || :
-      fi
+    if [ -n "$o" ]; then
+      kill -0 "$o" 2>/dev/null && return 1
+    else
+      [ -n "$(find "$path" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 1
     fi
-    [ $i -ge "$w" ] && return 1; sleep 1; i=$((i+1)); done
-  token=$$.$RANDOM.$RANDOM
-  printf '%s\n' "$token" > "$STATE/sync.lock/owner" && printf '%s\n' "$$" > "$STATE/sync.lock/pid" || return 1
+    [ "$identity" = "$(stat -c '%d:%i' "$path" 2>/dev/null || stat -f '%d:%i' "$path" 2>/dev/null)" ] || return 1
+    # Older instances use this guard against other reclaimers.
+    guard=$path/reap.${o:-empty}.${token:-legacy}
+    mkdir "$guard" 2>/dev/null || return 1
+    IFS= read -r seen 2>/dev/null < "$path/pid" || :
+    IFS= read -r seen_token 2>/dev/null < "$path/owner" || :
+    stale=$STATE/sync-abandoned.$$.$RANDOM
+    if [ "$seen" != "$o" ] || [ "$seen_token" != "$token" ] ||
+       { [ -n "$o" ] && kill -0 "$o" 2>/dev/null; } ||
+       [ "$identity" != "$(stat -c '%d:%i' "$path" 2>/dev/null || stat -f '%d:%i' "$path" 2>/dev/null)" ] ||
+       ! mv "$path" "$stale" 2>/dev/null; then
+      rmdir "$guard" 2>/dev/null || :
+      return 1
+    fi
+    rm -rf "$stale"
+    mkdir "$path" 2>/dev/null || return 1
+  fi
+  printf '%s\n' "$owner" > "$path/owner" && printf '%s\n' "$$" > "$path/pid" || {
+    rm -rf "$path" 2>/dev/null
+    return 1
+  }
+}
+lock(){
+  local w=${1:-0} i=0 token=$$.$RANDOM.$RANDOM
+  have "$LOCK_TOOL" || { err "$(t dep_missing "$LOCK_TOOL")" >&2; return 1; }
+  until lock_edit 0 lock_try "$token"; do
+    [ "$i" -lt "$w" ] || return 1
+    sleep 1; i=$((i+1))
+  done
   LOCK_HELD=$token
 }
-unlock(){
+unlock_owned(){
   local token= o=
-  if [ -n "$LOCK_HELD" ]; then
-    IFS= read -r token 2>/dev/null < "$STATE/sync.lock/owner" || :
-    IFS= read -r o 2>/dev/null < "$STATE/sync.lock/pid" || :
-    [ "$token" != "$LOCK_HELD" ] || [ "$o" != "$$" ] || rm -rf "$STATE/sync.lock" 2>/dev/null
+  IFS= read -r token 2>/dev/null < "$STATE/sync.lock/owner" || :
+  IFS= read -r o 2>/dev/null < "$STATE/sync.lock/pid" || :
+  if [ "$token" = "$LOCK_HELD" ] && [ "$o" = "$$" ]; then
+    rm -rf "$STATE/sync.lock" 2>/dev/null
   fi
-  LOCK_HELD=""
+}
+unlock(){
+  if [ -n "$LOCK_HELD" ] && lock_edit 1 unlock_owned; then LOCK_HELD=""; fi
 }
 # Commit all changes in ~/ssh-hosts if the config is valid.
 # Commit messages ("Gộp với kho", apply_change descriptions…) and the share-file header are data written into the user's repo and files, not screen text: they stay as they are.
@@ -2773,7 +2801,7 @@ check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "
 deps_cached(){
   local s=$STATE/deps p
   [ -r "$s" ] || return 1
-  { IFS= read -r p && [ "$p" = "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN" ] || return 1
+  { IFS= read -r p && [ "$p" = "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN|$LOCK_TOOL" ] || return 1
     while IFS= read -r p; do [ -x "$p" ] && [ "$s" -nt "$p" ] || return 1; done; } < "$s"   # -x: a symlink whose target is gone fails
   local IFS=:; for p in $PATH; do [ -z "$p" ] || [ "$s" -nt "$p" ] || return 1; done
   return 0
@@ -2782,6 +2810,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   local bad=0 v
   [ "${1:-}" = report ] || ! deps_cached || return 0
   have git || { err "$(t dep_missing git)"; bad=1; }
+  have "$LOCK_TOOL" || { err "$(t dep_missing "$LOCK_TOOL")"; bad=1; }
   if have age && have age-plugin-batchpass; then v=$(age --version | sed 's/^v//'); if ver_ge "$v" "$AGE_MIN"; then [ "${1:-}" = report ] && ok "age $v"; else err "$(t dep_old age "$v" "$AGE_MIN")"; bad=1; fi
   else err "$(t dep_missing_age)"; bad=1; fi
   if have fzf; then v=$(fzf --version | awk '{print $1}')
@@ -2790,7 +2819,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   if have gum; then v=$(gum --version | awk '{print $3}' | sed 's/^v//')
     if ver_ge "$v" "$GUM_MIN"; then [ "${1:-}" = report ] && ok "gum $v"; else err "$(t dep_old gum "$v" "$GUM_MIN")"; bad=1; fi
   else err "$(t dep_missing gum)"; bad=1; fi
-  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN"; type -P git age age-plugin-batchpass fzf gum; } 2>/dev/null > "$STATE/deps"; return 0; }
+  [ $bad = 0 ] && { { printf '%s\n' "$PATH|$FZF_MIN|$GUM_MIN|$AGE_MIN|$LOCK_TOOL"; type -P git age age-plugin-batchpass fzf gum "$LOCK_TOOL"; } 2>/dev/null > "$STATE/deps"; return 0; }
   [ "${1:-}" = report ] || dim "$(install_hint)"
   return 1
 }

@@ -21,7 +21,7 @@ configuration, usable with `ssh`, `scp`, and VS Code Remote-SSH.
 
 ## Get started
 
-You need Git, curl, tar, and OpenSSH.
+You need Git, curl, tar, and OpenSSH. Linux also needs `flock` from util-linux.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash

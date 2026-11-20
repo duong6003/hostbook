@@ -25,6 +25,7 @@ mkdir -p "$BIN"; export PATH="$BIN:$PATH"
 os=$(uname -s); arch=$(uname -m)
 case $arch in x86_64|amd64) a_fzf=amd64; a_gum=x86_64;; arm64|aarch64) a_fzf=arm64; a_gum=arm64;; *) die "Chưa hỗ trợ kiến trúc $arch";; esac
 case $os in Darwin) o_fzf=darwin; o_gum=Darwin;; Linux) o_fzf=linux; o_gum=Linux;; *) die "Chưa hỗ trợ $os";; esac
+[ "$os" != Linux ] || have flock || die "Cần cài flock (util-linux) trước"
 
 # Download NAME TARBALL_URL CHECKSUMS_URL PATH_IN_TARBALL
 fetch_bin(){

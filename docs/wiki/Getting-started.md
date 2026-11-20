@@ -4,7 +4,8 @@
 
 Hostbook supports macOS and Linux.
 
-You need Git, curl, tar, and OpenSSH. The installer supplies fzf, gum, and age when missing
+You need Git, curl, tar, and OpenSSH. Linux also needs `flock` from util-linux.
+The installer supplies fzf, gum, and age when missing
 or too old; tmux is needed for multi-host sessions.
 
 ```bash
@@ -93,6 +94,10 @@ Settings respect `XDG_CONFIG_HOME`. For contributor/test overrides, see
 [Development](Development).
 
 ## Update or uninstall
+
+Close other running Hostbook sessions before updating. A session started with the
+old locking code can still try to recover a stale lock while the new version is running.
+On Linux, check that `flock` is installed before updating an older installation.
 
 `hostbook update` runs `git pull --ff-only` in the installed clone. To also refresh
 dependencies, rerun the one-line installer or run `bash ~/.local/share/hostbook/install.sh`.
