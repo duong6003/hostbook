@@ -15,8 +15,8 @@ completion does not mean the corresponding production change is implemented.
 - [x] Measure recent CI runs: Windows 237–320 s; latest install about 100 s,
   update 31 s and real SSH 64 s. These are observed timings, not savings estimates.
 - [ ] **1. CI visibility and efficiency:** expose meaningful step timings, avoid
-  duplicate branch-push/PR runs, cancel superseded runs and cache verified Windows
-  downloads. Keep main push checks and required PR checks working.
+  duplicate branch-push/PR runs and cancel superseded runs. Keep main push checks
+  and required PR checks working.
 - [ ] **2. Shared UI and import module extraction:** move existing behavior into
   modules in an isolated worktree. Update packaging, callback loading and tests.
 - [ ] **3. Import UX first:** file selection, preflight, duplicate/key handling,
@@ -47,7 +47,7 @@ make the entry file shorter:
 - [ ] Inventory callers and shared variables before each move. Preserve return
   codes, quoting, validation and error handling; do not mix refactoring with UI changes.
 - [ ] Resolve module paths from the installed app location, not the working
-  directory. Verify install/update on Unix and Windows includes all modules.
+  directory. Verify that installation and update on macOS and Linux include all modules.
 - [ ] Avoid eagerly sourcing every feature on hot callbacks. Measure before/after
   against AGENTS.md budgets; retain Bash 3.2 compatibility and lifecycle cleanup.
 - [ ] Update repository **`AGENTS.md`** with the actual module map, where to add
@@ -58,7 +58,7 @@ make the entry file shorter:
 
 ## CI scope and cache policy
 
-- [ ] Cache downloaded Portable Git, fzf, gum and age archives using OS,
+- [ ] Cache downloaded fzf, gum and age archives using OS,
   architecture, dependency version and integrity identity in cache keys. Validate
   SHA256 on reuse; do not accept an archive solely because a cache hit occurred.
 - [ ] Keep the install directory fresh for install lifecycle tests. Reuse downloads
@@ -68,8 +68,8 @@ make the entry file shorter:
   Homebrew downloads or Linux dependencies only if measurements justify them.
 - [ ] Create a coverage matrix for shared logic, UI, install lifecycle, real SSH
   key/password login and platform-specific boundaries. Mark gaps explicitly.
-- [ ] Add missing coverage with platform-appropriate mechanisms. Preserve Windows
-  launcher/DPAPI/path checks; do not remove SSH or lifecycle checks just for speed.
+- [ ] Add missing coverage with platform-appropriate mechanisms. Preserve SSH,
+  path and installer lifecycle checks.
 - [ ] Verify event/concurrency rules do not suppress required merge checks or
   cancel an unrelated branch's runs. Report results for at least cold and warm runs.
 
@@ -124,7 +124,7 @@ This is not a claim of prototype parity.
 
 For implementation: run the existing screen suite plus targeted checks for
 44/60/100-column, 24-row layouts; empty/long values; 8/30-host results; draft and
-cancel behavior; real import/undo in isolated data; and Windows/theme behavior.
+cancel behavior; real import/undo in isolated data; and theme behavior on macOS and Linux.
 
 The checklist above is pending production work. Prototype v3 fixture import is simulated and resets on reopening. Its check
 button never connects to a server. Session-mode demos use disposable local mock

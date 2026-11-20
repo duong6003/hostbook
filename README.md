@@ -2,7 +2,7 @@
 
 **Your SSH hosts, one search away.**
 
-A terminal SSH host manager for macOS, Linux, and Windows x64. Find a host, open a group in tmux,
+A terminal SSH host manager for macOS and Linux. Find a host, open a group in tmux,
 and keep your SSH configuration in sync through a Git repository you control.
 
 ![hostbook showing searchable SSH hosts and connection details](docs/assets/hostbook.png)
@@ -10,7 +10,7 @@ and keep your SSH configuration in sync through a Git repository you control.
 ## Built for everyday SSH
 
 - **Find and connect.** Search names, tags, users, addresses, and descriptions.
-- **Work across servers.** Save groups and open tmux splits, tabs, or synchronized sessions on macOS/Linux.
+- **Work across servers.** Save groups and open tmux splits, tabs, or synchronized sessions.
 - **Keep machines in sync.** Store standard SSH config in Git, with per-host conflict resolution.
 - **Bring your credentials.** Manage reusable SSH keys and passwords in an age-encrypted vault.
 - **Share a workspace.** Export selected hosts, with or without their credentials, as a password-encrypted package.
@@ -21,31 +21,21 @@ configuration, usable with `ssh`, `scp`, and VS Code Remote-SSH.
 
 ## Get started
 
-macOS / Linux (needs Git, curl, tar, and OpenSSH):
+You need Git, curl, tar, and OpenSSH.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/duong6003/hostbook/main/install.sh | bash
 ```
 
-Windows (PowerShell):
-
-```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/duong6003/hostbook/main/install.ps1 -OutFile "$env:TEMP\hostbook-install.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\hostbook-install.ps1"
-```
-
-Close and reopen your terminal (all Windows Terminal windows on Windows), then run:
+Close and reopen your terminal, then start Hostbook.
 
 ```bash
 hostbook
 ```
 
-The installer sets up the runtime and dependencies without admin access. Windows uses
-`%LOCALAPPDATA%\hostbook`; macOS/Linux use `~/.local` and provide `hb` when available.
-Windows supports single-host SSH, sync, the encrypted vault, and sharing; tmux sessions
-and hosting a Git hub over SSH require macOS/Linux or WSL. The interface is available in
-English and Vietnamese (chosen on first run, changeable in **Tools → Appearance → Language**);
-this README and the documentation are in English.
+The installer sets up the app and dependencies under `~/.local` without admin access.
+Setup adds the `hb` alias when available. Choose English or Vietnamese on first run
+and change it later in **Tools → Appearance → Language**.
 
 To install from a clone instead (for example to contribute), run
 `git clone https://github.com/duong6003/hostbook.git ~/.local/share/hostbook` and then

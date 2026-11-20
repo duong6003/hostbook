@@ -18,8 +18,8 @@ app="$T/app space's ü"; mkdir -p "$app" "$T/elsewhere"
 cp "$HERE/../hostbook" "$app/hostbook"
 [ ! -d "$HERE/../lib" ] || cp -R "$HERE/../lib" "$app/lib"
 cp -R "$HERE/../lang" "$app/lang"
-probe="$app/hostbook"
-if ! is_windows; then ln -s "$app/hostbook" "$T/hostbook-link"; probe="$T/hostbook-link"; fi
+probe="$T/hostbook-link"
+ln -s "$app/hostbook" "$probe"
 check 'installed modules resolve through symlinks outside the app directory' '(cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && bash "$probe" _header >/dev/null && bash "$probe" _preview h:example >/dev/null && printf "one 127.0.0.1\n" | bash "$probe" _import_parse >/dev/null && bash "$probe" _demo >/dev/null)'
 check 'missing required module fails with its path while version still works' '(mv "$app/lib/import.sh" "$app/import.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && ! bash "$probe" _import_parse </dev/null 2>"$T/missing" && grep -F "$app/lib/import.sh" "$T/missing" >/dev/null; result=$?; mv "$app/import.saved" "$app/lib/import.sh"; exit "$result")'
 check 'missing host UI fails human flows and unknown-underscore search, not callbacks or version' '(mv "$app/lib/hosts.sh" "$app/hosts.saved"; cd "$T/elsewhere"; unset HOSTBOOK_LIB_DIR HOSTBOOK_LANG_DIR; bash "$probe" --version >/dev/null && bash "$probe" _header >/dev/null && bash "$probe" _demo >/dev/null && ! bash "$probe" settings </dev/null 2>"$T/missing-hosts" && grep -F "$app/lib/hosts.sh" "$T/missing-hosts" >/dev/null && ! bash "$probe" _web </dev/null 2>"$T/missing-search-hosts" && grep -F "$app/lib/hosts.sh" "$T/missing-search-hosts" >/dev/null; result=$?; mv "$app/hosts.saved" "$app/lib/hosts.sh"; exit "$result")'
@@ -48,17 +48,6 @@ if command -v tmux >/dev/null 2>&1; then
   ); }
   check 'list sessions counts live panes and excludes unrelated sessions' 'session_check'
 fi
-# Simulate MSYS option parsing even when this suite runs on Unix.
-check 'Windows path conversion protects option-like names and preserves drive paths' '(
-  is_windows(){ return 0; }
-  cygpath(){ [ "$#" = 3 ] && [ "$1" = -u ] && [ "$2" = -- ] || return 2; case "$3" in --help) printf "%s\n" --help;; "C:/Users/fixture name/key") printf "%s\n" "/c/Users/fixture name/key";; *) return 1;; esac; }
-  [ "$(unix_path --help)" = --help ] && [ "$(unix_path "C:/Users/fixture name/key")" = "/c/Users/fixture name/key" ]
-)'
-if is_windows; then
-  check 'native cygpath accepts option-like names and drive paths' '(
-    [ "$(unix_path --help)" = "$(cygpath -u -- --help)" ] && [ "$(unix_path "C:/Users/fixture name/key")" = "$(cygpath -u -- "C:/Users/fixture name/key")" ]
-  )'
-fi
 # Replacing this with raw single quotes breaks callbacks under a path containing apostrophes.
 SELF="$T/a space's hostbook"
 printf '#!/usr/bin/env bash\nprintf callback-ok\n' > "$SELF"; chmod +x "$SELF"
@@ -86,17 +75,6 @@ check 'index notices edits when the host directory contains spaces' '(
   printf "Host edited\n  HostName 127.0.0.1\n" > "$DIR/hosts.conf"; build_index full
   printf "Host edited\n  HostName 127.0.0.2\n" > "$DIR/hosts.conf"; build_index
   [ "$(host_field edited 3)" = 127.0.0.2 ]
-)'
-check 'cloned Windows repositories can commit without global Git identity' '(
-  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
-  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-  git init -q "$T/seed"
-  git -C "$T/seed" -c user.name=seed -c user.email=seed@example.com commit -q --allow-empty -m seed
-  DIR=$T/cloned; git clone -q "$T/seed" "$DIR"
-  is_windows(){ return 0; }; native_path(){ printf "%s\n" "$1"; }
-  ensure_merge_setup
-  printf "Host cloned\n  HostName 127.0.0.1\n" > "$DIR/cloned.conf"
-  g add cloned.conf; g commit -qm edited
 )'
 check 'home Ctrl-Y callback quotes an apostrophe in the state directory' '(
   STATE="$T/state space$(printf "\047")s"; mkdir -p "$STATE"; unset HOSTBOOK_ONLY
@@ -249,10 +227,6 @@ check 'apply refuses symlinked scratch destinations without changing their targe
   ! apply_change fixture delete_host_raw old > "$tx/result" 2>&1 && [ "$(cat "$tx/outside")" = "outside fixture" ] &&
     [ -L "$DIR/a.conf.tmp" ] && cmp "$DIR/a.conf" "$tx/before/a.conf" && cmp "$DIR/.git/index" "$tx/before/.git/index" && [ ! -d "$STATE/sync.lock" ]
 )'
-is_windows(){ return 0; }
-export HOSTBOOK_KEYCHAIN="file:$T/cache/identity"
-check 'Windows refuses plaintext file identity cache overrides' '[ "$(kc_backend)" = windows ]'
-check 'Windows multi-host says unsupported before probing tmux' '! (pause(){ :; }; need_tmux) > "$T/tmux" 2>&1 && grep -qi Windows "$T/tmux"'
 # run_progress must stop the whole process tree (a grandchild such as git's ssh), not only its direct child
 run_progress "x" 1 "$T/rp.out" bash -c 'sleep 4123 & sleep 4123' 2>/dev/null && rp=0 || rp=$?
 check 'run_progress: the time limit stops the job and its grandchild' '[ "$rp" = 124 ] && ! ps -ef | grep -q "[s]leep 4123"'

@@ -69,7 +69,7 @@ the latest one.
 Select hosts with Tab and press Enter. Open them as split panes, run in sync (type once, send to
 every pane), or one tab per server. Save recurring selections with Ctrl-G; a group remembers how it
 opens. Existing hostbook tmux sessions appear in the list so you can resume them. Without tmux,
-hostbook offers to install it with Homebrew on macOS; on Windows use one host at a time or WSL.
+hostbook offers to install it with Homebrew on macOS.
 
 Hosts tagged `prod` retain a visible production marker. Run in sync across production hosts asks
 "Run on N PROD servers at once?" and defaults to cancel.

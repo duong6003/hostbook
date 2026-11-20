@@ -279,7 +279,6 @@ file_pick(){ # start-dir header [enter-label] [dotfiles] [session-dir] [file-pat
         path=$(ui_field "$(t file_path_label)" '' any) || continue
         [ -n "$path" ] || { error=$(t file_path_invalid); continue; }
         case $path in '~') path=$HOME;; '~/'*) path=$HOME/${path#\~/};; esac
-        path=$(unix_path "$path") || { error=$(t file_path_invalid); continue; }
         case $path in /*) ;; *) path=${dir:-/}/$path;; esac
         if [ -d "$path" ] && [ -r "$path" ] && [ -x "$path" ]; then
           dir=$(CDPATH= cd "$path" 2>/dev/null && pwd -P) || { error=$(t file_path_invalid); continue; }

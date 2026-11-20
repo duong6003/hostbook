@@ -13,19 +13,13 @@ invalid values in the hostbook config (with file and line), sync status, and the
 
 If a dependency is missing or too old ("fzf 0.60 is too old, 0.63 or newer is needed", "age is
 missing"), rerun the installer (see [Getting started](Getting-started)). If `hostbook` is not found, reopen the
-shell and check that `~/.local/bin` is in PATH, or run `hostbook setup`. On Windows, close all Windows
-Terminal windows before reopening; check `$env:LOCALAPPDATA\hostbook\bin` in your user PATH or use the
-full-path command printed by the installer. Rerun `install.ps1` if a managed runtime/dependency is
-missing. Corporate execution/download restrictions may require your organization's approved
-installation process; the installer never changes machine execution policies.
+shell and check that `~/.local/bin` is in PATH, or run `hostbook setup`.
 
 ## Install or update fails
 
 - "Could not update" or "This copy was not installed with git" from `hostbook update`: the pull in
   `~/.local/share/hostbook` failed or that directory is not a Git clone. Run `git -C
   ~/.local/share/hostbook pull --ff-only` to see the Git error, or rerun the one-line installer.
-- "Could not download the hostbook update" (Windows): the same pull failed; check that the
-  app clone's remote is reachable by the bundled Git.
 
 ## A connection fails
 

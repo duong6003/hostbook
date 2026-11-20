@@ -2,8 +2,8 @@
 
 ## Codebase
 
-`hostbook` is a Bash 3.2-compatible executable shared by macOS, Linux, and Windows
-(Git for Windows runtime). The UI uses fzf and gum; tmux handles multi-host sessions, Git synchronizes host files, and age
+`hostbook` is a Bash 3.2-compatible executable for macOS and Linux.
+The UI uses fzf and gum. tmux handles multi-host sessions, Git synchronizes host files, and age
 protects vault credentials. The interface supports Vietnamese and English (`lang/vi.sh`, `lang/en.sh`); documentation and code comments are English.
 
 Core files:
@@ -17,11 +17,9 @@ Core files:
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
 | `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
-| `install.ps1`, `windows/` | Managed Windows runtime, native launcher, and OS boundaries. |
-| `tests/platform.sh` | Shared callback, path, CRLF, and Git identity regressions. |
+| `tests/platform.sh` | Shared callback, path, CRLF, and rollback regressions. |
 | `tests/sync.sh`, `tests/discovery.sh` | Isolated sync/locking failures and synthetic VPN discovery/address controls. |
 | `tests/install.sh` | Isolated Unix installation and update using a local Git repository. |
-| `tests/windows.ps1` | Native Windows install, security, fzf, SSH, update, and uninstall checks. |
 | `tests/test.sh` | Core regression tests with isolated data. |
 | `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
 | `tests/onboarding.sh` | Vault setup and first-run flows with synthetic credentials. |
@@ -50,8 +48,8 @@ for t in test platform sync discovery hosts-module settings-module ui file-input
 bash tests/e2e.sh
 ```
 
-This is the order used by `.github/workflows/test.yml` (`tests/e2e.sh` runs on Ubuntu only; the
-Windows job runs `tests/windows.ps1`). Tests run with `HOSTBOOK_LANG` set explicitly (`vi` for the
+This is the order used by `.github/workflows/test.yml`. `tests/e2e.sh` runs on Ubuntu only.
+Tests run with `HOSTBOOK_LANG` set explicitly (`vi` for the
 older suites, `en` for the newer ones); `HOSTBOOK_LANG_DIR` points copied fixtures at `lang/`.
 
 Changes to anything that runs per key press (preview, fzf binds, list, header, footer) must follow the
@@ -64,16 +62,9 @@ the UI language, no line wider than the terminal, field rules and inline errors,
 last, no absolute home paths, PROD deletes need the typed name, progress screens show elapsed time
 and a way to cancel, no git words, vi/en key parity).
 
-TUI tests (`tui`, `screens`, `controls`, `import-tui`, …) skip if tmux is missing; E2E tests skip if Docker is unavailable. A skipped
-check is not evidence of a pass. CI runs on macOS, Ubuntu, and Windows; a change that touches only
-Markdown, `docs/` or `LICENSE` skips it. Ubuntu runs
-Docker SSH tests;
-Windows installs its managed portable runtime, verifies launcher/native tool boundaries,
-checks NTFS/DPAPI/clipboard behavior, and provisions an isolated native SSH server for
-key/password tests. Only the disposable CI server fixture needs administrator access.
-Windows deliberately does not run the tmux TUI suite; this is a capability limit,
-not a passing test. Automated Windows execution uses a Windows Server 2025 runner;
-Windows 10/11 desktop rendering and keyboard behavior still need a human check.
+TUI tests (`tui`, `screens`, `controls`, `import-tui`, …) skip if tmux is missing.
+E2E tests skip if Docker is unavailable. CI runs on macOS and Ubuntu and skips changes
+limited to Markdown, `docs/` or `LICENSE`. Ubuntu runs the Docker SSH tests.
 Tests use temporary host lists, state, credentials, and SSH configuration.
 
 ## Test data and overrides
@@ -98,20 +89,15 @@ Vietnamese label from `lang/vi.sh` in parentheses where a reader of that UI need
 
 ## CI coverage matrix
 
-| Coverage | Ubuntu | macOS | Windows |
-| --- | --- | --- | --- |
-| Core, platform, UI, import | Shared suites | Shared suites | Platform callbacks, import headless suites and Windows-specific checks; full shared suites not run |
-| Interactive UI | tmux, fzf screens | tmux, fzf screens | Native fzf callbacks; no tmux suite or physical terminal rendering |
-| Install / update | Fresh isolated install and Git update | Fresh isolated install and Git update | Fresh managed install, update and uninstall |
-| Uninstall | Manual documented removal; not automated | Manual documented removal; not automated | Automated; preserves host data and unrelated files |
-| Real SSH key and password | Disposable Docker sshd | Not covered | Disposable native sshd |
-| Native boundaries | Unix shared checks | Unix shared checks; real Keychain not exercised | Launcher arguments, paths, DPAPI, clipboard, private agent |
+| Coverage | Ubuntu | macOS |
+| --- | --- | --- |
+| Core, platform, UI, import | Shared suites | Shared suites |
+| Interactive UI | tmux, fzf screens | tmux, fzf screens |
+| Install / update | Fresh isolated install and Git update | Fresh isolated install and Git update |
+| Uninstall | Manual removal | Manual removal |
+| Real SSH key and password | Disposable Docker sshd | Not covered |
+| Native boundaries | Unix shared checks | Unix shared checks with a Keychain fixture |
 
 The macOS real SSH gap remains: the Linux fixture requires Docker, and enabling a
 system SSH server or changing user credentials on a runner would require a separate
-isolated fixture. Unix has no uninstall command; its documented manual removal is
-not exercised by the install test. Windows download cache contains only archives,
-verified by SHA256 before extraction, and the Windows install test deliberately
-corrupts one archive to check recovery. Actions step durations show restore/save
-overhead; the install and warm update log their elapsed times. Compare runs with
-the same cache key and note that install includes that corruption recovery.
+isolated fixture. See [Getting started](Getting-started) for manual removal steps.
