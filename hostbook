@@ -2158,9 +2158,30 @@ need_tmux(){
   else clear; title "$UI_AT"; warn "$(t tmux_need)"; dimw "  $(t tmux_hint_install)"; pause; fi
   return 1
 }
+resume_without_sync(){ # session/window IDs from one list-windows snapshot
+  local session=${1%% *} row_session window panes pane synchronized states
+  [ -n "$session" ] || return 1
+  while IFS=' ' read -r row_session window; do
+    [ "$row_session" = "$session" ] && [ -n "$window" ] &&
+      tmux set-window-option -t "$window" synchronize-panes off >/dev/null 2>&1 || return 1
+  done <<< "$1"
+  # A pane can override the window's synchronize-panes option.
+  panes=$(tmux list-panes -s -t "$session" -F '#{pane_id} #{synchronize-panes}' 2>/dev/null) || return 1
+  while IFS=' ' read -r pane synchronized; do
+    case $synchronized in
+      0) ;;
+      1) tmux set-option -pu -t "$pane" synchronize-panes >/dev/null 2>&1 || return 1;;
+      *) return 1;;
+    esac
+  done <<< "$panes"
+  tmux set -t "$session" status-right " $(t tmux_hint "$2" "$2") " >/dev/null 2>&1 || return 1
+  states=$(tmux list-panes -s -t "$session" -F '#{synchronize-panes}' 2>/dev/null) || return 1
+  case ${states//$'\n'/} in ''|*[!0]*) return 1;; esac
+  attach "$session"
+}
 open_many(){ # group-name-or-empty host...
   local grp=$1; shift
-  local mode="" s first=1 h nprod=0 last ok_hosts="" missing="" sshcmd=ssh diagram d0 d1 d2
+  local mode="" s session="" windows pfx synchronized=off hint h nprod=0 last ok_hosts="" missing="" sshcmd=ssh diagram d0 d1 d2
   need_tmux || return 1
   for h in "$@"; do if valid_name "$h" && host_exists "$h"; then ok_hosts="$ok_hosts $h"; else missing="$missing $h"; fi; done
   set -- $ok_hosts; [ $# -gt 0 ] || { flash "${CR}${ICON_ERR} $(t err_open_none)${C0}"; return 1; }
@@ -2184,32 +2205,50 @@ open_many(){ # group-name-or-empty host...
     echo "$mode" > "$STATE/lastmode"
     [ -n "$grp" ] && { set_group_mode "$grp" "$mode"; save_and_sync "$(t done_group_mode "$grp" "$(mode_label "$mode")")"; }
   fi
-  for h in "$@"; do is_prod "$h" && nprod=$((nprod+1)); done
-  if [ "$mode" = sync ] && [ $nprod -gt 0 ]; then
-    at "$(t open_title "$#")"; ui_confirm --default=false --affirmative "$(t open_prod_yes)" --negative "$(t cancel)" "$(t open_prod_q "$nprod")" "$CD$(t open_prod_detail)$C0" || return 1
-  fi
   # name group sessions after the group; temporary selections use the first server + count + set hash to distinguish different selections
   if [ -n "$grp" ]; then s="hb-$grp"; elif [ $# -eq 1 ]; then s="hb-$1"
   else s="hb-$1+$(( $# - 1 ))-$(printf '%s\n' "$@" | sort | cksum | cut -c1-4)"; fi
   s=$(printf '%s' "$s" | tr -c 'a-zA-Z0-9_+-' '-')
-  if tmux has-session -t "=$s" 2>/dev/null; then attach "$s"; return; fi
+  pfx=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pfx=${pfx:-^b}
+  if windows=$(tmux list-windows -t "=$s" -F '#{session_id} #{window_id}' 2>/dev/null); then
+    if [ "$mode" = sync ]; then flash "${CY}${ICON_WARN} $(t warn_open_sync_existing)${C0}"; return 1; fi
+    resume_without_sync "$windows" "$pfx" || { flash "${CR}${ICON_ERR} $(t err_open_session)${C0}"; return 1; }
+    return 0
+  fi
+  hint=$(t tmux_hint "$pfx" "$pfx")
+  if [ "$mode" = sync ]; then
+    for h in "$@"; do is_prod "$h" && nprod=$((nprod+1)); done
+    if [ "$nprod" -gt 0 ]; then
+      at "$(t open_title "$#")"; ui_confirm --default=false --affirmative "$(t open_prod_yes)" --negative "$(t cancel)" "$(t open_prod_q "$nprod")" "$CD$(t open_prod_detail)$C0" || return 1
+    fi
+    synchronized=on; hint=$(t tmux_hint_sync "$pfx")
+  fi
   prepare_login "$@" || { pause; return 1; }   # unlock and load keys once here so panes do not prompt simultaneously
   record "$@"
   sshcmd=$(pane_cmd)
   for h in "$@"; do
-    if [ $first = 1 ]; then tmux new-session -d -s "$s" -n "${grp:-$h}" "$sshcmd $(printf %q "$h")"; first=0
-    elif [ "$mode" = tabs ]; then tmux new-window -t "$s" -n "$h" "$sshcmd $(printf %q "$h")"
-    else tmux split-window -t "$s" "$sshcmd $(printf %q "$h")"; tmux select-layout -t "$s" tiled >/dev/null; fi
-    tmux select-pane -t "$s" -T "$h$(is_prod "$h" && echo ' · PROD')"
-    is_prod "$h" && tmux set -p -t "$s" pane-border-style "fg=$(tmux_color "$TH_ERR")" \; set -p -t "$s" pane-active-border-style "fg=$(tmux_color "$TH_ERR"),bold" 2>/dev/null
+    if [ -z "$session" ]; then
+      # Set the mode in the create command queue. A later Split resume must win.
+      session=$(tmux new-session -dP -F '#{session_id}' -s "$s" -n "${grp:-$h}" "$sshcmd $(printf %q "$h")" \
+        \; set-window-option -t "=$s:" synchronize-panes "$synchronized" \
+        \; set-option -t "=$s:" status-right " $hint " 2>/dev/null) && [ -n "$session" ] || {
+        flash "${CR}${ICON_ERR} $(t err_open_session)${C0}"; return 1
+      }
+    elif [ "$mode" = tabs ]; then
+      tmux new-window -t "$session:" -n "$h" "$sshcmd $(printf %q "$h")" &&
+        tmux set-window-option -t "$session:" synchronize-panes off >/dev/null || return 1
+    else
+      tmux split-window -t "$session:" "$sshcmd $(printf %q "$h")" || return 1
+      tmux select-layout -t "$session:" tiled >/dev/null
+    fi
+    tmux select-pane -t "$session:" -T "$h$(is_prod "$h" && echo ' · PROD')"
+    is_prod "$h" && tmux set -p -t "$session:" pane-border-style "fg=$(tmux_color "$TH_ERR")" \; set -p -t "$session:" pane-active-border-style "fg=$(tmux_color "$TH_ERR"),bold" 2>/dev/null
   done
-  local pfx; pfx=$(tmux show -gv prefix 2>/dev/null | sed 's/^C-/^/'); pfx=${pfx:-^b}
-  tmux set -t "$s" remain-on-exit on \; set -t "$s" pane-border-status top \; set -t "$s" pane-border-format ' #{pane_title} ' \; \
-    set -t "$s" status-style "bg=$(tmux_color "$TH_OK"),fg=$(tmux_color "$TH_CHIP_FG")" \; set -t "$s" status-left "[${s#hb-}] " \; \
-    set -t "$s" status-right " $(t tmux_hint "$pfx" "$pfx") " \; set -t "$s" status-left-length 30 >/dev/null
-  if [ "$mode" = sync ]; then tmux set-window-option -t "$s" synchronize-panes on >/dev/null; tmux set -t "$s" status-right " $(t tmux_hint_sync "$pfx") " >/dev/null; fi
-  [ "$mode" = tabs ] && tmux select-window -t "$s:^" 2>/dev/null
-  attach "$s"
+  tmux set -t "$session:" remain-on-exit on \; set -t "$session:" pane-border-status top \; set -t "$session:" pane-border-format ' #{pane_title} ' \; \
+    set -t "$session" status-style "bg=$(tmux_color "$TH_OK"),fg=$(tmux_color "$TH_CHIP_FG")" \; set -t "$session" status-left "[${s#hb-}] " \; \
+    set -t "$session" status-left-length 30 >/dev/null
+  [ "$mode" = tabs ] && tmux select-window -t "$session:^" 2>/dev/null
+  attach "$session"
 }
 # Each tmux pane runs hostbook itself, providing connection progress and error explanations.
 # The tmux server may predate this process and lack its environment variables, so pass them explicitly.
