@@ -25,8 +25,8 @@ vault. Device registration selects exactly one active checkout per store ID;
 duplicate registrations require explicit selection/reconciliation. State, caches,
 locks, status, connections and modes are separately scoped by store ID (and
 checkout/connection generations where required). No process-global singleton
-store, shared vault or alias-only state key is implied. Registration/permission
-encoding and concrete filesystem/platform isolation remain future work.
+store, shared vault or alias-only state key is implied. The [registration contract](store-registration.md) chooses device-local encoding.
+Concrete filesystem isolation remains future work.
 
 ## Exact v1 data and validation
 
@@ -202,7 +202,6 @@ PY
 Broad runtime suites provide no evidence for an unimplemented format.
 These examples are decision cases, not a parser,
 crash-safety proof or complete parent acceptance map. Remaining #35 work includes
-registration/permission representation,
 lineage/update-existing, concrete writer isolation/restore, platform mechanisms,
 SSH resolver and full acceptance mapping. The [journal/retention proposal](store-journal.md)
 selects device-local recovery encoding and collection. Downstream #36–#46 own runtime work.

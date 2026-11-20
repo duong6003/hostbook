@@ -10,7 +10,7 @@ completion of #35.
 
 Choose a private **device/account recovery root**, outside every checkout, Git directory, shared/synchronized
 folder and export tree. Defaults are `~/.local/state/hostbook/recovery-v1` on Linux, `~/Library/Application
-Support/Hostbook/Recovery/v1` on macOS, and `%LOCALAPPDATA%\Hostbook\Recovery\v1` on Windows. Registration must
+Support/Hostbook/Recovery/v1` on macOS. [Registration](store-registration.md) must
 verify this boundary, ownership and confidentiality before use; an unsafe/unverifiable root blocks mutation, never
 falls back inside a store. Do not reuse an arbitrary `HOSTBOOK_STATE` override without these checks. Nothing here
 is tracked, synced, included in `.hbshare`, or copied by ordinary store export/checkout relocation.
@@ -195,7 +195,7 @@ print('store journal documentation: PASS (links, 10 cases)')
 PY
 ```
 
-These checks do not exercise encryption, crash recovery, remote settlement or ACLs. Windows/macOS durability/ACL
-mechanics remain unverified. Registration/permission encoding, concrete writer isolation/restore/platform
+These checks do not exercise encryption, crash recovery, remote settlement or ACLs. macOS/Linux durability and permission
+mechanics remain unverified. Concrete writer isolation/restore/platform
 primitives, update-existing lineage, SSH resolver and full parent acceptance mapping remain later #35 work;
 downstream #36–#46 own implementation and isolated runtime checks.

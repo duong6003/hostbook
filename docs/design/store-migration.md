@@ -188,7 +188,8 @@ selected conceptual decisions/invariants; it does not call the app, Git, vault,
 SSH or network and does not prove enforcement, encryption or crash safety.
 Its four handoff checkpoints cover drain, cutover, authorized reservation and lost
 acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
-Remaining before implementation: registration/permission encoding, concrete writer
+The [registration contract](store-registration.md) defines the active binding.
+Remaining before implementation: concrete writer
 isolation/upgrade negotiation,
 platform ACL/lock/restore mechanics, identity
 reconciliation/update-existing lineage, store SSH resolution and complete parent

@@ -32,7 +32,7 @@ Private and **each** independently registered shared store own all resources bel
 There is no singleton shared directory, vault, unlock entry, gate or sync status.
 Multiple checkouts of one logical store need one active-checkout generation and
 the transfer document's transition barrier; they do not become independent stores.
-Paths below are logical resource names, not a selected disk layout.
+The [registration contract](store-registration.md) defines the device-local registry and callback context.
 
 | Resource | Owner and isolation/invalidation rule |
 | --- | --- |
@@ -179,8 +179,8 @@ The [migration contract](store-migration.md) defines classification, verified
 backup/restore, rollback boundaries and honest old/new writer compatibility gates.
 The [format/admission proposal](store-format.md) selects durable identity encoding
 and legacy SSH/share-package mapping; [journal/retention](store-journal.md) selects
-local authority and protected payloads. Remaining #35 work: registration/permission
-encoding, concrete upgrade/isolation and restore mechanisms; reference reconciliation/update-existing
+local authority and protected payloads. Remaining #35 work includes concrete
+upgrade/isolation and restore mechanisms, reference reconciliation/update-existing
 lineage; implementation-level lock/cache/vault/SSH-resolution design; complete
 platform writer mapping and mapping all parent #33 acceptance scenarios to fixtures.
 This bounded inventory does not choose those mechanisms or close #35. Downstream
