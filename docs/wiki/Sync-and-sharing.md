@@ -12,7 +12,7 @@ repository** once one is set), or choose a remote on first launch. Pick a machin
 the LAN/Tailscale, **Enter an address…** (`user@machine` or an IP), or **Use a URL…** such as
 `git@github.com:you/ssh-hosts-private.git`. The repository must be private, and you still need
 permission to access it. To host the repository yourself, run **Create the store on this machine**
-once on an always-on Linux/macOS machine (SSH must be on); Windows can only connect to an existing one.
+once on an always-on macOS or Linux machine with SSH enabled.
 
 ## Synchronization behavior
 

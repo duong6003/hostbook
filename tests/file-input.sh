@@ -9,7 +9,6 @@ mkdir -p "$HOME" "$HOSTBOOK_DIR" "$HOSTBOOK_STATE" "$XDG_CONFIG_HOME" "$T/sessio
 UI_AT= TAB=$'\t' NL=$'\n' CD= C0=
 t(){ printf '%s' "$1"; }
 ui_keys(){ :; }
-unix_path(){ printf '%s\n' "$1"; }
 ui_menu(){
   printf '%s\n' "${UI_QUERY:-}" >> "$T/queries"
   local n; n=$(cat "$T/step"); printf '%s' "$((n+1))" > "$T/step"

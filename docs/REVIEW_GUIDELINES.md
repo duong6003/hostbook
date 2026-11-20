@@ -24,13 +24,13 @@ Inspect relevant risks in this order; adapt depth to the changed code.
 
 | Area | Questions to verify |
 | --- | --- |
-| Credentials and vault | Can keys, passwords, recovery material or vault identities leak through argv, environment, logs, clipboard or temporary files? Are caches, agent lifetimes and cleanup consistent with documented behavior? Check Unix permissions and Windows ACL/DPAPI boundaries, including failure paths. |
+| Credentials and vault | Can keys, passwords, recovery material or vault identities leak through argv, environment, logs, clipboard or temporary files? Are caches, agent lifetimes and cleanup consistent with documented behavior? Check file permissions and credential storage, including failure paths. |
 | Data integrity | Do add/edit/delete/rename/move, import, rollback and undo preserve unrelated files, credentials and pre-existing staged or unstaged changes? Can partial writes, failed encryption, disk errors or concurrent edits leave inconsistent state? |
 | Git sync | Are locks released only by their owner? Can stale-lock recovery interrupt live work? Verify offline, timeout, failed push, missing upstream, rebase/conflict and multiple-instance behavior. UI status must reflect the actual outcome. |
 | Untrusted input | Trace repository content, SSH configuration, clipboard and share packages into shell commands and filesystem writes. Check quoting, option injection, path traversal, archive links, extraction limits and SSH directives that can execute local commands. Syntax validity alone does not establish trust. |
 | SSH and PROD | Verify host-key handling, credential selection, ProxyJump chains, key replacement and bounded connection checks. Destructive operations and synchronized PROD sessions need the confirmations required by the screen contract. |
 | Performance and processes | Apply AGENTS.md hot-path rules and budgets. Check index invalidation, callback forks, blocking work, cancellation, timeout and terminal-close cleanup. Previewing or scrolling must not initiate network connections. |
-| Platform compatibility | Preserve Bash 3.2 compatibility. Check BSD/GNU differences, Windows/MSYS argument conversion, native tool boundaries, CRLF, Unicode and paths with spaces. Do not infer native Windows behavior from Linux tests. |
+| Platform compatibility | Preserve Bash 3.2 compatibility. Check BSD/GNU differences, native tool boundaries, CRLF, Unicode and paths with spaces. |
 | UI and language | Check Enter/Esc/Ctrl-C, back/cancel semantics, retained input, danger defaults, narrow terminals and themes. Follow the screen contract and verify vi/en key parity and printf placeholders. |
 | Installation and maintenance | Check dependency integrity, install/update/uninstall failure recovery, preservation of user data, test isolation, meaningful CI assertions and documentation matching current behavior. |
 
@@ -71,8 +71,8 @@ the requesting user and ask how to disclose them rather than posting the details
   another contributor's branch. Do not push directly to main or merge without explicit authorization.
 - Add a regression test for a behavior bug when practical, preferably demonstrating failure before
   the fix and success afterward. Documentation-only changes need link/content checks, not runtime tests.
-- Run relevant checks from Development and CI, including import tests for import changes, native Windows
-  checks for Windows boundaries, and screen tests for screen changes. Follow AGENTS.md for performance
+- Run relevant checks from Development and CI, including import tests for import changes
+  and screen tests for screen changes. Follow AGENTS.md for performance
   measurements. Record commands, platform, results and skipped or unavailable checks separately.
 - A skipped test is not a pass. CI success applies only to its tested SHA and coverage; missing tools
   or a different operating system must be reported, not silently treated as verification.

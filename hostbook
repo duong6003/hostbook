@@ -7,12 +7,12 @@
 # The shared repository is the "origin" remote of ~/ssh-hosts: a bare repo on an always-on machine reachable over the network.
 # Local to each machine (not synced): ~/.local/state/hostbook (usage history, index, status).
 #
-# Requires git, fzf >= 0.63, gum >= 0.14, and tmux to open multiple servers. Bash 3.2 compatible; Windows uses the managed Git for Windows runtime.
+# Requires git, fzf >= 0.63, gum >= 0.14, and tmux to open multiple servers. Bash 3.2 compatible.
 set -u
 # Closing the terminal must end hostbook and its gum/fzf (#4). "trap cleanup EXIT" makes bash defer SIGHUP until the
 # foreground child exits, and gum ignores a revoked terminal. So the terminal's process is this trap-free parent: it
 # dies on SIGHUP at once, the kernel then hangs up the whole foreground group, and the app below runs cleanup.
-# Only macOS and Linux use it: internal _* callbacks (hot paths), Windows (any other $OSTYPE) and sourced tests skip it.
+# Internal _* callbacks (hot paths) and sourced tests skip it.
 # Limit: SIGTERM sent to this parent alone (e.g. `timeout`) is not forwarded; signal the process group instead.
 if [ -z "${HOSTBOOK_APP:-}" ] && [ "${BASH_SOURCE:-}" = "$0" ]; then
   case ${1:-}:$OSTYPE in _*:*) ;; *:darwin*|*:linux*) HOSTBOOK_APP=1 "$BASH" "$0" "$@"; exit;; esac
@@ -33,21 +33,11 @@ resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this she
 }
 resolve_self "$0"
 LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
-IS_WIN=; IS_MAC=; case $OSTYPE in darwin*) IS_MAC=1;; linux*) ;; *) case $(uname -s) in MINGW*|MSYS*) IS_WIN=1;; esac;; esac   # no fork on macOS/Linux; $OSTYPE varies on Windows runtimes, so ask uname there
-is_windows(){ [ -n "$IS_WIN" ]; }
-unix_path(){ if is_windows; then cygpath -u -- "$1"; else printf '%s\n' "$1"; fi; }
-native_path(){ if is_windows; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
-windows_tool(){ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "${HOSTBOOK_PLATFORM_HELPER:-$(dirname "$SELF")/windows/platform.ps1}")" "$@"; }
-private_dir(){ if is_windows; then windows_tool private-dir "$(cygpath -w "$1")"; else mkdir -p "$1" && chmod 700 "$1"; fi; }
-if is_windows; then
-  HOME=$(unix_path "$HOME"); export HOME
-  # fzf's native command arguments are protected from MSYS conversion; its Bash callbacks need normal conversion again.
-  unset MSYS2_ARG_CONV_EXCL MSYS_NO_PATHCONV
-fi
+IS_MAC=; case $OSTYPE in darwin*) IS_MAC=1;; esac
+private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
 SSHCFG=${HOSTBOOK_SSH_CONFIG:-}   # test override for ~/.ssh/config
-if is_windows; then DIR=$(unix_path "$DIR"); STATE=$(unix_path "$STATE"); [ -z "$SSHCFG" ] || SSHCFG=$(unix_path "$SSHCFG"); fi
 IDX=$STATE/index.tsv; HIST=$STATE/history; ST=$STATE/status; FLASH=$STATE/flash
 GRP=$DIR/groups.tsv
 ME=${USER:-$(id -un)}
@@ -57,11 +47,9 @@ case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in *[Uu][Tt][Ff]*8*) ;; *)
   for l in C.UTF-8 en_US.UTF-8; do locale -a 2>/dev/null | grep -qix "$l\|${l%UTF-8}utf8" && { export LC_CTYPE=$l; break; }; done;; esac
 # Commands a person runs re-apply 700 to the state dir; callbacks and --version only create a missing one (mkdir+chmod fork).
 private=1
-if is_windows; then [ "${HOSTBOOK_PRIVATE_STATE:-}" != "$STATE" ] || private=
-else case ${1:-} in _*|--version|-v|version) [ -d "$STATE" ] && [ -O "$STATE" ] && private=;; esac; fi
+case ${1:-} in _*) [ -d "$STATE" ] && [ -O "$STATE" ] && private=;; esac
 if [ -n "$private" ]; then
   private_dir "$STATE" || STATE_FAIL=1   # reported once the language is loaded (bottom of this file)
-  if is_windows; then export HOSTBOOK_PRIVATE_STATE=$STATE; fi
 fi
 [ -f "$HIST" ] || { cp "$HOME/.local/state/sshm/history" "$HIST" 2>/dev/null || : > "$HIST"; }   # preserve history from the sshm prototype
 
@@ -75,18 +63,12 @@ cleanup(){ trap '' HUP; set -- "$STATE/tmp/$$".*; [ ! -e "$1" ] || rm -rf "$@" 2
 trap cleanup EXIT; trap 'exit 129' HUP
 # Only the owner can read temporary directories; plaintext secrets must stay here. Removed automatically on exit.
 tmpd(){ private_dir "$STATE/tmp" || return 1; mktemp -d "$STATE/tmp/$$.XXXXXX"; }
-# Only ciphertext is shared with askpass children. Each top-level invocation gets a fresh DPAPI cache.
-if is_windows && [ -z "${HOSTBOOK_SESSION_CACHE:-}" ]; then
-  d=$(tmpd) || exit 1; export HOSTBOOK_SESSION_CACHE=$d/identity.dpapi
-fi
 ssh_path(){ case $1 in *[[:space:]]*) printf '\"%s\"' "$1";; *) printf '%s' "$1";; esac; }
 self_cmd(){ printf 'bash %q' "$SELF"; }
-# Native fzf splits --with-shell on spaces; resolve Bash through the selected runtime's PATH.
-fzf(){ if is_windows; then MSYS2_ARG_CONV_EXCL='*' MSYS_NO_PATHCONV=1 command fzf --with-shell 'bash --noprofile --norc -c' "$@"; else command fzf "$@"; fi; }
-clip_get(){ if is_windows; then windows_tool clipboard-get; elif have pbpaste; then pbpaste; elif have wl-paste; then wl-paste; elif have xclip; then xclip -o -selection clipboard; elif have xsel; then xsel -ob; else return 1; fi; }
+clip_get(){ if have pbpaste; then pbpaste; elif have wl-paste; then wl-paste; elif have xclip; then xclip -o -selection clipboard; elif have xsel; then xsel -ob; else return 1; fi; }
 sha256(){ if have sha256sum; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 export GIT_OPTIONAL_LOCKS=0   # background git status must not contend for the index lock with another sync
-g(){ if is_windows; then git -C "$(native_path "$DIR")" "$@"; else git -C "$DIR" "$@"; fi; }
+g(){ git -C "$DIR" "$@"; }
 revert_in_progress(){ g rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
 scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
@@ -102,7 +84,7 @@ port_open(){ # host port [seconds]: check whether a TCP port is open; use Bash /
   if have nc; then if is_mac; then nc -z -G "${3:-1}" "$1" "$2" 2>/dev/null; else nc -z -w "${3:-1}" "$1" "$2" 2>/dev/null; fi
   else (exec 3<>"/dev/tcp/$1/$2") 2>/dev/null; fi; }   # try GNU first: on Linux, "stat -f" is a different command that does not fail
 is_mac(){ [ -n "$IS_MAC" ]; }
-copy(){ if is_windows; then windows_tool clipboard-set; elif have pbcopy; then pbcopy; elif have wl-copy; then wl-copy; elif have xclip; then xclip -selection clipboard; elif have xsel; then xsel -b; else return 1; fi; }
+copy(){ if have pbcopy; then pbcopy; elif have wl-copy; then wl-copy; elif have xclip; then xclip -selection clipboard; elif have xsel; then xsel -b; else return 1; fi; }
 has_remote(){ [ -n "$(g remote 2>/dev/null)" ]; }
 remote_url(){ g remote get-url origin 2>/dev/null; }
 kho_addr(){ local u; u=$(remote_url); case $u in /*) t kho_addr_here;; file://*) u=${u#file://}; t kho_addr_dir "${u/#$HOME/~}";; *://*) u=${u#*://}; u=${u#*@}; echo "${u%%/*}";; *@*:*) echo "${u%%:*}";; *) echo "$u";; esac; }
@@ -137,7 +119,7 @@ prog_line(){ # message elapsed limit tick → that one line, redrawn in place (o
 kill_tree(){ # pid… → TERM each process and all its descendants (found first, so nothing is reparented away), KILL what is left
   local all="" new="$*" c p
   while [ -n "$new" ]; do all="$all $new"; c=""
-    # pgrep is missing from Git for Windows (MSYS); "ps -ef" prints UID PID PPID there too
+    # Keep a ps fallback for minimal systems without pgrep.
     if have pgrep; then for p in $new; do c="$c $(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')"; done
     else c=$(ps -ef 2>/dev/null | awk -v l=" $new " '{ if (index(l, " " $3 " ")) printf "%s ", $2 }'); fi
     new=$(echo $c); done
@@ -165,7 +147,7 @@ ask_pw(){ # header [error] → print what was typed. Password fields stay gum in
 . "$LIBDIR/ui.sh" || exit 1
 
 # ---------- machine-local configuration and theme ----------
-CONF=${XDG_CONFIG_HOME:-$HOME/.config}/hostbook; if is_windows; then CONF=$(unix_path "$CONF"); fi
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/hostbook
 CFG=$CONF/config
 # Helpers that take an optional trailing [var] assign the result to it with printf -v instead of printing (no subshell).
 kv_next(){ # read the next "key = value  # comment" line of stdin into KK and KV, skipping comment lines; 1 at EOF
@@ -693,17 +675,9 @@ merge_driver(){ # base ours theirs path
     }' "$1" "$2" "$3" > "$2.hbmerge"; rc=$?
   mv "$2.hbmerge" "$2"; return $rc
 }
-ensure_git_identity(){
-  if is_windows; then
-    g config user.name >/dev/null || g config user.name "$ME" || return 1
-    g config user.email >/dev/null || g config user.email "$ME@hostbook.local" || return 1
-  fi
-}
 ensure_merge_setup(){ # register the merger for the data repo (git config is machine-local; .gitattributes is synced)
   [ -d "$DIR/.git" ] || return 0
   revert_in_progress && return 0   # a path-limited commit would clear the revert state
-  ensure_git_identity || return 1
-  if is_windows; then g config core.autocrlf false; fi
   g config merge.hostbook.name "hostbook: merge per server"   # git config in the user's repo (data, not screen text)
   g config merge.hostbook.driver "$(printf %q "$SELF") _merge %O %A %B %P"
   local changed=""
@@ -770,7 +744,6 @@ commit_all(){ local msg=$1 e
   if revert_in_progress; then set_status invalid "$(t err_undo_restore)"; return 1; fi
   if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
   [ -z "$(g status --porcelain)" ] && return 0
-  ensure_git_identity || return 1
   g add -A && g commit -qm "$msg" >/dev/null
 }
 # Pull, push, and record status. Never prompt, so this can run in the background.
@@ -887,42 +860,38 @@ sync_ui(){ # ^s and Tools → Sync now: a progress screen, then a flash with the
 # ---------- secret vault ----------
 # Keys and passwords live in ~/ssh-hosts/secrets, encrypted with age to an identity (vault.pub). That identity is protected by
 # a master password (vault.key.age) and a recovery code (vault.recovery.age). After the first unlock, the operating system
-# stores the identity (Keychain / secret-service); Windows keeps only a per-invocation DPAPI-encrypted cache.
+# stores the identity (Keychain / secret-service).
 SEC=$DIR/secrets
 KEY_TTL=${HOSTBOOK_KEY_TTL:-}; [ -n "$KEY_TTL" ] || { cfg key_ttl 8h KEY_TTL; duration "$KEY_TTL" KEY_TTL; }
 vault_exists(){ [ -f "$SEC/vault.pub" ]; }
 vault_started(){ local f; [ ! -L "$SEC" ] || return 0; for f in "$SEC/vault.pub" "$SEC/vault.key.age" "$SEC/vault.recovery.age"; do [ ! -e "$f" ] && [ ! -L "$f" ] || return 0; done; return 1; }
 vault_id(){ sha256 < "$SEC/vault.pub" | cut -c1-8; }
 kc_backend(){
-  if is_windows; then echo windows; return; fi
   case ${HOSTBOOK_KEYCHAIN:-} in file:*) echo "$HOSTBOOK_KEYCHAIN"; return;; esac
   if is_mac && have security; then echo mac; return; fi
   if have secret-tool && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then echo st; return; fi
   local d; for d in "${XDG_RUNTIME_DIR:-}" /dev/shm; do [ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ] && { echo "file:$d/hostbook-$(id -u)/identity"; return; }; done
   echo none
 }
-kc_label(){ case $(kc_backend) in windows) t kc_windows;; mac) t kc_mac;; st) t kc_st;; file:*) t kc_file;; *) t kc_none;; esac; }
+kc_label(){ case $(kc_backend) in mac) t kc_mac;; st) t kc_st;; file:*) t kc_file;; *) t kc_none;; esac; }
 kc_get(){ local b; b=$(kc_backend); case $b in
-  windows) [ -f "$HOSTBOOK_SESSION_CACHE" ] && windows_tool cache-get "$(cygpath -w "$HOSTBOOK_SESSION_CACHE")" 2>/dev/null;;
   mac) security find-generic-password -s hostbook -a "vault:$(vault_id)" -w 2>/dev/null | base64 -d 2>/dev/null;;
   st) secret-tool lookup service hostbook account "vault:$(vault_id)" 2>/dev/null | base64 -d 2>/dev/null;;
   file:*) cat "${b#file:}-$(vault_id)" 2>/dev/null;;
   *) return 1;; esac; }
 kc_set(){ local b v; b=$(kc_backend)
-  if [ "$b" = windows ]; then windows_tool cache-set "$(cygpath -w "$HOSTBOOK_SESSION_CACHE")"; return; fi
   v=$(base64 | tr -d '\n'); case $b in   # identity via stdin
   mac) security add-generic-password -U -s hostbook -a "vault:$(vault_id)" -w "$v" >/dev/null 2>&1;;
   st) printf '%s' "$v" | secret-tool store --label "hostbook" service hostbook account "vault:$(vault_id)" 2>/dev/null;;
   file:*) mkdir -p "$(dirname "${b#file:}")"; chmod 700 "$(dirname "${b#file:}")"; printf '%s' "$v" | base64 -d > "${b#file:}-$(vault_id)";;
   *) return 0;; esac; }
 kc_del(){ local b; b=$(kc_backend); case $b in
-  windows) rm -f "$HOSTBOOK_SESSION_CACHE";;
   mac) security delete-generic-password -s hostbook -a "vault:$(vault_id)" >/dev/null 2>&1;;
   st) secret-tool clear service hostbook account "vault:$(vault_id)" 2>/dev/null;;
   file:*) rm -f "${b#file:}-$(vault_id)";; esac; return 0; }
 id_ok(){ [ "$(age-keygen -y 2>/dev/null)" = "$(cat "$SEC/vault.pub")" ]; }   # identity via stdin
-age_pw_enc(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -e -j batchpass -a; }
-age_pw_dec(){ MSYS2_ENV_CONV_EXCL=AGE_PASSPHRASE AGE_PASSPHRASE=$1 age -d -j batchpass "$(native_path "$2")" 2>/dev/null; }
+age_pw_enc(){ AGE_PASSPHRASE=$1 age -e -j batchpass -a; }
+age_pw_dec(){ AGE_PASSPHRASE=$1 age -d -j batchpass "$2" 2>/dev/null; }
 # Print the identity to stdout. Use only through a pipe; never put it in environment variables or command arguments.
 vault_identity(){ # → the identity on stdout; the unlock screen's breadcrumb must not leak into the caller's
   local r at0=$UI_AT; vault_identity_run; r=$?; UI_AT=$at0; return $r
@@ -1024,7 +993,7 @@ secret_names(){ local f; for f in "$SEC"/*.meta; do [ -f "$f" ] && basename "$f"
 secret_users(){ awk -F'\t' -v s="$1" '$12==s{print $1}' "$IDX"; }
 secret_label(){ if [ "$(secret_meta "$1" type)" = password ]; then t secret_password; echo; else t pv_key "$(secret_meta "$1" keytype)"; echo; fi; }
 secret_enc(){ age -e -a -r "$(cat "$SEC/vault.pub")"; }
-secret_get(){ vault_identity | age -d -i - "$(native_path "$SEC/$1.age")" 2>/dev/null; }
+secret_get(){ vault_identity | age -d -i - "$SEC/$1.age" 2>/dev/null; }
 secret_slug(){ printf '%s' "$1" | tr 'A-Z_ ' 'a-z--' | tr -cd 'a-z0-9.-' | sed 's/^[.-]*//' | cut -c1-40; }
 # Normalize and validate a key file; remove its passphrase if present (the vault provides encryption). Print "fingerprint<TAB>type".
 key_prepare(){
@@ -1193,12 +1162,8 @@ agent_ready(){ # reuse the existing agent (also visible to manual SSH and VS Cod
   agent_ok && return 0
   if [ -f "$STATE/agent.env" ]; then . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID; agent_ok && return 0; fi
   local d; d=$(mktemp -d /tmp/hb-XXXXXX) || return 1   # keep the socket path short
-  if is_windows; then private_dir "$d" || { rm -rf "$d"; return 1; }; fi
-  if is_windows; then
-    # ShellExecute starts without the caller's captured Windows handles; MSYS fork/redirection alone retains them.
-    printf '#!/usr/bin/env bash\nexec ssh-agent -a %q > %q 2>/dev/null </dev/null\n' "$d/a.sock" "$STATE/agent.env" > "$d/start.sh"
-    windows_tool agent-start "$(cygpath -w "$d/start.sh")" "$(cygpath -w "${BASH%.exe}.exe")" || return 1
-  else ssh-agent -a "$d/a.sock" > "$STATE/agent.env" 2>/dev/null; fi; . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID
+  ssh-agent -a "$d/a.sock" > "$STATE/agent.env" 2>/dev/null
+  . "$STATE/agent.env" >/dev/null 2>&1; export SSH_AUTH_SOCK SSH_AGENT_PID
   [ "${SSH_AUTH_SOCK:-}" = "$d/a.sock" ] && agent_ok
 }
 load_secret(){ # load one secret key into the agent with an expiry
@@ -1270,7 +1235,6 @@ cmd_unlock(){
   agent_ready || { err "$(t err_agent)"; return 1; }
   for n in $(secret_names); do [ "$(secret_meta "$n" type)" = key ] || continue; load_secret "$n" && c=$((c+1)) || { err "$(t err_load_one "$n")"; return 1; }; done
   ok "$(t ok_unlocked "$c" "$((KEY_TTL/3600))")"
-  if is_windows; then dim "$(t dim_win_agent)"; fi
 }
 cmd_lock(){
   agent_ready || { err "$(t err_agent_conn)"; return 1; }
@@ -2160,7 +2124,6 @@ save_group(){
 need_tmux(){
   local d
   at "$(t tmux_title)"
-  if is_windows; then clear; title "$UI_AT"; warn "$(t err_tmux_win)"; pause; return 1; fi
   have tmux && return 0
   if is_mac && have brew; then
     ui_confirm --affirmative "$(t tmux_yes)" --negative "$(t tmux_later)" "$(t tmux_need_q)" "$CD$(t tmux_need_how)$C0" || return 1
@@ -2255,7 +2218,7 @@ send_file(){
   local n=$1 src us ip dst
   ip=$(host_field "$n" 3); us=$(host_field "$n" 4); at "$n|$(t send_title)"
   src=$(file_pick "$HOME" "$(t send_card "$n" "${us:+$us@}$ip")" "$(t key_send)") || return 1
-  src=$(unix_path "${src/#\~/$HOME}")
+  src=${src/#\~/$HOME}
   at "$n|$(t send_title)|$(t send_dest_title)"
   dst=$(UI_ENTER=$(t key_send) ui_field "$(t send_dest_label "$n")" "~" any "$(t send_dest_rule)" "$(basename "$src")  ${CD}→$C0  $n:%s/") || return 1
   dst=${dst:-"~"}; shown; record "$n"
@@ -2426,7 +2389,6 @@ connect_kho(){ # connect ~/ssh-hosts to a repository on another machine
 make_kho_here(){
   local addrs first how i steps head note=
   at "$(t hub_title)"
-  if is_windows; then clear; title "$UI_AT"; warn "$(t hub_win)"; dimw "  $(t hub_win_fix)"; pause; return 1; fi
   while ! port_open 127.0.0.1 22; do   # Result with a next step: turn SSH on, then check again
     if is_mac; then how=$(t hub_ssh_mac); else how=$(t hub_ssh_linux); fi
     i=$(UI_HEAD="$CY$ICON_WARN $(t hub_ssh_off)$C0$NL  $CB$how$C0${note:+$NL $NL$note}" ui_choice "$(t hub_ssh_q)" "$(t act_hub_check)") || return 1
@@ -2487,7 +2449,6 @@ undo_locked(){ # caller owns the sync lock; print the translation key on failure
   shift 3
   [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] || { echo err_undo_moved; return 1; }
   gitdir=$(g rev-parse --absolute-git-dir) || { echo err_undo; return 1; }
-  gitdir=$(unix_path "$gitdir") || { echo err_undo; return 1; }
   if [ -e "$gitdir/MERGE_HEAD" ] || [ -e "$gitdir/REVERT_HEAD" ] || [ -e "$gitdir/CHERRY_PICK_HEAD" ] ||
      [ -d "$gitdir/sequencer" ] || [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ] ||
      ! g diff --cached --ita-visible-in-index --quiet; then echo err_undo; return 1; fi
@@ -2557,15 +2518,14 @@ doctor(){ # Report: grouped sections; every problem line carries "→ fix"
     dh "$(t doc_s_software)"
     dr ok "$(t doc_version "$VERSION")"
     dp=$(check_deps report); [ $? = 0 ] || np=$((np+1)); printf '%s\n' "$dp" | sed 's/^/  /'
-    if is_windows; then dr warn "$(t doc_win_tmux)" "$(t doc_win_tmux_fix)"; else if have tmux; then dr ok "$(t doc_tmux_ok)"; else dr warn "$(t doc_tmux_no)" "$(t doc_tmux_fix)"; fi; fi
+    if have tmux; then dr ok "$(t doc_tmux_ok)"; else dr warn "$(t doc_tmux_no)" "$(t doc_tmux_fix)"; fi
     dh "$(t doc_s_config)"
     e=$(cfg_errors); [ -z "$e" ] || while IFS= read -r line; do dr warn "$line"; done <<< "$e"
     n=$(cfg theme hostbook); if ! theme_builtin "$n" >/dev/null; then e=$(theme_check "$CONF/themes/$n.theme" 2>&1) || dr warn "$e"; fi
     if grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config"; then dr ok "$(t doc_inc_ok)"; else dr err "$(t doc_inc_bad)" "$(t doc_fix_setup)"; fi
     if e=$(validate); then ensure_index; dr ok "$(t doc_cfg_ok "$(wc -l < "$IDX" | tr -d ' ')")"; else dr err "$(t doc_cfg_bad "$(printf '%s' "$e" | head -1)")" "$(t doc_cfg_bad_fix)"; fi
     [ -s "$STATE/skipped" ] && dr warn "$(t doc_skipped "$(sed "s|$DIR/||" "$STATE/skipped" | head -3 | tr '\n' ' ')")" "$(t doc_skipped_fix)"
-    if is_windows; then if private_dir "$STATE"; then dr ok "$(t doc_acl_ok)"; else dr err "$(t doc_acl_bad)"; fi
-    else case $(perm "$DIR") in 700) dr ok "$(t doc_perm_ok)";; *) dr warn "$(t doc_perm_bad)" "$(t doc_perm_fix)";; esac; fi
+    case $(perm "$DIR") in 700) dr ok "$(t doc_perm_ok)";; *) dr warn "$(t doc_perm_bad)" "$(t doc_perm_fix)";; esac
     if [ -d "$HOME/.config/ghostty" ] || [ -d /Applications/Ghostty.app ]; then if grep -qs 'ssh-env' "$HOME/.config/ghostty/config"; then dr ok "$(t doc_ghostty_ok)"; else dr warn "$(t doc_ghostty_bad)" "$(t doc_fix_setup)"; fi; fi
     dh "$(t doc_s_sync)"
     if [ -d "$DIR/.git" ]; then dr ok "$(t doc_dir_ok)"; else dr err "$(t doc_dir_bad)" "$(t doc_dir_fix)"; fi
@@ -2803,7 +2763,7 @@ shortcut_free(){ local out; out=$("${SHELL:-/bin/sh}" -ic "type $1" </dev/null 2
   case $out in *hostbook*) return 0;; esac; return 1; }
 shortcut_name(){ grep -hoE '^alias (hb|hop)=hostbook$' "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null | head -1 | sed 's/^alias //; s/=hostbook$//'; }
 install_hint(){
-  if is_windows; then t inst_win "$(native_path "$(dirname "$SELF")/install.ps1" | sed "s/'/''/g")"; else t inst "$REPO_URL"; fi
+  t inst "$REPO_URL"
   echo
 }
 check_age(){ have age && have age-plugin-batchpass && have age-keygen || { err "$(t err_need_age "$AGE_MIN")" >&2; install_hint >&2; return 1; }; }
@@ -2837,16 +2797,14 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
 setup(){
   local rc_file
   title "$(t su_title)"
-  if is_windows; then ok "$(t su_cmd_win)"
-  else mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "$(t su_cmd)"; fi
+  mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "$(t su_cmd)"
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   if ! grep -qs "Include.*ssh-hosts" "$HOME/.ssh/config"; then
     [ "${1:-}" = first-run ] || { [ ! -f "$HOME/.ssh/config" ] || cp "$HOME/.ssh/config" "$HOME/.ssh/config.bak"; }
     { echo "# Server list in ~/ssh-hosts (hostbook syncs it with the shared repository)"; echo "Include ~/ssh-hosts/*.conf"; echo; cat "$HOME/.ssh/config" 2>/dev/null || true; } > "$HOME/.ssh/config.new" && mv "$HOME/.ssh/config.new" "$HOME/.ssh/config"
     chmod 600 "$HOME/.ssh/config"; ok "$(t su_include)$( [ -f "$HOME/.ssh/config.bak" ] && t su_include_bak)"
   else ok "$(t su_include_has)"; fi
-  if is_windows; then rc_file=""
-  else case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac; fi
+  case ${SHELL:-} in */zsh) rc_file=$HOME/.zshrc;; */bash) rc_file=$HOME/.bashrc;; *) rc_file="";; esac
   if [ -n "$rc_file" ]; then
     # older versions used "s" (too generic and prone to collisions): remove it and switch to hb
     if grep -qsE '^alias s=(sshm|hostbook)$' "$rc_file"; then
@@ -2868,11 +2826,6 @@ setup(){
   return 0
 }
 update(){
-  if is_windows; then
-    git -C "$(native_path "$(dirname "$SELF")")" pull -q --ff-only || { err "$(t up_fail_dl)"; return 1; }
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$(dirname "$SELF")/install.ps1")"
-    return $?
-  fi
   local d; d=$(dirname "$SELF")
   if [ -d "$d/.git" ]; then git -C "$d" pull -q --ff-only && ok "$(t up_ok "$("$SELF" --version)")" || err "$(t up_fail "$REPO_URL")"
   else dim "$(t up_nogit "$REPO_URL")"; fi
@@ -2892,9 +2845,8 @@ first_run(){ # ~/ssh-hosts does not exist yet
   case $i in
     1) m=$(pick_machine "$(t first_pick_machine)" url) || return 1
        if is_url "$m"; then url=$m; else ensure_key "$m" || return 1; url="$m:repos/ssh-hosts.git"; fi
-       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "$(t first_cloning)" -- git clone -q "$url" "$(native_path "$DIR")" || { err "$(t err_clone "$url")"; return 1; };;
-    *) private_dir "$DIR" || return 1; git -C "$(native_path "$DIR")" init -q
-       ensure_git_identity || return 1
+       GIT_SSH_COMMAND=$(git_ssh 8) gum spin --title "$(t first_cloning)" -- git clone -q "$url" "$DIR" || { err "$(t err_clone "$url")"; return 1; };;
+    *) private_dir "$DIR" || return 1; git -C "$DIR" init -q
        printf '*\n!*.conf\n!.gitignore\n!.gitattributes\n!groups.tsv\n!secrets/\n!secrets/*.age\n!secrets/*.pub\n!secrets/*.meta\n' > "$DIR/.gitignore"
        if [ -f "$HOME/.ssh/config" ] && grep -qiE '^[[:space:]]*host([[:space:]]|=)+[^*[:space:]]' "$HOME/.ssh/config"; then
          initial=$(tmpd) || return 1

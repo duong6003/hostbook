@@ -95,7 +95,6 @@ import_source(){ # [package-file]; validate content even when the picker filters
       src=$(UI_HEAD="$(t import_package_intro)" file_pick "$start" "$(t import_package_pick)" "" "" "$session" '*.hbshare') || return 1
     fi
     label=$src; case $src in '~') src=$HOME;; '~/'*) src=$HOME/${src#\~/};; esac
-    src=$(unix_path "$src") || return 1
     if ! { [ -f "$src" ] && [ -r "$src" ] && cp -- "$src" "$input"; }; then
       err "$(t err_import_read)" >&2; rc=1
     elif ! is_pack "$input"; then

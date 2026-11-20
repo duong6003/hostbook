@@ -23,16 +23,15 @@ per-host indexing or make an incorrect rollback/sync algorithm safe.
 | 2 | Live writer eviction and unowned lock release | Old live locks remain held; dead locks recover; concurrent recovery permits one writer; busy sync preserves prior status |
 | 3 | Sync branch selection and invalid incoming configuration | Differently named branches exchange data on the selected remote branch; invalid pulls return failure and restore the previous valid HEAD; rejected pushes remain pending |
 | 4 | Tailscale address selection | VPN IP is retained, machine name is visible, SSH user can be edited and cancellation performs no connection |
-| 5 | Cross-platform release validation | Ubuntu, macOS and native Windows CI on the final SHA; import/TUI/terminal-close tests; explicit skipped-capability reporting |
+| 5 | Cross-platform release validation | Ubuntu and macOS CI on the final SHA, with import, TUI and terminal-close checks and explicit reporting for skipped capabilities |
 
-The existing #30 CI failures must be rechecked: Windows cannot be assumed to create a symlink merely because
-`ln -s` succeeds under MSYS; macOS TUI import reported a busy sync. A Linux pass does not close the macOS failure.
+The macOS TUI import check in #30 reported a busy sync. Verify that scenario on macOS.
 
 ## Options
 
 | Option | Benefit here | Cost and limitations | Recommendation |
 | --- | --- | --- | --- |
-| Keep Bash + fzf/gum | Small immediate fixes, familiar installation, preserves current interactions | Implicit shared state and exit-status propagation remain fragile; callbacks restart the script; Windows needs a managed runtime | Maintain the supported release while stabilizing and measuring |
+| Keep Bash + fzf/gum | Small immediate fixes, familiar installation, preserves current interactions | Implicit shared state and exit-status propagation remain fragile, and callbacks restart the script | Maintain the supported release while stabilizing and measuring |
 | Go core, existing UI initially | Typed host/sync models, explicit errors, structured JSON, direct argument passing to subprocesses; binary release artifacts | Packaging per platform, process-tree cancellation and OS credential adapters still need implementation; a helper booted per key still has startup cost | Preferred next experiment |
 | Go + Bubble Tea | Persistent application state and event loop can replace shell callback boots and make transitions directly testable | Rebuild keyboard/search/preview behavior, Unicode layout, terminal handoff, resize and accessibility; fuzzy-search parity needs tests | Adopt only after a read-only UI prototype passes the gates |
 | Rust + a Rust TUI such as Ratatui | Strong ownership and explicit error handling; native application is feasible | Adds a separate UI stack and toolchain learning if the team does not already use Rust; most current defects concern transaction design and external tools | Choose for demonstrated team or technical fit, not memory safety alone |
@@ -62,11 +61,11 @@ Check release versions and module paths when starting a prototype; do not base t
 4. **Move writes only after transactional parity.** Use a single writer with explicit ownership, staged writes,
    validation before publish and rollback including the index. Test every filesystem and Git failure boundary,
    cancellation, lock-owner death, offline/rejected push, different branches, conflicting edits and manual edits
-   during sync. Account for Unix permissions and native Windows ACLs/DPAPI. Define compatible locking for a
+   during sync. Preserve Unix permissions. Define compatible locking for a
    transition; never let old Bash and new Go writers mutate the same data concurrently without it.
 5. **Migrate screens and release deliberately.** Port screen contracts and keyboard semantics, keep bounded
    background work and reject stale results by request/selection generation. Verify real terminal handoff to
-   SSH, terminal-close cleanup, Windows desktop input, Unicode and narrow screens. Provide a reversible binary
+   SSH, terminal-close cleanup, keyboard input, Unicode and narrow screens. Provide a reversible binary
    selection mechanism and a data backup; avoid a one-way data conversion. Replace the supported runtime only
    after final-SHA cross-platform CI and independent review.
 
