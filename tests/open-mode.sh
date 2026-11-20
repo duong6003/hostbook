@@ -36,13 +36,19 @@ if command -v tmux >/dev/null; then
   attach(){ printf '%s\n' "$1" > "$T/attached"; }
   pane_cmd(){ printf "sh -c 'sleep 60' fixture\n"; }
   session_windows=$(tmux list-windows -t "$session" -F '#{window_id}')
+  tmux split-window -d -t "$session:^" 'sleep 60'
+  tmux split-window -d -t "$session:^" 'sleep 60'
+  inactive_panes=$(tmux list-panes -t "$session:^" -F '#{pane_id} #{pane_active}' | awk '$2 == 0 {print $1}')
   group_field(){ echo "$mode_fixture"; }
   for mode_fixture in split tabs; do
     for window in $session_windows; do tmux set-window-option -t "$window" synchronize-panes on; done
+    for pane in $inactive_panes; do tmux set-option -p -t "$pane" synchronize-panes on; done
     open_many saved a b
     [ "$(cat "$T/attached")" = "$session" ]
     [ "$(tmux list-windows -t "$session" -F '#{window_id}')" = "$session_windows" ]
-    [ "$(tmux list-windows -t "$session" -F '#{synchronize-panes}')" = $'0\n0' ]
+    [ "$(tmux list-panes -s -t "$session" -F '#{synchronize-panes}')" = $'0\n0\n0\n0' ] || {
+      echo 'FAIL existing session retained synchronized panes'; exit 1
+    }
   done
   rm "$T/attached"
   (
@@ -83,6 +89,17 @@ if command -v tmux >/dev/null; then
   [ ! -e "$T/attached" ]
   [ "$(tmux list-panes -t 'hb-saved:' -F '#{synchronize-panes}')" = 0 ]
   echo 'PASS duplicate session creation never modifies or attaches the competing session'
+  tmux kill-session -t '=hb-saved'
+  prepare_login(){ :; }
+  tmux(){ command tmux -S "$T/tmux.sock" "$@"; }
+  other=$(tmux new-session -dP -F '#{session_id}' -s hb-saved-other 'sleep 60')
+  tmux set-hook -g after-new-session 'rename-session -t =hb-saved hb-renamed'
+  if PROD=1 open_many saved a b; then echo 'FAIL opened a session renamed during creation'; exit 1; fi
+  [ ! -e "$T/attached" ]
+  [ "$(tmux list-panes -s -t "$other" -F '#{synchronize-panes}')" = 0 ] || {
+    echo 'FAIL creation enabled synchronization on an unrelated session'; exit 1
+  }
+  echo 'PASS a rename during creation never changes an unrelated session'
 else
   echo 'SKIP real tmux session checks (tmux unavailable)'
 fi
