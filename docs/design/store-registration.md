@@ -23,7 +23,8 @@ use it for every fixture dependency. They never fall back to live paths.
 The registry owns device-local checkout selection and effective sync mode. The
 tracked sidecar owns store and host identity. The recovery journal owns
 transition intents, publication reservations, attempt outcomes and recovery
-payloads. The remote decides actual access. None can stand in for another.
+payloads, including [hostless control records](store-journal.md#publication-and-registration-control-records).
+The remote decides actual access. None can stand in for another.
 
 | Record | Exact v1 fields and constraints |
 | --- | --- |
@@ -40,7 +41,9 @@ bindings. Missing registry after a known installation is a recovery condition.
 Do not silently recreate it or assign new store IDs. A new install needs
 explicit initialization. Keep disconnected entries so reconnect cannot reuse an
 old generation or adopt a copied checkout automatically. Reconnect always
-requires verified selection and starts in receive-only.
+requires verified selection and starts in receive-only. Restore uses fresh
+generations and invalidates outstanding runtime contexts. It never makes a
+stale callback current by reinstalling an old registry snapshot.
 
 Exactly one checkout can be active for a logical store. Refuse a duplicate
 store ID at a second checkout until the user explicitly reconciles and chooses

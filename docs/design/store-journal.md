@@ -23,6 +23,9 @@ recovery-v1/
     records/<sequence>.json         # immutable complete metadata revisions
     payloads/<payload_id>.age        # immutable encrypted generations
     recovery/<vault_generation>/    # vault.pub, vault.key.age, vault.recovery.age
+  control/<record_id>/              # device-local publication/transition records
+    current.json
+    records/<sequence>.json
   stores/<store_id>/<transaction_id>.ref   # version + transaction_id only
 ```
 
@@ -38,6 +41,42 @@ missing/stale `.ref` cannot permit another retry. References are repairable look
 components beneath the verified root, reject links/path escapes and verify record store membership. Never follow a
 path supplied by shared content. Scan authority as the fallback; malformed/unreadable authority blocks affected
 work (the entire root if affected IDs cannot be determined), preserving unrelated data.
+
+## Publication and registration control records
+
+Ordinary publication and registration changes use the same verified recovery
+root, but do not create a transfer or migration vault. The resolver scans both
+`transactions/` and `control/` for unresolved attempts and fences before admission,
+including when registry pointers or hints are missing. An unreadable control
+record blocks the affected work, or the root if the affected IDs are unknown.
+
+Control records use the same durable sequence and selector rules below. Their
+selector uses `record_id` in place of `transaction_id`. Each revision has exactly
+`format: "hostbook-control"`, `version: 1`, `record_id`, `device_id`, `root_id`,
+`sequence`, `previous_sequence`, `store_id`, `owner`, `operation`, `detail`.
+IDs, sequence and owner checks have the same meaning as in transaction records.
+These records affect one store and have no required host IDs.
+
+| Operation | Exact fields in `detail` and progression |
+| --- | --- |
+| `publish` | `attempt_id`, `connection_generation`, `target_id`, `base_oid`, `proposed_oid`, `sender_state`, `outcome`. The Git object IDs use the registered repository's object format. Only creation of a durable reserved attempt admits a send. Record uncertain outcomes, then settle accepted or not-accepted once both outcome and sender quiescence are established. Never reuse an attempt. |
+| `registration-transition` | `old_binding_id`, `proposed_binding_id`, `phase` (`fenced`, `applied`, `cancelled`). The immutable local binding references identify the exact old and proposed registry tuples, including requested settings and generations. A durable `fenced` record is itself the fence, even before the registry points to it. Only a drained fence and a verified registry replacement allow `applied`. Only reconciliation confirming the old binding remains effective allows `cancelled`. |
+
+These owner-only control records store opaque references and Git object IDs,
+without checkout paths, remote URLs, settings text or credentials. Verified,
+protected local binding records resolve exact targets and configurations by ID.
+Retain their original versions while referenced so a reconnect cannot change the
+target for a prior attempt. Ordinary sync does not depend on unlocking a store
+or transaction vault. Sensitive publication or recovery evidence still needs
+protection appropriate to its content. Transfer and migration attempts keep
+their original encrypted-manifest representation.
+
+After an interruption, compare a fenced transition's old/proposed binding to the
+actual registry entry and reconcile all admitted attempts before settlement.
+An installed new binding without terminal evidence remains fenced until verified.
+An unreferenced fenced record is not an abandoned request. Record its outcome
+before clearing a registry pointer. Retain terminal records for reporting, with
+no replay through a stale pointer.
 
 ## Exact metadata v1
 
