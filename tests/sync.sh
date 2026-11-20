@@ -89,6 +89,20 @@ metadata_gate_serializes_acquisition(){
   : > "$STATE/gate-release"
   wait "$child" && [ "$rc" = 0 ] && lock 0 && unlock && [ ! -d "$STATE/sync.lock" ]
 }
+killed_reclaimer_releases_gate(){
+  fixture killed-reclaimer || return 1
+  (exit 0) & local dead=$!; wait "$dead"
+  mkdir "$STATE/sync.lock" && printf '%s\n' "$dead" > "$STATE/sync.lock/pid" || return 1
+  # Stop the metadata subprocess at the rename, with the native gate held.
+  if bash -c '. "$1"
+    mv(){
+      : > "$STATE/reclaim-started"
+      bash -c '\''kill -KILL "$PPID"'\''
+    }
+    lock 0' test "$T/library" 2>/dev/null; then return 1; fi
+  [ -e "$STATE/reclaim-started" ] && [ -d "$STATE/sync.lock" ] &&
+    lock 2 && unlock && [ ! -d "$STATE/sync.lock" ]
+}
 missing_lock_tool_is_reported(){
   fixture missing-tool || return 1
   LOCK_TOOL=hostbook-fixture-missing-lock-tool
@@ -109,7 +123,13 @@ busy_status(){
 parallel_recovery(){
   fixture parallel || return 1
   (exit 0) & local dead=$!; wait "$dead"
-  mkdir "$STATE/sync.lock"; printf '%s\n' "$dead" > "$STATE/sync.lock/pid"
+  local token=$dead.1.1 guard killed=0
+  guard=$STATE/sync.lock/reap.$dead.$token
+  mkdir "$STATE/sync.lock" && printf '%s\n' "$dead" > "$STATE/sync.lock/pid" &&
+    printf '%s\n' "$token" > "$STATE/sync.lock/owner" || return 1
+  # Exercise an actual SIGKILL leaving a directory from the older protocol.
+  { bash -c 'mkdir "$1" && kill -KILL "$$"' test "$guard" || killed=$?; } 2>/dev/null
+  [ "$killed" = 137 ] && [ -d "$guard" ] || return 1
   local n pid pids= rc=0
   for n in 1 2 3 4 5 6; do
     bash -c '. "$1"; lock 15 || exit 1; mkdir "$STATE/critical" || exit 2; sleep .05; rmdir "$STATE/critical" || exit 3; unlock' test "$T/library" &
@@ -212,6 +232,6 @@ invalid_link(){
   ! connect_kho >/dev/null 2>&1 && [ "$(g rev-parse HEAD)" = "$checkpoint" ] &&
     [ "$(remote_url)" = "$previous" ] && [ ! -f "$DIR/broken.conf" ] && validate && [ ! -d "$STATE/sync.lock" ]
 }
-for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition missing_lock_tool_is_reported busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
+for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition killed_reclaimer_releases_gate missing_lock_tool_is_reported busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -710,8 +710,8 @@ lock_edit(){ (
   fi || return 1
   "$@"
 ) 9>>"$STATE/sync.lock.gate"; }
-lock_try(){
-  local owner=$1 path=$STATE/sync.lock o= token= seen= seen_token= guard stale identity
+lock_try(){ # caller holds the native metadata gate
+  local owner=$1 path=$STATE/sync.lock o= token= seen= seen_token= stale identity
   if ! mkdir "$path" 2>/dev/null; then
     # Identify the directory before inspecting its contents or age.
     identity=$(stat -c '%d:%i' "$path" 2>/dev/null || stat -f '%d:%i' "$path" 2>/dev/null) || return 1
@@ -724,18 +724,15 @@ lock_try(){
     else
       [ -n "$(find "$path" -maxdepth 0 -mmin +2 2>/dev/null)" ] || return 1
     fi
-    [ "$identity" = "$(stat -c '%d:%i' "$path" 2>/dev/null || stat -f '%d:%i' "$path" 2>/dev/null)" ] || return 1
-    # Older instances use this guard against other reclaimers.
-    guard=$path/reap.${o:-empty}.${token:-legacy}
-    mkdir "$guard" 2>/dev/null || return 1
     IFS= read -r seen 2>/dev/null < "$path/pid" || :
     IFS= read -r seen_token 2>/dev/null < "$path/owner" || :
+    # The kernel releases the gate if the reclaimer dies. Old reap.* directories
+    # inside a verified stale lock are removed with it.
     stale=$STATE/sync-abandoned.$$.$RANDOM
     if [ "$seen" != "$o" ] || [ "$seen_token" != "$token" ] ||
        { [ -n "$o" ] && kill -0 "$o" 2>/dev/null; } ||
        [ "$identity" != "$(stat -c '%d:%i' "$path" 2>/dev/null || stat -f '%d:%i' "$path" 2>/dev/null)" ] ||
        ! mv "$path" "$stale" 2>/dev/null; then
-      rmdir "$guard" 2>/dev/null || :
       return 1
     fi
     rm -rf "$stale"
