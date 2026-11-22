@@ -22,7 +22,8 @@ Comparison with main `6310dcd` updates the Undo and conflict-push entries below.
 [#59](https://github.com/duong6003/hostbook/pull/59) serialize native lock metadata
 and stale-owner recovery. These locks still govern the current single checkout.
 [#57](https://github.com/duong6003/hostbook/pull/57) removes Windows helpers.
-This comparison covers those changes, with the wider file-level inventory still open.
+The [file-level checkpoint](#file-level-write-boundaries-on-current-main)
+traces the high-risk routes and their current files. The wider inventory stays open.
 
 The following is a caller-followed inventory of current managed mutation families,
 not an exhaustive syscall audit. Rows group related symbols; code paths below are
@@ -164,7 +165,7 @@ always adds PUBLISH and needs fresh online checks.
 | `hostbook`: `resolve_conflict`, `merge_driver` | Tools conflict; `_resolve`; Git merge-driver `_merge` | Merge/editor/checkout/add/commit/reset and direct push. A rejected push retains pending work. The merge driver writes its supplied output. | User choice/repair is USER + PUBLISH; validated remote-only application may use RECEIVE. Merge output must bind the intended store/operation, not fallback to default. |
 | `hostbook`: `commit_all`, `save_and_sync`, `apply_change`, `change_locked`, `g` | Shared by above flows; `save_and_sync` commits and schedules later sync, not immediate push | Git index/commits, rollback copies/removals, force marker; `g` routes Git through current `DIR` | Guard content writer **before** effect; commit wrapper alone is too late. Explicit store-aware Git routing; PUBLISH for any send. |
 | `hostbook`: `connect_kho`, `restore_origin`, `make_kho_here` | CLI `kho`, Tools store/hub, first-run | Remote/upstream config and restoration; merge/reset; hub creates bare repo and directly pushes | LOCAL transition fence for connection changes/restores; USER for content merge/bootstrap; direct send needs PUBLISH. No current public disconnect or store sync-mode command found; future disconnect/mode uses same barrier. |
-| `hostbook`: `ensure_merge_setup`, `ensure_git_identity` | `sync_locked`, `resolve_conflict`, `connect_kho`, `vault_create`, `first_run` | Local Git config; synchronized `.gitignore` / `.gitattributes` and setup commit | LOCAL Git config isolated by store; USER for tracked metadata/init commit. Receive-only cannot silently repair tracked setup. |
+| `hostbook`: `ensure_merge_setup` | `sync_locked`, `resolve_conflict`, `connect_kho`, `vault_create`, `first_run` | Local Git config; synchronized `.gitignore` / `.gitattributes` and setup commit | LOCAL Git config isolated by store; USER for tracked metadata/init commit. Receive-only cannot silently repair tracked setup. |
 | `hostbook`: top-level state/history setup, `cfg_init`, `first_run`, `setup` | Boot/default dispatch; CLI `setup`; `first_run` clone/init → vault → legacy import → migration | State/history migration; Git init/clone, ignore commit, vault; SSH Include/backups, shell/terminal integration | DERIVED/LOCAL for device files; RECEIVE for validated clone into registered shared store; USER for generated records/vault/migration, default private. Installation cannot silently change store selection. |
 | `hostbook`: `build_index`, `ensure_index`, `record`, `set_status`, `check_run`, `sweep_tmp`, `doctor`; `lib/settings.sh`: settings writers | `_list`, `_index`, connect/check callbacks; bootstrap sweep; CLI/Tools doctor; settings, Ctrl-T → `cfg_set`, `apply_preset`, custom theme | Derived index/cache/history/status/temp cleanup; doctor chmods public keys; device config/theme files | DERIVED/LOCAL with per-store namespaces and safe invalidation. Cleanup owns its paths; no host/vault-content rewrite or publish under this allowance. |
 | `hostbook`: `ensure_key`, `push_new_key`, `secret_replace`; `share_flow`, `share_build`, `share_pack` | Store connection setup; key replacement; selection/batch share and `_share_build` / `_share_pack` | SSH account key generation/authorized_keys changes; export temp/package files outside store | External target authorization remains separate; shared credential mutation still USER. Export reads do not create store records, auto-transfer jumps, or grant destination rights. |
@@ -172,6 +173,30 @@ always adds PUBLISH and needs fresh online checks.
 The current `host_shared` name denotes a multi-alias Host stanza, not membership
 in a shared store. Preserve existing ProxyJump values, reference rewrites and SSH
 resolution behavior; this slice introduces no store-specific jump restrictions.
+
+## File-level write boundaries on current main
+
+Followed the paths below at main `6310dcdd8bd2ec9f753fc6673079f367c4848cf0`.
+Paths describe the legacy checkout and its state directory. The future gate
+column specifies where a store-bound operation must be validated.
+
+| Path | Current file or ref effects | Future gate |
+| --- | --- | --- |
+| [Import callbacks](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L3006) | `_import_apply` can create `secrets/vault.*` before package apply. `_split` writes a caller-supplied output directory and global file. `_import_write` can promote staged input into the checkout. | Bind the target before any vault provisioning. Keep split outputs in bound disposable staging. Import promotion requires USER independently of staging. |
+| [Import apply and rollback](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/lib/import.sh#L323) | Config apply changes selected `.conf` files. Package apply can also change `groups.tsv` and credential `.age/.meta/.pub` files. Both save the exact Git index and attempt to restore touched paths and the index after mutation, validation or commit failure. A confirmed imported key can commit separately before host promotion. Copying results to `STATE/last-import` can fail after a successful commit, leaving committed data intact and returning failure before the `status.force` marker. | Cover vault, host promotion, separate key commit and actual index/file restoration under the affected store. Keep report/status files in that store's state. |
+| [Vault identity and recovery](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L924) | `_vault_id`, `_secret_get`, askpass and connection helpers can reach vault unlock. Unlock can write the device cache, and the recovery branch can rewrite `vault.key.age` and `vault.recovery.age`, then commit locally and schedule sync. | Scope cache access to the device/store/vault. Recovery requires USER before the first envelope write even from an otherwise read-oriented caller. |
+| [Raw transaction and Undo](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2511) | `change_locked` snapshots declared files, temporary siblings and the Git index before raw commands. Undo can create `REVERT_HEAD` after a partial failure. Its rollback uses `read-tree -m -u` and `revert --quit` after checking the affected paths. | Bind the touched paths, Git worktree/index, expected HEAD and recovery state before mutation and recheck before restoration. Recovery markers cannot authorize another operation. |
+| [Merge driver and setup](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L642) | `_merge` writes the supplied ours file via a sibling `.hbmerge`; merge setup writes Git config, `.gitattributes` and `.gitignore`, and may commit those tracked files. | Bind callback outputs to the verified Git operation and scratch paths. Device-local Git config and tracked repository setup require their respective LOCAL and USER gates. |
+| [Connect, hub and direct pushes](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2409) | `connect_kho` can install a login key and create a remote bare repo before the local lock. It then changes origin/upstream, fetches refs and can merge the worktree. `restore_origin` restores connection settings, while checkout restoration is separate. `make_kho_here` can create a local bare repo before repointing origin and pushing. `sync_locked` and both conflict-resolution paths can also push. | Require explicit authority for key installation and repository provisioning before those effects. Bind config change and restoration to the transition. Verify incoming data separately. Require PUBLISH admission for each direct or scheduled push to the exact ref. |
+| [Native writer and derived state](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L700) | macOS `lockf` and Linux `flock` serialize access to `STATE/sync.lock.gate`; `sync.lock/pid` and `owner` identify the writer. Acquisition can rename stale state. Sync status, derived index variants and history use the same process `STATE`. | Keep lock, status and derived files under the registered store namespace. Gate identity must survive checkout and connection generation changes. |
+
+On native arm64 macOS (Darwin 27.2.0, Git 2.42.1), the existing isolated
+`tests/sync.sh` (18), `tests/import-review.sh` (28), `tests/import-package.sh` (2)
+and `tests/test.sh` (151) cases passed. Git transport was restricted to
+disposable local repositories. Tests used temporary state and a file-backed
+test vault cache. The core suite used a private test SSH agent. These results
+cover current behavior, including failed push, import/Undo recovery and vault
+recovery. They do not exercise the proposed store-bound gates.
 
 ## Save one existing shared host
 
