@@ -4,6 +4,7 @@ import errno
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,14 +15,15 @@ UPGRADE_UID = 61002
 DENIED = {errno.EACCES, errno.EPERM}
 
 
-def as_identity(uid, operation):
+def as_identity(uid, operation, groups=()):
     pid = os.fork()
     if pid == 0:
         try:
-            os.setgroups([])
+            os.setgroups(list(groups))
             os.setgid(uid)
             os.setuid(uid)
-            assert os.geteuid() == uid and os.getegid() == uid and set(os.getgroups()) <= {uid}
+            assert os.geteuid() == uid and os.getegid() == uid
+            assert set(os.getgroups()) - {uid} == set(groups) - {uid}
         except (OSError, AssertionError):
             os._exit(99)
         try:
@@ -56,6 +58,17 @@ class WriterExclusionTest(unittest.TestCase):
         os.chown(self.original_data, LEGACY_UID, LEGACY_UID)
         self.original_data.chmod(0o600)
 
+    def require_legacy_write_denied(self, path, groups=()):
+        def open_for_write():
+            os.close(os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK))
+
+        label = path.relative_to(self.root)
+        result = as_identity(LEGACY_UID, open_for_write, groups)
+        if result == 0:
+            raise PermissionError(f"{label}: legacy writer can write")
+        if result != 13:
+            raise RuntimeError(f"{label}: legacy write check failed ({result})")
+
     def target(self, parent, name):
         directory = make_directory(parent / name, UPGRADE_UID, 0o700)
         file = directory / "sentinel"
@@ -89,6 +102,38 @@ class WriterExclusionTest(unittest.TestCase):
         moved = parent / "moved"
         self.assertEqual(as_identity(LEGACY_UID, lambda: directory.rename(moved)), 0)
         self.assertEqual((moved / file.name).read_bytes(), b"accepted\n")
+
+    def test_supplementary_group_write_blocks_handoff_until_removed(self):
+        parent = make_directory(self.root / "sealed", UPGRADE_UID, 0o755)
+        directory, file = self.target(parent, "checkout")
+        directory.chmod(0o711)
+        shared_gid = 61003
+        os.chown(file, UPGRADE_UID, shared_gid)
+        file.chmod(0o620)
+        original = self.original_data.read_bytes()
+
+        self.require_legacy_write_denied(file)
+        with self.assertRaisesRegex(PermissionError, r"^sealed/checkout/sentinel: legacy writer can write$"):
+            self.require_legacy_write_denied(file, groups=(shared_gid,))
+        file.chmod(0o600)
+        self.require_legacy_write_denied(file, groups=(shared_gid,))
+        self.assertEqual(file.read_bytes(), b"accepted\n")
+        self.assertEqual(self.original_data.read_bytes(), original)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux POSIX ACLs")
+    def test_named_acl_write_blocks_handoff_until_removed(self):
+        parent = make_directory(self.root / "sealed", UPGRADE_UID, 0o755)
+        directory, file = self.target(parent, "state")
+        directory.chmod(0o711)
+        original = self.original_data.read_bytes()
+
+        subprocess.run(["setfacl", "-m", f"u:{LEGACY_UID}:-w-", str(file)], check=True)
+        with self.assertRaisesRegex(PermissionError, r"^sealed/state/sentinel: legacy writer can write$"):
+            self.require_legacy_write_denied(file)
+        subprocess.run(["setfacl", "-x", f"u:{LEGACY_UID}", str(file)], check=True)
+        self.require_legacy_write_denied(file)
+        self.assertEqual(file.read_bytes(), b"accepted\n")
+        self.assertEqual(self.original_data.read_bytes(), original)
 
     def test_legacy_with_same_uid_can_write_through_mode_0700(self):
         parent = make_directory(self.root / "same-owner", UPGRADE_UID, 0o755)
