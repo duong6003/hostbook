@@ -50,15 +50,72 @@ store. A stale selection must not fall back to another record with the old alias
 Bare alias lookup requires a store context or an explicit choice when multiple
 stores match. Store labels may help the user choose but are not lookup keys.
 
-Connection planning must resolve the selected record in its store and preserve
-its effective SSH settings. Aggregating all stores into one SSH `Include` and
-taking the first matching alias is invalid: selecting shared B's `web` must not
-connect to private's `web`. The mechanism for isolating resolution is deferred;
-it must preserve supported SSH directives, wildcard precedence and existing
-`ProxyJump` behavior. This proposal adds no store-specific restriction on jump
-hosts, rewrites no jump chain and never transfers dependencies automatically.
-SSH's normal resolution of an existing `ProxyJump` value must not be confused
-with choosing a Hostbook search result by the first matching alias.
+### SSH resolution for a selected host
+
+On main `6310dcdd8bd2ec9f753fc6673079f367c4848cf0`, the index uses
+`ssh -G` under one process-wide SSH configuration and preview selects the
+first indexed row for an alias. Connect resolves credentials and launches
+SSH by that same alias. In an isolated macOS probe, the real `_preview h:db`
+showed the shared row's description with the private endpoint, user and jump
+when both stores were included. With a shared-only Include it showed the
+shared endpoint, user and jump.
+[Index and preview](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L303)
+and [connect](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L1472).
+
+For [#37](https://github.com/duong6003/hostbook/issues/37), use an explicit
+`ssh -F` view for a selected shared store. Assemble it from that store's
+validated configuration and the approved device-local SSH inputs, with
+deterministic Include order and existing SSH precedence. Keep managed
+configuration from other stores out of the view. An overlapping device-local
+alias must not override a managed alias unless that override was explicitly
+approved for this store. Include applicable approved defaults explicitly because `-F` bypasses the default SSH config lookup.
+OpenSSH resolves the original alias and existing jump values in this view,
+including standalone jump settings supplied by approved local configuration.
+Keep wildcard precedence, jump chains and host-key verification.
+Use a private snapshot of the approved inputs for the launch and its jump
+children. The generated path must survive OpenSSH's implicit ProxyJump
+command as one argument, including when a checkout path contains spaces.
+See [ssh(1)](https://man.openbsd.org/ssh) and
+[ssh_config(5)](https://man.openbsd.org/ssh_config).
+
+- Preview reads the store-scoped derived row by `(store_id, host_id)`. Its
+  effective settings come from the same configuration inputs used for
+  connection. The cache must invalidate when those inputs change.
+- On explicit Connect, verify the selected key, registration, checkout and
+  connection generations, current configuration inputs and applicable
+  credential binding. Repeat the check after prompts and before launch.
+  A stale selection requires a fresh choice before starting SSH. A lost
+  shared binding cannot fall back to a private host with the same alias.
+- Resolve credentials in the selected context and carry it to installed
+  callbacks and jump children. Constrain the effective agent and identity
+  files for each destination and hop to its bound credentials or explicitly
+  approved device-local authentication. Disable ambient agent and default
+  identity fallback. Disable control-socket reuse (`ControlPath none`) for
+  the shared launch and its jump children to keep other sessions' credentials
+  out of the connection. If an askpass prompt cannot be attributed to the
+  planned destination or a known hop, use an interactive prompt without
+  supplying a saved secret. Use only the approved SSH input set.
+  Synchronized text must not silently enroll external Include paths or
+  local command directives. Preview must never run those commands, wait for
+  SSH or open a connection.
+
+Run the [isolated resolution fixture](fixtures/verify-store-ssh.py) with
+Python 3 and OpenSSH:
+
+```bash
+python3 -B docs/design/fixtures/verify-store-ssh.py
+```
+
+Passed on native arm64 macOS (Darwin 27.2.0, OpenSSH 10.5p1) and in a
+network-disabled arm64 Linux container (LinuxKit 6.4.16, OpenSSH 10.3p1).
+The fixture resolves duplicate `db` and `relay` aliases, a wildcard port and
+an approved local jump using real OpenSSH with the agent and default identities
+disabled and an isolated known-hosts file. A stub intercepts the first jump
+child before it opens a socket and verifies the exact `-F` argument and
+forward target. A separate model check rejects a changed connection
+generation, changed config and disconnect before handing a config to SSH.
+The fixture does not exercise Hostbook's future resolver or vault, actual
+authentication, a completed jump chain or installed callbacks.
 
 ## Versioning and compatibility
 
@@ -210,7 +267,7 @@ The [journal/retention slice](store-journal.md) selects device-local transaction
 authority, protected recovery payloads and explicit collection policy.
 Within #35, still deferred:
 finish the implementation-level write-boundary audit beyond the bounded mutation
-inventory and specify durable cache/vault/lock/status and SSH resolution mechanisms.
+inventory and specify durable cache/vault/lock/status mechanisms.
 The [acceptance map](store-acceptance.md) tracks these gates and the parent fixtures.
 The migration contract leaves concrete backup/restore and writer-exclusion verification open.
 Runtime implementation and regression suites belong to downstream #36–#46,
