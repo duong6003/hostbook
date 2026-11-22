@@ -260,6 +260,31 @@ were restored as bytes. Native ACLs, ownership, external dependency resolution,
 Hostbook's vault format, crash durability and production cutover remain to be
 verified.
 
+### Local cutover interruption checkpoint
+
+Run the [isolated process-death fixture](fixtures/verify-migration-cutover.py):
+
+```bash
+python3 -B docs/design/fixtures/verify-migration-cutover.py
+```
+
+Both cases passed on native arm64 macOS (Darwin 27.2.0) and on arm64 Linux
+in a network-disabled Docker container with temporary storage
+(6.4.16-linuxkit). A child writes and syncs the intended replacement under
+a disposable root. The parent sends SIGKILL at controlled points before the
+child records completion.
+
+- Before registry replacement, a fresh process reads the original binding.
+  The synced pending replacement remains present and unselected.
+- After atomic registry replacement and directory sync, a fresh process
+  reads the new binding. No completion record was written by the old process.
+
+The fixture checks the original and candidate bytes and a synthetic recovery
+marker on every reopen. A second reopen checks that no file was rewritten or
+replaced. This exercises process death around one local registry replacement.
+Hostbook's actual recovery journal, vault, remote publication, system crash or
+power loss and on-disk durability remain unverified.
+
 The [registration contract](store-registration.md) defines the active binding.
 The [acceptance map](store-acceptance.md) records current coverage and open work.
 The [writer exclusion checkpoint](store-writer-validation.md) records the Linux
