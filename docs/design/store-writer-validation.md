@@ -43,10 +43,11 @@ also passed, including the `stop-writer-access` decision for unknown legacy
 access. That assertion covers the design gate only.
 
 The native two-UID POSIX fixture returned skip status 77 because the local
-process could not use noninteractive sudo. GitHub Actions denied the
-[macOS 15 job](https://github.com/duong6003/hostbook/actions/runs/45000332023/job/137140246792)
-before allocating a runner, citing billing or a spending limit. Distinct-UID
-denial on macOS remains unverified.
+process could not use noninteractive sudo. GitHub Actions denied both the
+[first attempt](https://github.com/duong6003/hostbook/actions/runs/45000332023/job/137140246792)
+and [rerun](https://github.com/duong6003/hostbook/actions/runs/45000332023/job/137280677976)
+before allocating a macOS runner, citing billing or a spending limit.
+Distinct-UID denial on macOS remains unverified.
 
 The Linux run verifies ordinary mode and ancestry checks on its fixture
 filesystem. Platform ACL inheritance, delegated access, evidence collection on

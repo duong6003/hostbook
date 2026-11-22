@@ -148,8 +148,8 @@ old generations until safe collection.
 
 ## Durable update and interruption rules
 
-Create directories privately (Unix owner-only directories/files, Windows equivalent account ACL), reject
-symlink/reparse substitutions and verify ownership on reopen. Serialize the transaction with an owner-checked lock
+Create owner-only directories and files on macOS and Linux, reject symlink
+substitutions and verify ownership on reopen. Serialize the transaction with an owner-checked lock
 **after** common store gates in canonical store-ID order and subordinate vault/recovery locks in that order. Before
 legacy IDs exist use migration's provisional ordering. Hold short gates only for validation/admission/local
 replacement, never prompts or network waits. No age-based lock/reservation takeover; prove owner death and sender
