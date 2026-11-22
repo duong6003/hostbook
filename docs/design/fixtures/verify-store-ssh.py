@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check scoped OpenSSH resolution and model stale selection without a server."""
+"""Check scoped OpenSSH resolution and transfer impacts without a server."""
 from pathlib import Path
 import os
 import shutil
@@ -82,6 +82,24 @@ def run():
         assert args[args.index("-W") + 1] == "[198.51.100.10]:2222"
         assert args[-1] == "relay"
 
+        # Adding a managed alias can shadow the device-local second hop.
+        baseline = root / "destination-before.conf"
+        baseline.write_text(f'Include "{shared_hosts}" "{local}"\n' + no_auth)
+        incoming = root / "incoming.conf"
+        candidate = root / "destination-after.conf"
+        candidate.write_text(f'Include "{shared_hosts}" "{incoming}" "{local}"\n' + no_auth)
+        hops = ("db", "relay", "corp-relay")
+        before = [fields(baseline, hop) for hop in hops]
+        assert before[-1]["hostname"] == "203.0.113.1"
+        incoming.write_text("Host spare\n  HostName 198.51.100.22\n")
+        assert [fields(candidate, hop) for hop in hops] == before
+        incoming.write_text("Host corp-relay\n  HostName 198.51.100.22\n")
+        after = [fields(candidate, hop) for hop in hops]
+        assert after[:-1] == before[:-1]
+        assert after[-1]["hostname"] == "198.51.100.22"
+        incoming.write_text("Host corp-relay\n  HostName\n")
+        assert call(candidate, "-G", "db", check=False).returncode != 0
+
         # Model the #37 resolver before handing any configuration to SSH.
         key = ("dev-secrets", "shared-db-id")
         snapshot = (1, 1, 1, shared_hosts.read_bytes())
@@ -101,6 +119,7 @@ def run():
 
         print(call(scoped, "-V").stderr.strip())
         print("PASS: scoped target, wildcard defaults, jump configuration and proxy argv")
+        print("PASS: adding a noncolliding alias preserves the destination chain; a shadowed hop changes address and invalid config cannot resolve")
         print("PASS: model rejects connection change, config change and disconnect without alias fallback")
 
 

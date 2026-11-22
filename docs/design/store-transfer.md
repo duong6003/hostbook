@@ -141,6 +141,39 @@ replacement means conditionally restoring its previous destination record as a
 new change, subject to current revisions and write authority. Compensation must
 never delete a pre-existing destination or claim an unrelated match as its effect.
 
+## Destination routes before writing
+
+Compare the verified destination before the transfer with the exact proposed
+configuration in private staging, using the [approved store view](store-identity.md#ssh-resolution-for-a-selected-host).
+For existing destination hosts outside the reviewed transfer change, compare
+their effective ordered jump chains, including managed keys where applicable,
+endpoints, users, ports and credential bindings. Compare dependent hosts even
+when the new alias does not collide with a managed record. It may shadow an
+approved device-local alias at a later hop while every `ProxyJump` token stays
+the same. Any intentional edit to the transferred record follows its separate
+confirmation and SSH settings checks.
+
+An unchanged chain passes this gate. A missing, changed or unverifiable hop
+blocks the first destination effect. Identify each affected managed host and
+the hop or input that could not be verified. The user can review a different
+alias or resolve the dependency explicitly, then confirm a fresh plan.
+Compare approved configuration without executing synchronized commands or
+opening a connection for this check.
+
+Bind the compared inputs and exact prepared result to the reviewed plan.
+Recheck them under the store gates before the first destination mutation.
+Before shared publication, compare the protected pre-write view against the
+prepared result again and verify the current post-write state, approved
+configuration inputs and exact remote base. If an independent change blocks
+publication, keep the source intact and use the existing recovery rules for
+the prepared destination effect.
+
+The [isolated OpenSSH fixture](fixtures/verify-store-ssh.py) compares a
+synthetic destination before and after adding a host. An unrelated alias
+preserves the chain. An alias that shadows a device-local second hop changes
+its address with the same jump tokens. Invalid configuration fails to resolve.
+The fixture checks OpenSSH settings, without Hostbook transfer or SSH login.
+
 ## Source references before removal
 
 On main `6310dcd`, source groups contain aliases and
@@ -360,7 +393,7 @@ only the adjacent documentation fixture.
 
 The [format/admission proposal](store-format.md) selects identity encoding and
 legacy mapping; [journal/retention](store-journal.md) selects local authority and protected payloads.
-Remaining #35 work includes destination reference reconciliation and different-ID merge lineage,
+Remaining #35 work includes different-ID merge lineage and its reference reconciliation,
 implementation-level audit beyond the bounded mutation inventory, vault and lock
 implementation contracts and concrete migration restore and writer-upgrade mechanisms. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
