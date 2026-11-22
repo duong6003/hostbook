@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise an encrypted restore with disposable Git and vault data only."""
+import errno
 import hashlib
 import io
 import os
@@ -40,6 +41,7 @@ class RestoreFixture:
         self.source = self.root / "original"
         self.restored = self.root / "verified-copy"
         self.checkout = self.source / "checkout"
+        self.external = self.root / "external.d" / "team.conf"
         self.backup_key = self.root / "backup-identity"
         self.recovery_key = self.root / "vault-recovery-identity"
         self.original_vault_key = self.root / "original-vault-identity"
@@ -87,8 +89,17 @@ class RestoreFixture:
         ignored.write_text("retained fixture data\n")
         ignored.chmod(0o640)
         (self.source / "state" / "status").write_text("pending\n")
-        (self.source / "config" / "ssh").write_text("Include conf.d/team.conf\n")
+        self.external.parent.mkdir(mode=0o700)
+        self.external.write_text("Host dependency-host\n  HostName 192.0.2.23\n  Port 2222\n")
+        self.external.chmod(0o600)
+        (self.source / "config" / "ssh").write_text(
+            "CanonicalizeHostname no\nIdentityAgent none\nIdentityFile none\n"
+            "ControlPath none\nGlobalKnownHostsFile none\n"
+            f'UserKnownHostsFile "{self.root / "known_hosts"}"\n'
+            f'# Include "{self.external}"\nInclude "{self.external}"\n'
+        )
         (self.source / "config" / "conf.d" / "team.conf").write_text("Host *\n  ConnectTimeout 4\n")
+        self.external_expected = self.read_external()
         (self.source / "config" / "hostbook.conf").write_text("language = vi\n")
         self.expected = capture_tree(self.source)
 
@@ -141,6 +152,59 @@ class RestoreFixture:
         vault = root / "checkout" / "secrets"
         identity = self.command("age", "-d", "-i", str(self.recovery_key), str(vault / "vault.key.age"))
         return self.command("age", "-d", "-i", "-", str(vault / "credential.age"), data=identity)
+
+    def read_external(self):
+        label = self.external.relative_to(self.root)
+        try:
+            dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            parent = os.open(self.root, dir_flags)
+            try:
+                directory = os.open(self.external.parent.name, dir_flags, dir_fd=parent)
+                try:
+                    fd = os.open(self.external.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 dir_fd=directory)
+                    with os.fdopen(fd, "rb") as stream:
+                        info = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(info.st_mode):
+                            raise RestoreRejected(f"{label}: expected a regular file")
+                        contents = stream.read(4097)
+                        if len(contents) > 4096:
+                            raise RestoreRejected(f"{label}: fixture dependency is too large")
+                    parent_info = os.fstat(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                os.close(parent)
+        except OSError as error:
+            reason = "missing" if error.errno == errno.ENOENT else "cannot safely open"
+            raise RestoreRejected(f"{label}: {reason}") from error
+        return (parent_info.st_dev, parent_info.st_ino, info.st_dev, info.st_ino,
+                info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), contents)
+
+    def verify_external(self, candidate):
+        label = self.external.relative_to(self.root)
+        current = self.read_external()
+        if current != self.external_expected:
+            raise RestoreRejected(f"{label}: approved dependency changed")
+        with tempfile.TemporaryDirectory(prefix="ssh-probe-", dir=self.root) as staging:
+            probe = Path(staging)
+            copy = probe / "checked-include"
+            copy.write_bytes(current[-1])
+            config = probe / "ssh"
+            lines = (candidate / "config" / "ssh").read_text().splitlines(keepends=True)
+            reference = f'Include "{self.external}"\n'
+            if lines.count(reference) != 1:
+                raise RestoreRejected(f"{label}: expected one direct Include")
+            lines[lines.index(reference)] = f'Include "{copy}"\n'
+            config.write_text("".join(lines))
+            try:
+                effective = self.command("ssh", "-G", "-F", str(config), "dependency-host").splitlines()
+            except (OSError, subprocess.SubprocessError) as error:
+                raise RestoreRejected(f"{label}: SSH settings cannot be verified") from error
+            if b"hostname 192.0.2.23" not in effective or b"port 2222" not in effective:
+                raise RestoreRejected(f"{label}: unexpected effective SSH settings")
+        if self.read_external() != current:
+            raise RestoreRejected(f"{label}: changed during verification")
 
     def backup(self, omit=None):
         wrapped = io.BytesIO()
@@ -198,6 +262,7 @@ class RestoreFixture:
                     raise RestoreRejected("restored vault data does not match the fixture")
             except subprocess.SubprocessError as exc:
                 raise RestoreRejected("restored vault cannot be decrypted") from exc
+            self.verify_external(candidate)
             candidate.rename(self.restored)
 
 
@@ -250,6 +315,36 @@ class RestoreTest(unittest.TestCase):
             f.restore(backup)
         self.assertFalse(f.restored.exists())
         self.assertEqual(capture_tree(f.source), f.expected)
+
+
+    def assert_external_blocked(self, backup, reason):
+        f = self.fixture
+        with self.assertRaisesRegex(RestoreRejected, rf"external[.]d/team[.]conf: {reason}"):
+            f.restore(backup)
+        self.assertFalse(f.restored.exists())
+        self.assertEqual(capture_tree(f.source), f.expected)
+
+    def test_missing_external_include_blocks_promotion(self):
+        f = self.fixture
+        backup = f.backup()
+        f.external.unlink()
+        fallback = f.command("ssh", "-G", "-F", f.env["HOSTBOOK_SSH_CONFIG"], "dependency-host")
+        self.assertIn(b"hostname dependency-host", fallback.splitlines())
+        self.assert_external_blocked(backup, "missing")
+
+    def test_changed_external_include_blocks_promotion(self):
+        f = self.fixture
+        backup = f.backup()
+        f.external.write_text("Host dependency-host\n  HostName 192.0.2.24\n")
+        self.assert_external_blocked(backup, "approved dependency changed")
+
+    def test_redirected_external_include_blocks_promotion(self):
+        f = self.fixture
+        backup = f.backup()
+        alternate = f.root / "other-config"
+        f.external.rename(alternate)
+        f.external.symlink_to(alternate)
+        self.assert_external_blocked(backup, "cannot safely open")
 
 
 if __name__ == "__main__":

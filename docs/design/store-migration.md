@@ -277,18 +277,31 @@ legacy migration and a legacy writer that still has access. Counterexamples
 include reused paths, untested recovery, uncertain publication and unresolved
 remote rights. Fixture observations are synthetic.
 
+### Required dependencies kept outside the backup
+
+When the recovery contract leaves a required input at its original location,
+record the approved path, file identity, owner/access metadata and expected
+contents in the protected manifest. Resolve the path from a trusted directory
+and check the approved binding before parsing. Verify the effective SSH
+settings from approved inputs only, following the
+[store-scoped SSH resolution rules](store-identity.md#ssh-resolution-for-a-selected-host).
+Recheck before selection while the migration gates are held. A missing, changed,
+redirected or unusable input stops selection, identifies the affected
+dependency and preserves the original. Independent writers can still change
+external files after selection.
+
 ### Staged restore checkpoint
 
 Run the [isolated restore fixture](fixtures/verify-migration-restore.py) with
-Python 3, Git, `age` and `age-keygen` available:
+Python 3, Git, `age`, `age-keygen` and OpenSSH available:
 
 ```bash
 python3 -B docs/design/fixtures/verify-migration-restore.py
 ```
 
-All four cases passed on native arm64 macOS (Darwin 27.2.0, Git 2.42.1)
-and on arm64 Linux in Docker with networking disabled (6.4.16-linuxkit,
-Git 2.54.1), both with age 1.3.2.
+All seven cases passed on native arm64 macOS (Darwin 27.2.0, Git 2.42.1,
+OpenSSH 10.5p1) and on arm64 Linux in Docker with networking disabled
+(6.4.16-linuxkit, Git 2.54.1, OpenSSH 10.3p1), both with age 1.3.2.
 
 - A complete age-encrypted archive restored two Git commits, a tag, local and
   remote-tracking refs and remote configuration, distinct HEAD/index/working
@@ -301,10 +314,19 @@ Git 2.54.1), both with age 1.3.2.
   original tree's descendant inventory, bytes and modes matched the initial
   snapshot in every case.
 
-The manifest stayed in fixture memory. The remote URL and SSH Include files
-were restored as bytes. The separate checkpoint below exercises ACLs and
-ownership. External dependency resolution, Hostbook's vault format, crash
-durability and production cutover remain open.
+- One required direct SSH `Include` remained outside the archive, inside the
+  disposable workspace. The fixture verified the path and checked that
+  OpenSSH resolved the synthetic endpoint from a private copy of the approved
+  bytes. Removing the file, changing its contents or redirecting its path to
+  a symlink with identical contents each blocked selection and preserved the
+  original. With the file missing, the fixture also observed `ssh -G` exit
+  successfully and return the alias as the hostname.
+  [OpenSSH ssh(1)](https://man.openbsd.org/ssh)
+  [OpenSSH ssh_config(5)](https://man.openbsd.org/ssh_config).
+
+The manifest stayed in fixture memory. Nested/globbed includes, other
+external dependency types, Hostbook's vault format, crash durability and
+production cutover remain open.
 
 ### Restore permissions and ownership checkpoint
 
@@ -344,7 +366,7 @@ metadata against simulated differing UID/GID values in the rejection cases.
 
 The fixture covers one directory and one child file on each platform.
 Native macOS cross-account ownership restoration, protected archive
-integration, external dependencies and production cutover remain open.
+integration and production cutover remain open.
 
 ### Local cutover interruption checkpoint
 
