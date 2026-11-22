@@ -302,9 +302,49 @@ Git 2.54.1), both with age 1.3.2.
   snapshot in every case.
 
 The manifest stayed in fixture memory. The remote URL and SSH Include files
-were restored as bytes. Native ACLs, ownership, external dependency resolution,
-Hostbook's vault format, crash durability and production cutover remain to be
-verified.
+were restored as bytes. The separate checkpoint below exercises ACLs and
+ownership. External dependency resolution, Hostbook's vault format, crash
+durability and production cutover remain open.
+
+### Restore permissions and ownership checkpoint
+
+Capture mode, UID/GID and native ACLs in the protected recovery manifest for
+the root and every restored entry. Preserve ACL order, effective mask and
+inheritance where the platform uses them. Validate principal bindings on the
+target. A changed owner/group or an ACL translation needs explicit review.
+Apply the approved metadata in private staging, with the required ownership
+authority, and read it back alongside the restored bytes before selecting
+the candidate. A missing ACL facility, unresolved principal, failed
+application or mismatch blocks promotion and retains the original and
+recovery material. The writer-isolation checks still establish whether old
+writers can replace or modify an otherwise matching candidate.
+
+Run the [isolated metadata fixture](fixtures/verify-migration-metadata.py):
+
+```bash
+python3 -B docs/design/fixtures/verify-migration-metadata.py
+```
+
+The fixture copies a disposable directory and file with `cp -pR`, reads
+mode and UID/GID back with `stat`, and compares native ACL output. macOS
+uses `ls -led` for the test. Linux uses numeric `getfacl` output including
+default directory entries. These tool invocations are fixture evidence.
+[Apple filesystem ACL documentation](https://developer.apple.com/library/archive/documentation/OpenSource/Conceptual/ShellScripting/ShellScriptSecurity/ShellScriptSecurity.html)
+[Linux getfacl(1)](https://man7.org/linux/man-pages/man1/getfacl.1.html).
+
+Five cases passed on native macOS arm64 (Darwin 27.2.0, APFS) and Linux
+arm64 Docker (6.4.16-linuxkit, ext4, GNU coreutils 9.11 and acl 2.3.2)
+with networking disabled. A complete copy preserved bytes, mode, UID/GID
+and native directory and file ACLs. Missing ACL, mismatched UID, mismatched
+GID and unavailable ACL inspection each blocked selection and preserved
+the original. Linux used a disposable ext4 volume with CHOWN and FOWNER,
+and exercised a real nondefault UID/GID in the success case and real
+ownership changes in the rejection cases. macOS compared actual same-owner
+metadata against simulated differing UID/GID values in the rejection cases.
+
+The fixture covers one directory and one child file on each platform.
+Native macOS cross-account ownership restoration, protected archive
+integration, external dependencies and production cutover remain open.
 
 ### Local cutover interruption checkpoint
 
@@ -341,7 +381,6 @@ The [registration contract](store-registration.md) defines the active binding.
 The [acceptance map](store-acceptance.md) records current coverage and open work.
 The [writer exclusion checkpoint](store-writer-validation.md) records the Linux
 permission and local Git server experiments.
-Concrete ACL verification, runtime backup/restore and platform durability
-remain open. [Journal/retention](store-journal.md) selects device-local authority,
+Runtime backup/restore, writer exclusion and system-crash durability remain open. [Journal/retention](store-journal.md) selects device-local authority,
 protected payload layout and collection policy.
 Downstream #36–#46 still own runtime migration and isolated regression coverage.
