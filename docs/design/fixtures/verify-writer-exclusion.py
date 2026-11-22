@@ -62,12 +62,15 @@ class WriterExclusionTest(unittest.TestCase):
         def open_for_write():
             os.close(os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK))
 
+        self.require_legacy_denial(path, open_for_write, "write", groups=groups)
+
+    def require_legacy_denial(self, path, operation, action, *, groups=()):
         label = path.relative_to(self.root)
-        result = as_identity(LEGACY_UID, open_for_write, groups)
+        result = as_identity(LEGACY_UID, operation, groups)
         if result == 0:
-            raise PermissionError(f"{label}: legacy writer can write")
+            raise PermissionError(f"{label}: legacy writer can {action}")
         if result != 13:
-            raise RuntimeError(f"{label}: legacy write check failed ({result})")
+            raise RuntimeError(f"{label}: legacy permission check failed ({result})")
 
     def target(self, parent, name):
         directory = make_directory(parent / name, UPGRADE_UID, 0o700)
@@ -95,13 +98,23 @@ class WriterExclusionTest(unittest.TestCase):
                 self.assertEqual(file.read_bytes(), b"upgrade\n")
         self.assertEqual(self.original_data.read_bytes(), original)
 
-    def test_writable_ancestor_allows_directory_replacement_despite_mode_0700(self):
+    def test_writable_ancestor_blocks_handoff_until_sealed(self):
         parent = make_directory(self.root / "writable-ancestor", UPGRADE_UID, 0o777)
         directory, file = self.target(parent, "checkout")
         self.assertEqual(as_identity(LEGACY_UID, lambda: file.write_bytes(b"legacy\n")), 13)
+        original = self.original_data.read_bytes()
         moved = parent / "moved"
-        self.assertEqual(as_identity(LEGACY_UID, lambda: directory.rename(moved)), 0)
+
+        with self.assertRaisesRegex(PermissionError, r"^writable-ancestor: legacy writer can replace checkout$"):
+            self.require_legacy_denial(parent, lambda: directory.rename(moved), "replace checkout")
         self.assertEqual((moved / file.name).read_bytes(), b"accepted\n")
+
+        moved.rename(directory)
+        parent.chmod(0o755)
+        self.require_legacy_denial(parent, lambda: directory.rename(moved), "replace checkout")
+        self.assertFalse(moved.exists())
+        self.assertEqual(file.read_bytes(), b"accepted\n")
+        self.assertEqual(self.original_data.read_bytes(), original)
 
     def test_supplementary_group_write_blocks_handoff_until_removed(self):
         parent = make_directory(self.root / "sealed", UPGRADE_UID, 0o755)

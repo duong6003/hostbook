@@ -160,6 +160,33 @@ Do not claim an atomic global lock over independent remote actors.
   provider implementations outside this contract. If a host cannot supply
   reliable evidence, leave the original checkout and remote unchanged.
 
+#### Evidence of local writer exclusion
+
+Bind the check to the actual staged worktree, Git common directory and
+writable state. Resolve each path from trusted directory anchors and record
+the filesystem identity of each resource and the directories that bind it to
+its name. Follow the checks up to a verified boundary beyond which legacy
+writers cannot replace the path. Unresolved links, mounts or ownership stop
+the check.
+
+Evaluate effective permissions for each inventoried legacy OS identity and
+its groups, including relevant native ACLs, inherited rights and authority
+through a service. Check both edits inside each resource and rename, unlink
+or replacement of the resource or any directory in its path. Evaluate a
+replacement at the containing directory, including the rules that affect
+that operation. Owner and mode on the target alone cannot establish that
+its name is protected. Use a read-only check of the actual target.
+[Disposable fixture operations](store-writer-validation.md) demonstrate
+the kernel decisions on synthetic paths.
+
+Resolve any identity or service information that requires waiting outside
+the short migration gates. Before handoff, compare the current path bindings
+and access metadata under the gates against the verified evidence, including
+the scope and freshness of the identity information. A writable path,
+changed binding or permission the platform cannot establish stops cutover
+and identifies the affected resource or ancestor. Preserve the original and
+recovery set.
+
 #### Evidence of remote writer exclusion
 
 Obtain effective ref-update rules through an authenticated, supported
