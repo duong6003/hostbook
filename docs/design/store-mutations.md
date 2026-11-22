@@ -59,6 +59,14 @@ including internal/sourced callbacks and partial-failure restore paths. A cached
 rights observation cannot substitute for a successful current preflight. Denial,
 unknown rights and network unavailability all block new shared USER writes.
 
+For an ordinary host edit, the online preflight verifies the exact target and
+fresh record revision. The edit may be prepared in disposable private staging.
+Use the existing Git connection and an exact conditional update. The remote
+checks the sending identity's write rights before it updates the bound ref.
+Only an acknowledged update enters the accepted shared snapshot. A rejected
+attempt leaves that snapshot intact. Fetch or dry-run success cannot establish
+write rights. This path requires no separate provider token or API.
+
 Private edits can be saved offline. For a shared edit that loses connectivity
 before admission, keep the input in the open editor/form and report the failed
 save. The user retries explicitly with fresh online checks and the original
