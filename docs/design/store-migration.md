@@ -314,33 +314,28 @@ Run the [isolated cutover fixture](fixtures/verify-migration-cutover.py):
 python3 -B docs/design/fixtures/verify-migration-cutover.py
 ```
 
-Both process-death cases and both injected sync-error cases passed on native arm64 macOS (Darwin 27.2.0) and on arm64 Linux
-in a network-disabled Docker container with temporary storage
-(6.4.16-linuxkit). A child writes and syncs the intended replacement under
-a disposable root. The parent sends SIGKILL at controlled points before the
-child records completion.
+The fixture uses the [local replacement sequence](store-journal.md#local-selector-and-registry-replacement)
+on native macOS arm64 (Darwin 27.2.0, APFS) and a writable ext4 volume in
+network-disabled Linux arm64 Docker (6.4.16-linuxkit). On macOS it calls
+`F_FULLFSYNC` on the file and parent directory. On Linux it uses `fsync`.
+The candidate file is synced before replacement, and the parent directory
+is synced afterward.
 
-- Before registry replacement, a fresh process reads the original binding.
-  The synced pending replacement remains present and unselected.
-- After atomic registry replacement and directory sync, a fresh process
-  reads the new binding. No completion record was written by the old process.
+- SIGKILL before replacement leaves the original binding selected and the
+  synced pending file unselected.
+- SIGKILL after replacement and directory sync leaves the new binding
+  selected before any completion record is written.
+- Injected `EIO` at pending-file sync leaves the original binding selected.
+  Injected `EIO` at the attempted replacement or during the final directory
+  sync leaves the result uncertain. The old or new binding may be visible.
+- Injected unsupported-sync errors before and after replacement block
+  completion at both boundaries. Original and recovery fixtures are retained.
 
-Two further cases inject `EIO` in `fsync` and exercise the same replacement:
-
-- Pending-file sync fails before replacement. The original binding remains
-  selected and the pending file is retained for inspection.
-- Parent-directory sync fails after replacement. The updated binding is
-  visible, and the operation reports an uncertain outcome. The original,
-  candidate, intent and recovery marker remain available.
-
-The error cases model failed system calls. They do not simulate failing
-storage hardware or establish power-loss durability.
-
-The SIGKILL cases start two fresh readers and verify the original and candidate
-bytes, the recovery marker and file metadata after each reopen. The EIO cases
-check returned status and immediately visible files in the same process.
-Hostbook's actual recovery journal, vault, remote publication, system crash or
-power loss and on-disk durability remain unverified.
+The SIGKILL cases start two fresh readers and verify original and candidate
+bytes, the recovery marker and file metadata. Error cases check returned
+status and immediately visible files. The Linux volume is backed by the
+Docker VM's virtual disk. These checks leave Hostbook's actual recovery
+journal, vault, remote publication and physical power-loss durability open.
 
 The [registration contract](store-registration.md) defines the active binding.
 The [acceptance map](store-acceptance.md) records current coverage and open work.

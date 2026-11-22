@@ -213,6 +213,32 @@ durability and persist verified evidence before advancing. If that proof remains
 unavailable, keep the operation blocked. File and directory synchronization are
 separate steps. [Linux fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html).
 
+### Local selector and registry replacement
+
+Use a verified local filesystem and place the private temporary file beside
+its final name. Revalidate the owning intent and current binding under the
+gate. Flush the complete replacement file before atomically renaming it over
+the old file. Flush the containing directory after rename. On Linux use
+`fsync` for both descriptors. On macOS use `fcntl(F_FULLFSYNC)` for both.
+The macOS operation requests a device cache flush. The Linux file sync and
+directory sync have separate effects.
+[Apple fcntl(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
+[Linux fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html).
+
+Require support for these operations on the approved local storage. Missing
+support or unverified storage stops the operation. A sync error before rename
+keeps the old binding. An error during the attempted replacement or its final
+directory sync leaves an uncertain operation even if either binding is readable.
+Keep the original and recovery material and reconcile under the owning gate.
+Complete local cutover only after the required calls succeed and the exact
+binding and evidence have been verified and recorded. Remote completion has
+its own acceptance boundary.
+
+The [local cutover fixture](store-migration.md#local-cutover-interruption-checkpoint)
+exercises real calls on APFS and ext4, plus injected syscall errors. The test
+covers process interruption and observed syscall results. System crash,
+device power loss and complete runtime recovery remain open.
+
 On restart, validate selector/retained metadata chain, decrypt referenced payload and compare manifest IDs/sequence
 and current snapshots. Valid unselected files are orphans, never automatically a newer authority. Torn/missing
 selector, unexpectedly missing payload, unknown version, sequence gap, copied identity or mismatched manifest blocks

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise process death and sync errors at isolated local cutover boundaries."""
+"""Exercise process death and filesystem errors at isolated local cutover boundaries."""
 from contextlib import nullcontext
 import errno
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -21,10 +22,20 @@ RECOVERY_BYTES = b"synthetic retained recovery marker\n"
 SCRIPT = Path(__file__).resolve()
 
 
+def sync_fd(fd):
+    if sys.platform == "darwin":
+        operation = getattr(fcntl, "F_FULLFSYNC", None)
+        if operation is None:
+            raise OSError(errno.ENOTSUP, "F_FULLFSYNC is unavailable")
+        fcntl.fcntl(fd, operation)
+    else:
+        os.fsync(fd)
+
+
 def sync_directory(directory):
     fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        os.fsync(fd)
+        sync_fd(fd)
     finally:
         os.close(fd)
 
@@ -33,7 +44,7 @@ def write_file(path, contents):
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
         stream.write(contents)
         stream.flush()
-        os.fsync(stream.fileno())
+        sync_fd(stream.fileno())
 
 
 def write_json(path, value):
@@ -57,13 +68,14 @@ def verify_store_files(root):
     assert (root / "recovery.fixture").read_bytes() == RECOVERY_BYTES
 
 
-def injected_sync_error(enabled):
-    if not enabled:
+def injected_sync_error(error_number):
+    if error_number is None:
         return nullcontext()
-    return patch.object(os, "fsync", side_effect=OSError(errno.EIO, "fixture sync error"))
+    return patch.object(sys.modules[__name__], "sync_fd",
+                        side_effect=OSError(error_number, "fixture sync error"))
 
 
-def apply_cutover(root, replace, fault=None):
+def apply_cutover(root, replace, fault=None, error_number=errno.EIO):
     verify_store_files(root)
     assert json.loads((root / "registry.json").read_text()) == OLD
     write_json(root / "intent.json", {"before": OLD, "after": NEW})
@@ -71,17 +83,17 @@ def apply_cutover(root, replace, fault=None):
     pending = root / "registry.pending"
     replacement_started = False
     try:
-        with injected_sync_error(fault == "pending-file"):
+        with injected_sync_error(error_number if fault == "pending-file" else None):
             write_json(pending, NEW)
         sync_directory(root)
         if replace:
             replacement_started = True
-            os.replace(pending, root / "registry.json")
-            with injected_sync_error(fault == "registry-directory"):
+            fail_replace = patch.object(os, "replace", side_effect=OSError(errno.EIO, "fixture replace error"))
+            with fail_replace if fault == "replace" else nullcontext():
+                os.replace(pending, root / "registry.json")
+            with injected_sync_error(error_number if fault == "registry-directory" else None):
                 sync_directory(root)
-    except OSError as error:
-        if error.errno != errno.EIO:
-            raise
+    except OSError:
         return "uncertain" if replacement_started else "stopped-before-replace"
     return "replaced" if replacement_started else "pending"
 
@@ -146,11 +158,11 @@ def check(when, selected):
             assert snapshot(root) == before
 
 
-def check_sync_error(fault, observed, outcome):
+def check_cutover_error(fault, observed, outcome, error_number=errno.EIO):
     with tempfile.TemporaryDirectory(prefix="hostbook-cutover-error-") as scratch:
         root = Path(scratch).resolve()
         prepare(root)
-        assert apply_cutover(root, replace=True, fault=fault) == outcome
+        assert apply_cutover(root, replace=True, fault=fault, error_number=error_number) == outcome
         assert json.loads((root / "registry.json").read_text()) == observed
         assert (root / "registry.pending").exists() == (observed == OLD)
         assert json.loads((root / "intent.json").read_text()) == {"before": OLD, "after": NEW}
@@ -164,10 +176,15 @@ if __name__ == "__main__":
         print("PASS: SIGKILL before replacement kept the original selection")
         check("after", "selected-new")
         print("PASS: SIGKILL after synced replacement kept the new selection and did not replay")
-        check_sync_error("pending-file", OLD, "stopped-before-replace")
+        check_cutover_error("pending-file", OLD, "stopped-before-replace")
         print("PASS: pending file EIO stopped before replacement")
-        check_sync_error("registry-directory", NEW, "uncertain")
+        check_cutover_error("registry-directory", NEW, "uncertain")
         print("PASS: directory EIO after replacement left new binding visible and outcome uncertain")
+        check_cutover_error("replace", OLD, "uncertain")
+        print("PASS: failed replacement attempt was uncertain even with old binding visible")
+        check_cutover_error("pending-file", OLD, "stopped-before-replace", errno.ENOTSUP)
+        check_cutover_error("registry-directory", NEW, "uncertain", errno.ENOTSUP)
+        print("PASS: unsupported sync blocked completion on both sides of replacement")
     else:
         root = Path.cwd()
         assert root == Path(os.environ["HOSTBOOK_STATE"])
