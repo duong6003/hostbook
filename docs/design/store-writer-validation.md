@@ -36,10 +36,20 @@ local experimental branch `codex/shared-write-fixture` at `30c4381`. Run
 
 ## Remaining verification
 
-The native macOS process lacked the privilege to switch UIDs. The POSIX
-fixture returned skip status 77 there. The Linux run verifies ordinary mode
-and ancestry checks on its fixture filesystem. Platform ACL inheritance,
-delegated access, evidence collection on a real target, crash behavior and
-restoration remain open. The Git run verifies one server-side policy. Each
-production remote still requires authoritative evidence for its own ref and
-credential binding before cutover can be admitted.
+On native macOS arm64 (Darwin 27.2.0), an unprivileged child sharing the
+target owner's UID could overwrite a `0600` file in a `0700` directory.
+The original synthetic file stayed unchanged. The migration decision validator
+also passed, including the `stop-writer-access` decision for unknown legacy
+access. That assertion covers the design gate only.
+
+The native two-UID POSIX fixture returned skip status 77 because the local
+process could not use noninteractive sudo. GitHub Actions denied the
+[macOS 15 job](https://github.com/duong6003/hostbook/actions/runs/45000332023/job/137140246792)
+before allocating a runner, citing billing or a spending limit. Distinct-UID
+denial on macOS remains unverified.
+
+The Linux run verifies ordinary mode and ancestry checks on its fixture
+filesystem. Platform ACL inheritance, delegated access, evidence collection on
+a real target, crash behavior and runtime restoration remain open. Each
+production remote requires authoritative evidence for its own ref and credential
+binding before cutover can be admitted.
