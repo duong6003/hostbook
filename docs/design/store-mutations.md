@@ -173,6 +173,51 @@ The current `host_shared` name denotes a multi-alias Host stanza, not membership
 in a shared store. Preserve existing ProxyJump values, reference rewrites and SSH
 resolution behavior; this slice introduces no store-specific jump restrictions.
 
+## Save one existing shared host
+
+On main `6310dcdd8bd2ec9f753fc6673079f367c4848cf0`, Home Ctrl-E, the
+host actions menu and the connection failure screen all call
+[`edit_host`](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/lib/hosts.sh#L154).
+It resolves an alias to a project file and line, opens the live file, validates
+after the editor closes and restores the backup on the invalid-edit revert path.
+[`save_and_sync`](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L849)
+then takes the sync lock, calls `commit_all` (`git add -A`) and schedules
+later sync. A native macOS probe with a disposable checkout, a scripted editor
+and a local bare remote confirmed that the editor received the live file before
+the lock, the commit included a second host and the unstaged version of an
+unrelated staged file, and the remote tip stayed at the original commit.
+
+For the first shared save in [#38](https://github.com/duong6003/hostbook/issues/38),
+limit the operation to an in-place edit of one existing host stanza. Validate
+that the staged change affects only the selected host. Use a private Git index
+so unrelated worktree and index changes cannot enter the proposed commit.
+
+1. Capture `(store_id, host_id)`, the accepted host revision, and the checkout,
+   registration, connection and policy bindings at selection. Keep the editor's
+   input in private staging.
+2. On Save, read the current host revision and Git tip from the exact registered
+   remote and full branch ref in staging, leaving checkout refs untouched.
+   Compare the host revision with the captured base. Build the proposed commit
+   as a direct child of the observed tip. Under the store gate, recheck the
+   local bindings, effective two-way mode, absence of a transition fence and
+   captured host base. Durably reserve the exact ref, observed tip and proposed
+   commit, then release the gate before sending. Git enforces write access and
+   the conditional ref update described in [admission](#proposed-admission-rules).
+3. Apply the accepted result only to its original store after revalidation.
+   If the attempt crossed the send boundary and its outcome is uncertain, keep
+   the attempt pending under the [publication rules](store-transfer.md#publication-admission-and-transition-barrier).
+
+| Acceptance case | Expected result |
+| --- | --- |
+| Two-way, current host revision and Git accepts the exact update | Only the chosen host's revision advances. The committed change excludes other local edits. If the branch advanced on another host, rebuilding on the fresh tip preserves both edits. |
+| Effective receive-only at Save, including a mode change while editing | No user write to the checkout, Git index, local branch or remote ref. Keep existing editor input available. |
+| Same host already advanced, or the registered remote/ref changed while editing | For the same-host race, report a version conflict and retain the input for comparison. For a changed binding, retain the input and require a fresh selection and confirmation before a new attempt. The attempt makes no change to the checkout, index, local branch or either remote ref. |
+
+A new Git tip on the same bound branch can reflect a different host's edit.
+Re-read the target host and repeat preflight before any new attempt. If its
+revision still matches, rebuild the proposal on the new tip. Definitive denial or unavailability before admission leaves input
+in staging and creates no pending shared write.
+
 ## Synthetic examples and remaining work
 
 [mutation-permissions.json](fixtures/mutation-permissions.json) describes private
