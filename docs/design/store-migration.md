@@ -231,11 +231,40 @@ legacy migration and a legacy writer that still has access. Counterexamples
 include reused paths, untested recovery, uncertain publication and unresolved
 remote rights. Fixture observations are synthetic.
 
+### Staged restore checkpoint
+
+Run the [isolated restore fixture](fixtures/verify-migration-restore.py) with
+Python 3, Git, `age` and `age-keygen` available:
+
+```bash
+python3 -B docs/design/fixtures/verify-migration-restore.py
+```
+
+All four cases passed on native arm64 macOS (Darwin 27.2.0, Git 2.42.1)
+and on arm64 Linux in Docker with networking disabled (6.4.16-linuxkit,
+Git 2.54.1), both with age 1.3.2.
+
+- A complete age-encrypted archive restored two Git commits, a tag, local and
+  remote-tracking refs and remote configuration, distinct HEAD/index/working
+  tree contents, ignored and untracked files, app and SSH Include configuration,
+  descendant file and directory modes, and a decryptable synthetic vault. The
+  staged root was created with mode `0700`. Git observations used a scratch
+  index so stat refreshes could not rewrite the restored index.
+- An archive missing the Git index, damaged ciphertext, and an unavailable
+  vault recovery identity each stopped before promoting the staged copy. The
+  original tree's descendant inventory, bytes and modes matched the initial
+  snapshot in every case.
+
+The manifest stayed in fixture memory. The remote URL and SSH Include files
+were restored as bytes. Native ACLs, ownership, external dependency resolution,
+Hostbook's vault format, crash durability and production cutover remain to be
+verified.
+
 The [registration contract](store-registration.md) defines the active binding.
 The [acceptance map](store-acceptance.md) records current coverage and open work.
 The [writer exclusion checkpoint](store-writer-validation.md) records the Linux
 permission and local Git server experiments.
-Concrete ACL verification, backup/restore mechanics and platform durability
+Concrete ACL verification, runtime backup/restore and platform durability
 remain open. [Journal/retention](store-journal.md) selects device-local authority,
 protected payload layout and collection policy.
 Downstream #36–#46 still own runtime migration and isolated regression coverage.
