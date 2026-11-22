@@ -123,9 +123,9 @@ Choose one separate **transaction recovery vault**: a new age identity protected
 using the existing vault encryption primitives (`vault.pub`, `vault.key.age`, `vault.recovery.age`). This is not
 the source or destination vault identity, their password, an unlock cache, or custom crypto. Each payload
 generation is age-encrypted to exactly that recovery identity's public recipient; retain its complete envelope
-generation beside the ciphertext. The existing credential transport wrappers are not approved by this design:
-implementation must pass secret input through protected streams/descriptors, never environment/argv. Failure to
-provide that path blocks implementation.
+generation beside the ciphertext. The existing environment-based credential
+wrappers are outside this recovery path. Recovery envelope passphrases use
+the [inherited pipe below](#recovery-passphrase-transport).
 
 The encrypted manifest binds transaction/device/root IDs, sequence, payload ID, all snapshot/effect/reservation IDs
 and the full confirmed plan. It contains exact original/proposed bytes, local durability observations (owned
@@ -150,6 +150,41 @@ mapping/decryptability. Locked/missing required generation, failed encryption/ac
 progress with original/recovery intact; never create replacement source identities or plaintext. Rekey of the
 recovery vault requires a verified new envelope/payload generation, then the same durable selector protocol; retain
 old generations until safe collection.
+
+## Recovery passphrase transport
+
+Use the existing age `batchpass` plugin with a fresh anonymous pipe per
+operation. Give only its read descriptor number in `AGE_PASSPHRASE_FD`.
+Keep the envelope data on a separate stdin/stdout stream. Launch approved
+age/plugin binaries under a controlled environment. Exclude the
+`AGE_PASSPHRASE` value and debug or shell tracing before collecting secret
+input. Close the write end after sending to signal EOF, pass only the required
+descriptor to the intended child chain, and close inherited descriptors after
+use. A passphrase must stay out of command arguments, environment values, logs
+and temporary files. Define input as a nonempty single line and pass its bytes
+without a separator. Batchpass trims trailing CR/LF.
+[Upstream batchpass implementation](https://github.com/FiloSottile/age/blob/v1.3.2/cmd/age-plugin-batchpass/plugin-batchpass.go#L170).
+
+Stage an encrypted envelope privately and promote it only after successful
+encryption and verification. Keep a decrypted identity in a protected stream
+or memory and verify full process success before using it. Wrong input,
+unavailable descriptor and tool failures stop the operation and preserve the
+previous envelope and store state. Retain the existing age envelope format.
+
+Run the [isolated fixture](fixtures/verify-recovery-passphrase.py):
+
+```bash
+python3 -B docs/design/fixtures/verify-recovery-passphrase.py
+```
+
+The fixture passed on native macOS arm64 and network-disabled Linux arm64
+with age v1.3.2. It uses synthetic passphrases and a synthetic recovery payload.
+Observers at both tool boundaries check arguments, environment and pipe type.
+It verifies encrypted round-trip and failure on wrong passphrase, empty pipe or
+truncated ciphertext while the original fixture and sealed copy stay byte-identical.
+The fixture writes only ciphertext and non-secret test files. This verifies
+tool integration in the fixture. Hostbook still needs to wire its actual
+prompt and recovery paths and verify complete recovery.
 
 ## Durable update and interruption rules
 
