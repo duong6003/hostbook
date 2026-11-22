@@ -123,16 +123,26 @@ def validate(data):
         return (state['guard'] == 'transition-fence' and state['old_quiescent'] and
                 state['old_reconciled'] and not state['new_admission'])
 
-    def can_reserve(state):
+    authority = handoff['authority']
+    require(set(authority['effects']) == {'write-identity', 'publish-candidate'},
+            'scoped effects')
+
+    def can_mutate(state):
         return (state['guard'] == 'migration-owned' and state['actor'] == 'migration' and
                 state['intent'] == handoff['intent'] and state['target'] == handoff['target'] and
                 state['generation'] == handoff['new_generation'] and
-                state['effective_two_way'] and state['actual_write_rights'] and
-                state['snapshot_fresh'] and state['reservation_durable'])
+                all(state[key] == authority[key] for key in ('owner', 'checkout', 'base', 'git_identity')) and
+                state['effect'] in authority['effects'] and state['authority_current'] and
+                state['rights'] == 'verified' and state['snapshot_fresh'])
 
+    def can_reserve(state):
+        return can_mutate(state) and state['effect'] == 'publish-candidate' and state['reservation_durable']
+
+    local_write = dict(reserve, effect='write-identity', reservation_durable=False)
     require(can_handoff(drain) and cutover['guard'] == 'migration-owned' and
             cutover['handoff_durable'] and cutover['generation'] == handoff['new_generation'] and
-            can_reserve(reserve), 'durable authorized handoff/admission')
+            cutover['regular_mode'] == 'receive-only' and can_mutate(local_write) and
+            can_reserve(reserve) and not can_reserve(local_write), 'durable scoped handoff/admission')
     require(lost['guard'] == 'migration-owned' and lost['ownership_retained'] and
             lost['reservation_retained'] and lost['outcome'] == 'uncertain' and
             not lost['reported_complete'], 'lost acknowledgement retains ownership')
@@ -140,11 +150,26 @@ def validate(data):
             'handoff counterexamples')
     for changed in ({'old_quiescent': False}, {'old_reconciled': False}):
         require(not can_handoff(dict(drain, **changed)), 'premature handoff admitted')
-    for changed in ({'actor': 'ordinary'}, {'guard': 'transition-fence'},
-                    {'intent': 'other-intent'}, {'target': 'other-target'}, {'generation': 1},
-                    {'effective_two_way': False}, {'actual_write_rights': False},
-                    {'snapshot_fresh': False}):
-        require(not can_reserve(dict(reserve, **changed)), 'unowned publication admitted')
+    rejected_admissions = (
+        {'actor': 'ordinary'}, {'guard': 'transition-fence'}, {'intent': 'other-intent'},
+        {'target': 'other-repo/same-ref'}, {'target': 'same-repo/other-ref'}, {'generation': 1},
+        {'owner': 'other-owner'}, {'checkout': 'other-checkout'}, {'base': 'other-tip'}, {'git_identity': 'other-credential'},
+        {'effect': 'write-unreviewed-vault'}, {'authority_current': False},
+        {'rights': 'denied'}, {'rights': 'unknown'}, {'rights': 'unavailable'},
+        {'snapshot_fresh': False},
+    )
+    for changed in rejected_admissions:
+        require(not can_mutate(dict(local_write, **changed)) and not can_reserve(dict(reserve, **changed)),
+                'unowned migration effect admitted: ' + str(changed))
+    require(not can_reserve(dict(reserve, reservation_durable=False)), 'send without reservation')
+    claims = data['resource_claims']
+    unresolved = claims['unresolved']
+    registrations = claims['later_registrations']
+    for registration in registrations:
+        require(registration['store'] != unresolved['store'], 'cross-ID claim coverage')
+        overlap = any(registration[key] == unresolved[key] for key in ('checkout', 'target'))
+        decision = 'reject-overlap' if overlap else 'allow-review'
+        require(decision == registration['expected'], 'unresolved claim bypassed')
     fresh, eligible, blocked = cases = data['upgrade']
     require([c['expected'] for c in cases] ==
             ['connect-receive-only', 'eligible-for-handoff', 'stop-writer-access'],
@@ -164,16 +189,16 @@ def validate(data):
             ({'backup': 'present'}, 'stop-backup-verification'),
             ({'prior_sends': 'uncertain'}, 'stop-publication-reconciliation')):
         require(upgrade(dict(eligible, **changes)) == expected, 'unsafe upgrade admitted: ' + str(changes))
-    return len(names), len(required), len(cases)
+    return len(names), len(required), len(cases), len(rejected_admissions), len(registrations)
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('migration-decisions.json')
-        count, gates, upgrades = validate(json.loads(fixture.read_text()))
+        count, gates, upgrades, rejected_admissions, claims = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
     print(f'PASS: {count} synthetic migration cases, {gates} preflight counterexamples, '
-          f'4 handoff checkpoints, {upgrades} upgrade decisions and rejected counterexamples '
+          f'4 handoff checkpoints, {rejected_admissions} rejected scoped admissions, {claims} resource claim checks and {upgrades} upgrade decisions '
           '(documentation only; no runtime validation)')

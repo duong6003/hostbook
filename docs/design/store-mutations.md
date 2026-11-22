@@ -61,6 +61,8 @@ store explicitly. Apply the rule to every affected store and every write boundar
 including internal/sourced callbacks and partial-failure restore paths. A cached
 rights observation cannot substitute for a successful current preflight. Denial,
 unknown rights and network unavailability block local shared USER writes.
+A [legacy migration's scoped admission](store-migration.md#legacy-shared-admission)
+supplies its effective two-way eligibility under those same checks.
 
 For an ordinary host edit, the online preflight verifies the exact target and
 fresh record revision through an authenticated read. With explicit intent,
@@ -115,7 +117,7 @@ After a fully drained migration fence, an explicit durable
 [ownership handoff](store-migration.md#writers-ordered-gates-and-upgrade-boundary)
 permits only that intent's exact authorized target/generation admissions and
 blocks ordinary publishers/settings changes. No pending fence admits a new send;
-ownership does not waive USER rights, two-way mode or fresh snapshot checks.
+ownership requires current USER rights, effective eligibility and fresh snapshot checks.
 
 Capture store ID, registration/checkout/connection generations, selected host ID,
 record/settings revision, vault generation and relevant mode/rights inputs before

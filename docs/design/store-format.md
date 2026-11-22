@@ -148,7 +148,9 @@ local/remote vaults require the migration contract's explicit reconciliation.
 All metadata creation, association repair, rename and legacy admission mutations
 are USER writes under [mutation guards](store-mutations.md); shared targets need
 effective two-way mode and actual rights. Receive-only may apply validated remote
-v1 content as RECEIVE, never mint IDs or repair metadata locally. Default imports
+v1 content as RECEIVE, never mint IDs or repair metadata locally. The
+[legacy shared admission](store-migration.md#legacy-shared-admission) defines the
+migration-only two-way eligibility needed before a v1 registration exists. Default imports
 are private; new shared registrations are receive-only. Changed inputs invalidate
 the plan. SSH file(s), sidecar and vault updates use existing [transfer revalidation](store-transfer.md#serialization-and-revalidation)
 and [migration backup/recovery](store-migration.md#preflight-snapshot-and-protected-backup)

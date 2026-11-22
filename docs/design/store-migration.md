@@ -111,7 +111,9 @@ store, remote/ref, expected base and proposed checkout/connection generation;
 record the resulting generation at cutover. It excludes ordinary writers,
 publishers and settings/registration changes. Only that intent's reviewed writes
 and exact generation/target publication reservations may be admitted, with fresh
-snapshots, effective two-way mode and actual rights. Receive-only grants none.
+snapshots and actual rights. Legacy shared targets use the scoped admission
+below to satisfy the migration-only mode check. Established v1 shared stores
+retain their regular effective two-way requirement.
 No process gate is held across network waits; durable ownership persists instead.
 Restart must reconcile its owner, generations and attempts; uncertainty retains
 ownership and recovery, never clears them by age. Release ownership durably under
@@ -175,7 +177,50 @@ index/file/ref/vault/configuration or generation invalidates the plan/backup:
 retain it, recapture/reverify and renew confirmation for material changes. Never
 clobber newer work to make the snapshot match. Fresh actual rights and effective
 two-way mode are required for **every** shared USER write, including metadata,
-vault creation, cleanup and rollback; confirmation is not a rights grant.
+vault creation, cleanup and rollback. For a legacy shared migration, effective
+eligibility comes only from the scoped authority below. Confirmation alone
+grants no remote rights.
+
+### Legacy shared admission
+
+A legacy candidate without v1 identity is resolved only by an explicit migration
+request from the verified local account owner. Inspect the exact repository and
+full ref and prepare the proposed v1 identity and vault changes in protected
+staging. Allocate planned store IDs once in the reviewed plan. An already
+identified logical store retains its ID. Connect alone opens no migration
+authority and can register a shared checkout only after v1 is valid.
+
+1. Capture the verified device/account, original checkout, isolated candidate
+   and their filesystem/Git common-directory identities. Bind the planned store
+   and checkout/connection generations, exact remote/ref, authenticated Git
+   identity, expected remote base and permitted effects. Require explicit plan
+   confirmation, verified backup/restore, vault access, legacy-writer exclusion
+   and fresh remote write-rights evidence for that identity and ref. Missing,
+   denied or ambiguous evidence stops before any target mutation.
+2. Under the ordered gates and short device registry lock, reject overlapping
+   active bindings or unresolved intents by verified filesystem and repository/ref
+   identity as well as planned store ID. Durably claim those resources in the
+   intent and install the drain fence before releasing the registry lock so
+   another admission cannot claim them concurrently. Reconcile earlier attempts
+   outside that lock. After drain and fresh
+   revalidation, durably record the exact scoped authority in this migration
+   transaction's protected manifest and replace the fence with migration
+   ownership. Reserve the destination's planned store ID for the gate at and
+   after registration. Candidate authority is resolved only from the verified
+   device-local journal.
+3. Resolve migration writes using that authority as their effective two-way
+   eligibility. Under the same gates, recheck the intent, planned operation,
+   owner, exact target/base, generations and current rights before each effect.
+   An ordinary writer never inherits the authority. Publication also requires
+   a durable reservation and a conditional update of the bound ref. A changed
+   repo, ref, credential, checkout or base requires reconciliation and a new
+   reviewed plan. Before the first effect, preserve the original unchanged.
+4. At local cutover install the validated v1 binding with registry mode
+   receive-only. Keep ordinary access fenced until the migration is reconciled.
+   On an uncertain send or incomplete recovery retain ownership and scoped
+   evidence and block new effects. Terminal settlement releases the scoped
+   authority under the gates. Later two-way use requires its ordinary explicit
+   mode transition.
 
 ## Durable boundaries and recovery
 
@@ -226,7 +271,8 @@ selected conceptual decisions/invariants; it does not call the app, Git, vault,
 SSH or network and does not prove enforcement, encryption or crash safety.
 Its four handoff checkpoints cover drain, cutover, authorized reservation and lost
 acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
-The three upgrade decisions cover a fresh shared registration, an eligible
+The scoped admission checks exercise the verified intent and changed or missing
+rights, binding and operation evidence. The three upgrade decisions cover a fresh shared registration, an eligible
 legacy migration and a legacy writer that still has access. Counterexamples
 include reused paths, untested recovery, uncertain publication and unresolved
 remote rights. Fixture observations are synthetic.

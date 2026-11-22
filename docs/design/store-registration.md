@@ -20,6 +20,10 @@ and bind these roots to this device/account. A path override, matching
 Disposable tests select an explicitly isolated account root before resolution and
 use it for every fixture dependency. They never fall back to live paths.
 
+A [legacy migration candidate](store-migration.md#legacy-shared-admission)
+uses its verified journal binding until v1 registration. Its scoped authority
+is unavailable to ordinary registry contexts. Cutover installs receive-only.
+
 The registry owns device-local checkout selection and effective sync mode. The
 tracked sidecar owns store and host identity. The recovery journal owns
 transition intents, publication reservations, attempt outcomes and recovery
@@ -74,9 +78,15 @@ remain prerequisites to runtime use.
   callbacks with the same generations may no longer act.
 - For a registry replacement, acquire affected store gates in the existing
   canonical order, then a short device registry lock. Reread the complete
-  registry, compare expected entry generations and recheck uniqueness and
-  directory overlap across the resulting registry before replacing it
-  atomically and durably. Preserve unrelated entries from the latest revision.
+  registry, compare expected entry generations and check the proposed binding
+  against both registry entries and unresolved journal resource claims. All
+  registration and connection admissions check verified checkout/Git common
+  directory overlap and repository/ref identity where applicable, including
+  claims under a different planned store ID or with no registry entry.
+  An unresolved overlapping claim blocks other operations. The owning migration
+  alone may install its exact planned binding after fresh verification. Perform admission and
+  durable claim or registry replacement under this lock. Preserve unrelated
+  entries from the latest revision.
   No holder of the device registry lock may wait for a store gate.
   Release both before prompts, editor sessions or network waits. Recovery uses
   the journal for interruptions between directory, registry and remote effects.

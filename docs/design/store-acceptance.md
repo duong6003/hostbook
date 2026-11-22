@@ -12,19 +12,21 @@ The runtime fixture column describes evidence still to collect.
 | Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | The first transfer scope is recorded below. Different-ID merge is deferred. |
 | Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Managed writers are mapped at [current main](store-mutations.md#file-level-write-boundaries-on-current-main). Carry the map into final design review and downstream enforcement. |
 | Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | Choose protected secret transport and concrete durability and restoration primitives for macOS and Linux. |
-| Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md), [staged restore checkpoint](store-migration.md#staged-restore-checkpoint) and [local cutover interruption checkpoint](store-migration.md#local-cutover-interruption-checkpoint). | Define legacy shared admission, verify native macOS exclusion, and choose ACL, remote-policy and restoration evidence for the supported migration path. |
+| Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md), [staged restore checkpoint](store-migration.md#staged-restore-checkpoint) and [local cutover interruption checkpoint](store-migration.md#local-cutover-interruption-checkpoint). | Verify native macOS exclusion, and choose ACL, remote-policy and restoration evidence for the supported migration path. |
 | Parent acceptance mapped with independent review | Runtime plan below and independent review on exact draft commits. | Complete the remaining design decisions and review the assembled final SHA. |
 
 ## Readiness review
 
 Reviewed the assembled design at `89ba62a7cf151f46e920ac4c49d1665406f67ec8`
 against main `6310dcd`. Identity, the managed writer inventory and the parent
-acceptance mapping have design coverage. The following design and evidence
+acceptance mapping have design coverage. The subsequent
+[legacy shared admission](store-migration.md#legacy-shared-admission)
+defines migration-only write authority before an admitted v1 registration.
+The following design decisions and evidence
 remain open before final review.
 
 | Remaining item | Evidence needed |
 | --- | --- |
-| Legacy shared admission | Define how a legacy shared target with no admitted v1 identity can reach a verified, scoped two-way migration binding before metadata or vault mutation. The standard new connection starts receive-only, and the shared write guard already requires effective two-way. Specify the transition and its authority, including an exact checkout/remote/ref and rejection paths, without implicit initialization. |
 | Protected recovery and durability | Choose the protected passphrase transport for recovery envelopes and the supported macOS/Linux persistence and restore mechanisms. State the supported filesystem assumptions and how to verify permissions, ACLs, owner and external dependencies. The existing SIGKILL and injected EIO cases cover a local fixture, with power-loss durability still open. |
 | Old-writer exclusion | Run the distinct-UID fixture on a privileged macOS test runner. Specify how migration verifies the target ACL/ancestor rights and the authoritative remote policy for the exact ref. Current Linux permissions and synthetic Git policy evidence remain scoped to those fixtures. |
 

@@ -37,7 +37,12 @@ no distributed exclusion.
 
 Both stores reference **one** transaction, never independent source/destination journals. Under ordered store
 gates, inspect authoritative nonterminal records for overlapping store/host keys before creating an intent; a
-missing/stale `.ref` cannot permit another retry. References are repairable lookup hints only. Resolve UUID
+missing/stale `.ref` cannot permit another retry. Provisional migration resource
+claims also bind all registration and connection admissions under the short
+device registry lock, even if the competing store ID differs and the claim has
+no registry row. Check verified checkout/Git common directory and repository/ref
+identity in addition to store/host keys. Only the owning migration may advance
+its exact claim under fresh admission checks. References are repairable lookup hints only. Resolve UUID
 components beneath the verified root, reject links/path escapes and verify record store membership. Never follow a
 path supplied by shared content. Scan authority as the fallback; malformed/unreadable authority blocks affected
 work (the entire root if affected IDs cannot be determined), preserving unrelated data.
