@@ -229,7 +229,7 @@ content, never create a second record or silently overwrite. ID equality alone
 does not prove that a transfer committed or that the source may be deleted. A
 different payload with that ID is a collision/conflict requiring an explicit
 decision, not permission to replace it. Durable retry evidence, concurrency and
-crash recovery are specified in the proposed transfer transaction contract.
+crash recovery are specified in the [existing-destination rules](store-transfer.md#existing-destination-host).
 
 Different IDs with equal effective (address, port, login) are **potential
 duplicates**, not the same identity. Use resolved SSH values (including defaults)

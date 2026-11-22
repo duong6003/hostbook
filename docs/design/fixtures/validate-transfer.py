@@ -41,6 +41,27 @@ def validate_barrier(case):
                 case['effective_configuration_unchanged'], 'failed-send-must-preserve-mode')
 
 
+def existing_destination_decision(case):
+    observed, attempt = case['observed'], case['attempt']
+    review = case.get('review', 'unreviewed')
+    require(observed in {'matching', 'different-revision', 'inconsistent-revision', 'other-id-alias'},
+            'existing destination observation')
+    require(attempt in {'none', 'unsettled', 'reachable-only', 'settled-accepted', 'settled-rejected'},
+            'existing destination attempt')
+    require(review in {'unreviewed', 'confirmed-current', 'confirmed-stale'}, 'replacement review')
+    if attempt in {'unsettled', 'reachable-only'}:
+        return 'reconcile-attempt'
+    if observed == 'matching' and attempt == 'settled-accepted':
+        return 'revalidate-destination-effect'
+    if observed == 'other-id-alias':
+        return 'resolve-name-collision'
+    if observed == 'different-revision':
+        if case.get('lineage_verified', False) is True and review == 'confirmed-current':
+            return 'prepare-same-id-replacement'
+        return 'compare-versions'
+    return 'reconcile-evidence'
+
+
 def validate(data):
     require(data['fixture_kind'] == 'documentation-only', 'documentation marker')
     require(data['contract_version'] == 1, 'unsupported conceptual version')
@@ -140,15 +161,25 @@ def validate(data):
             require(str(error) == invalid['expected_rejection'], 'wrong counterexample rejection')
         else:
             raise ValueError('accepted invalid barrier: ' + invalid['expected_rejection'])
-    return len(names), len(barriers), len(negatives)
+    existing = data['existing_destination']
+    decisions = set()
+    for case in existing:
+        decision = existing_destination_decision(case)
+        require(decision == case['expected'], case['case'] + ': existing destination decision')
+        decisions.add(decision)
+    require(decisions == {'reconcile-attempt', 'revalidate-destination-effect',
+                          'resolve-name-collision', 'prepare-same-id-replacement',
+                          'compare-versions', 'reconcile-evidence'}, 'existing destination coverage')
+    return len(names), len(barriers), len(negatives), len(existing)
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('transfer-recovery.json')
-        count, barriers, negatives = validate(json.loads(fixture.read_text()))
+        count, barriers, negatives, existing = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
     print(f'PASS: {count} transfer checkpoints, {barriers} publication barriers, '
-          f'{negatives} rejected counterexamples (documentation only; no runtime validation)')
+          f'{negatives} rejected counterexamples and {existing} existing-destination decisions '
+          '(documentation only; no runtime validation)')

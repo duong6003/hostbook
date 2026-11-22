@@ -38,14 +38,11 @@ store labels and keys, host ID, alias/name decisions, connection-setting changes
 impacts and any unresolved duplicate. Never show secrets, secret-derived hashes
 or decrypted key material. A changed plan requires renewed confirmation.
 
-Same-ID destination records require comparison against this intent and its saved
-payload, even on retry. Equal ID or equal content alone is not commit evidence.
-A changed same-ID record blocks automatic overwrite and source deletion. A
-different ID at the same effective endpoint offers compare, update-existing,
-keep-both with valid names, or cancel. Alias collisions also need an explicit
-choice. **Update-existing is blocked in this slice**: defining lineage and the
-surviving ID is a remaining #35 dependency, not permission to discard the moving
-ID. Never mint another ID to make retry or collision handling succeed.
+Classify an existing destination host using
+[the comparison and retry rules](#existing-destination-host) before preparing
+a write. Keep-both requires an explicit choice and valid names for distinct IDs.
+Merging into a different ID remains blocked until the surviving lineage and
+references are defined.
 
 Credentials are decrypted only as needed and re-encrypted for the destination
 vault; copying source ciphertext is insufficient. Resolve destination credential
@@ -89,13 +86,60 @@ Distinguish three kinds of fact:
 
 A successful local command or push exit alone is insufficient without matching
 publication evidence. If a publication response is lost, keep its attempt
-uncertain. On restart query the intended remote/ref and reconcile the exact
-proposed revision and affected content against current state. An accepted revision
-in current history proves historical acceptance, but later changes still need
-comparison. If acceptance cannot be established (offline, rewritten history,
-conflict or insufficient read rights), remain blocked and retain recovery data.
+uncertain. On restart verify the original remote/ref and reconcile the exact
+proposal with the saved base and affected content. Require evidence bound to
+the reserved update, such as a trusted receipt for the ref/base/proposal or a
+verified observation of the exact proposed tip on the original ref with the
+recorded base verified and the proposal matching the plan. A proposal reachable
+only as an ancestor establishes ancestry. If acceptance cannot be established,
+remain blocked and retain recovery data.
 Do not infer success from the absence of an error or repeat a destructive write
 blindly. A retry may publish only against freshly verified preconditions.
+
+## Existing destination host
+
+The project move on main `6310dcd` operates within one checkout.
+The cross-store decision below relies on both registered store identities
+and their evidence. [Current project move](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/lib/hosts.sh#L197).
+
+Compare the host ID and the destination revision against the saved plan.
+Compare the planned settings and credential mapping inside protected recovery.
+Revision tokens are bound to their store and record snapshot. Two tokens with
+the same spelling across stores do not establish equal state.
+
+| Destination observation | Decision |
+| --- | --- |
+| Same ID, planned destination revision and matching payload | Report that the destination has the matching version. Reuse this transfer's verified destination effect when its exact acceptance is settled and current content still matches. Without that evidence, leave the source intact and reconcile. |
+| Same ID and revision with a different payload | Block and reconcile inconsistent revision evidence before offering a write. |
+| Same ID with a different revision | Preserve both versions for comparison. With verified common host lineage and explicit confirmation, prepare a replacement of the same destination ID on its freshly observed revision. A changed source or destination base invalidates the confirmation. |
+| Same alias with a different ID, including case variants | Report a name collision. Require an explicit free alias or cancellation before continuing. Equal endpoints can still raise the separate potential-duplicate review. |
+
+A prior send that is in flight or uncertain takes priority over comparison.
+Keep its original target, base and proposed revision. Reconcile acceptance and
+sender quiescence before any replacement, replay or source deletion. Use the
+bound acceptance evidence above and then compare the current head against the
+intent. A later revision of that host requires review even if the original send
+succeeded. A matching payload and reachable proposal alone leave the send
+outcome unresolved.
+
+An isolated macOS probe with Git 2.42.1 and a local bare remote discarded the
+first send result to model a missing acknowledgement. The branch was observed
+at the proposal and later advanced to another edit of the same host. Stale
+replay left the ref unchanged. In a second case the branch advanced straight
+to a merge commit. The proposal was reachable and the payload matched, even
+though the branch tip had never been the proposal. These probes exercise Git
+observations and conditional updates.
+
+For a same-ID replacement, preserve the existing destination key. Save the
+reviewed source and previous destination snapshots under recovery protection.
+Record a new confirmed plan and attempt, binding both observed versions and the
+chosen destination payload. Keep earlier effects and attempts immutable. The
+replacement advances from the destination's own revision and uses the usual
+conditional write. Recheck name availability against all other destination IDs.
+Refresh both stores and verify destination credentials and reference impacts before the existing source-removal gate. Compensating for a
+replacement means conditionally restoring its previous destination record as a
+new change, subject to current revisions and write authority. Compensation must
+never delete a pre-existing destination or claim an unrelated match as its effect.
 
 ## Serialization and revalidation
 
@@ -254,8 +298,9 @@ retain a blocked, recoverable state with the next decision clearly identified.
 ## Documentation examples and remaining scope
 
 [transfer-recovery.json](fixtures/transfer-recovery.json) contains independent
-synthetic failure/restart checkpoints, publication-barrier examples and deliberate
-invalid barrier counterexamples. Run from the repository root:
+synthetic failure/restart checkpoints, publication barriers, deliberate invalid
+barrier counterexamples and existing-destination decisions. Run
+from the repository root:
 
 ```bash
 python3 docs/design/fixtures/validate-transfer.py
@@ -268,9 +313,8 @@ only the adjacent documentation fixture.
 
 The [format/admission proposal](store-format.md) selects identity encoding and
 legacy mapping; [journal/retention](store-journal.md) selects local authority and protected payloads.
-Remaining #35 work includes reference reconciliation, update-existing lineage,
+Remaining #35 work includes reference reconciliation, different-ID merge lineage,
 implementation-level audit beyond the bounded mutation inventory, vault and lock
-implementation contracts, concrete migration restore and writer-upgrade mechanisms
-and store-specific SSH resolution. Broader #35 fixtures and
+implementation contracts and concrete migration restore and writer-upgrade mechanisms. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
 neither selects those mechanisms nor completes #35.

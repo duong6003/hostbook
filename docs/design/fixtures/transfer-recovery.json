@@ -180,6 +180,19 @@
       "expected": {"outcome": "completed", "next": "report-without-replay", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
     }
   ],
+  "existing_destination": [
+    {"case": "matching-version-with-exact-acceptance", "observed": "matching", "attempt": "settled-accepted", "expected": "revalidate-destination-effect"},
+    {"case": "matching-version-without-transfer-evidence", "observed": "matching", "attempt": "none", "expected": "reconcile-evidence"},
+    {"case": "matching-version-after-lost-response", "observed": "matching", "attempt": "unsettled", "expected": "reconcile-attempt"},
+    {"case": "matching-version-with-proposal-reachable-only-through-merge", "observed": "matching", "attempt": "reachable-only", "expected": "reconcile-attempt"},
+    {"case": "changed-version-after-lost-response", "observed": "different-revision", "attempt": "unsettled", "lineage_verified": true, "review": "confirmed-current", "expected": "reconcile-attempt"},
+    {"case": "changed-version-after-acceptance", "observed": "different-revision", "attempt": "settled-accepted", "lineage_verified": true, "expected": "compare-versions"},
+    {"case": "changed-version-with-reviewed-current-bases", "observed": "different-revision", "attempt": "settled-rejected", "lineage_verified": true, "review": "confirmed-current", "expected": "prepare-same-id-replacement"},
+    {"case": "changed-version-with-stale-review-base", "observed": "different-revision", "attempt": "none", "lineage_verified": true, "review": "confirmed-stale", "expected": "compare-versions"},
+    {"case": "changed-version-with-unverified-lineage", "observed": "different-revision", "attempt": "none", "review": "confirmed-current", "expected": "compare-versions"},
+    {"case": "same-revision-with-different-payload", "observed": "inconsistent-revision", "attempt": "settled-accepted", "expected": "reconcile-evidence"},
+    {"case": "alias-owned-by-another-id", "observed": "other-id-alias", "attempt": "none", "expected": "resolve-name-collision"}
+  ],
   "publication_barriers": [
     {
       "case": "destination-send-in-flight-when-receive-only-requested",
