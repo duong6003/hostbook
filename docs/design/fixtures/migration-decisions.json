@@ -47,6 +47,30 @@
     {"case": "legacy-with-verified-exclusion-and-restore", "kind": "legacy", "disjoint_checkout": true, "binding_current": true, "legacy_local": "kernel-denied", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "restored-in-staging", "prior_sends": "settled", "legacy_quiescent": true, "expected": "eligible-for-handoff"},
     {"case": "legacy-job-still-can-write", "kind": "legacy", "disjoint_checkout": true, "binding_current": true, "legacy_local": "writable", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "restored-in-staging", "prior_sends": "settled", "legacy_quiescent": true, "expected": "stop-writer-access"}
   ],
+  "legacy_remote_policy": {
+    "binding": {
+      "server": "synthetic-git.example.test",
+      "repository": "project-42",
+      "ref": "refs/heads/migration",
+      "connection_generation": 2,
+      "migration_identity": "approved-migrator",
+      "legacy_identities": ["old-automation", "old-device-key"],
+      "policy_revision": "policy-7"
+    },
+    "evidence": {
+      "source": "authenticated-server-policy",
+      "binding": {
+        "server": "synthetic-git.example.test",
+        "repository": "project-42",
+        "ref": "refs/heads/migration",
+        "connection_generation": 2,
+        "migration_identity": "approved-migrator",
+        "legacy_identities": ["old-automation", "old-device-key"],
+        "policy_revision": "policy-7"
+      },
+      "legacy_rights": {"old-device-key": "denied", "old-automation": "denied"}
+    }
+  },
   "mutation_preflight": {
     "backup_verified": true,
     "snapshot_fresh": true,

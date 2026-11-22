@@ -28,7 +28,7 @@ remain open before final review.
 | Remaining item | Evidence needed |
 | --- | --- |
 | Protected recovery and durability | The local selector and registry replacement sequence is selected and exercised on APFS and ext4. Isolated restoration covers native mode, ACL and owner metadata and [one required external SSH Include](store-migration.md#staged-restore-checkpoint). Hostbook archive integration, macOS cross-account ownership, broader external dependency coverage, and system crash and power-loss durability remain open. |
-| Old-writer exclusion | The [Linux writer fixture](store-writer-validation.md) covers supplementary group and direct POSIX ACL grants. Run the distinct-UID fixture on a privileged macOS test runner. Specify how migration verifies the target ACL/ancestor rights and authoritative remote policy for the exact ref. |
+| Old-writer exclusion | The [Linux writer fixture](store-writer-validation.md) covers supplementary group and direct POSIX ACL grants. Run the distinct-UID fixture on a privileged macOS test runner. Specify how migration verifies target ACL/ancestor rights. [Remote writer evidence](store-migration.md#evidence-of-remote-writer-exclusion) defines and exercises policy scope and invalidation synthetically. Provider integration and real policy verification remain open. |
 
 On native macOS, the three static decision validators and the cutover, OpenSSH
 and encrypted restore fixtures passed at the reviewed revision. The native

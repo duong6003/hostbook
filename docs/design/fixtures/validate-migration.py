@@ -34,7 +34,7 @@ def classify(case):
     return 'private-candidate' if remote == 'none' else 'shared-candidate'
 
 
-def upgrade(case):
+def upgrade(case, current, evidence):
     kind, local, remote = case['kind'], case['legacy_local'], case['legacy_remote']
     require(kind in {'fresh', 'legacy'}, 'upgrade kind')
     require(local in {'never-exposed', 'kernel-denied', 'writable', 'unknown'}, 'local writer evidence')
@@ -43,11 +43,20 @@ def upgrade(case):
     require(case['prior_sends'] in {'none', 'settled', 'uncertain'}, 'prior sender state')
     for field in ('disjoint_checkout', 'binding_current', 'identity_ready', 'legacy_quiescent'):
         require(type(case[field]) is bool, 'upgrade field: ' + field)
-    if not case['disjoint_checkout'] or not case['binding_current']:
+    if (not case['disjoint_checkout'] or not case['binding_current'] or
+            (remote == 'private' and current is not None)):
         return 'stop-target-binding'
     required_local = 'never-exposed' if kind == 'fresh' else 'kernel-denied'
     if local != required_local or remote not in {'verified-excluded', 'private'} or not case['legacy_quiescent']:
         return 'stop-writer-access'
+    if kind == 'legacy' and remote == 'verified-excluded':
+        if (not current or not current.get('policy_revision') or
+                not evidence or evidence.get('source') != 'authenticated-server-policy'):
+            return 'stop-remote-policy-missing'
+        if evidence.get('binding') != current:
+            return 'stop-remote-policy-stale'
+        if evidence.get('legacy_rights') != dict.fromkeys(current['legacy_identities'], 'denied'):
+            return 'stop-remote-policy-unverified'
     if case['prior_sends'] == 'uncertain':
         return 'stop-publication-reconciliation'
     if not case['identity_ready']:
@@ -170,13 +179,15 @@ def validate(data):
         overlap = any(registration[key] == unresolved[key] for key in ('checkout', 'target'))
         decision = 'reject-overlap' if overlap else 'allow-review'
         require(decision == registration['expected'], 'unresolved claim bypassed')
+    policy = data['legacy_remote_policy']
+    binding, evidence = policy['binding'], policy['evidence']
     fresh, eligible, blocked = cases = data['upgrade']
     require([c['expected'] for c in cases] ==
             ['connect-receive-only', 'eligible-for-handoff', 'stop-writer-access'],
             'upgrade outcome coverage')
     for case in cases:
-        require(upgrade(case) == case['expected'], case['case'] + ': upgrade decision')
-    require(upgrade(dict(fresh, identity_ready=False)) == 'stop-identity-admission',
+        require(upgrade(case, binding, evidence) == case['expected'], case['case'] + ': upgrade decision')
+    require(upgrade(dict(fresh, identity_ready=False), binding, evidence) == 'stop-identity-admission',
             'fresh receive-only connection cannot initialize identity')
     for changes, expected in (
             ({'disjoint_checkout': False}, 'stop-target-binding'),
@@ -188,17 +199,41 @@ def validate(data):
             ({'legacy_quiescent': False}, 'stop-writer-access'),
             ({'backup': 'present'}, 'stop-backup-verification'),
             ({'prior_sends': 'uncertain'}, 'stop-publication-reconciliation')):
-        require(upgrade(dict(eligible, **changes)) == expected, 'unsafe upgrade admitted: ' + str(changes))
-    return len(names), len(required), len(cases), len(rejected_admissions), len(registrations)
+        require(upgrade(dict(eligible, **changes), binding, evidence) == expected, 'unsafe upgrade admitted: ' + str(changes))
+    require(upgrade(dict(eligible, legacy_remote='private'), binding, None) == 'stop-target-binding',
+            'shared target cannot use the private migration path')
+    require(upgrade(dict(eligible, legacy_remote='private'), None, None) == 'eligible-for-handoff',
+            'private migration needs no remote policy')
+    policy_cases = (
+        (binding, evidence, 'eligible-for-handoff'),
+        (binding, None, 'stop-remote-policy-missing'),
+        (binding, dict(evidence, source='dry-run-push'), 'stop-remote-policy-missing'),
+        (dict(binding, policy_revision=None), evidence, 'stop-remote-policy-missing'),
+        (binding, dict(evidence, legacy_rights={'old-device-key': 'denied'}), 'stop-remote-policy-unverified'),
+        (binding, dict(evidence, legacy_rights={'old-device-key': 'denied', 'old-automation': 'allowed'}),
+         'stop-remote-policy-unverified'),
+        (dict(binding, server='other.example.test'), evidence, 'stop-remote-policy-stale'),
+        (dict(binding, repository='other-project'), evidence, 'stop-remote-policy-stale'),
+        (dict(binding, ref='refs/heads/other'), evidence, 'stop-remote-policy-stale'),
+        (dict(binding, connection_generation=3), evidence, 'stop-remote-policy-stale'),
+        (dict(binding, migration_identity='other-migrator'), evidence, 'stop-remote-policy-stale'),
+        (dict(binding, legacy_identities=['different-automation', 'old-device-key']),
+         evidence, 'stop-remote-policy-stale'),
+        (dict(binding, policy_revision='policy-8'), evidence, 'stop-remote-policy-stale'),
+    )
+    for index, (current, observed, expected) in enumerate(policy_cases, start=1):
+        require(upgrade(eligible, current, observed) == expected, f'remote policy case {index}: {expected}')
+    return len(names), len(required), len(cases), len(rejected_admissions), len(registrations), len(policy_cases)
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('migration-decisions.json')
-        count, gates, upgrades, rejected_admissions, claims = validate(json.loads(fixture.read_text()))
+        count, gates, upgrades, rejected_admissions, claims, policies = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
     print(f'PASS: {count} synthetic migration cases, {gates} preflight counterexamples, '
-          f'4 handoff checkpoints, {rejected_admissions} rejected scoped admissions, {claims} resource claim checks and {upgrades} upgrade decisions '
+          f'4 handoff checkpoints, {rejected_admissions} rejected scoped admissions, {claims} resource claim checks, '
+          f'{upgrades} upgrade decisions and {policies} remote policy decisions '
           '(documentation only; no runtime validation)')

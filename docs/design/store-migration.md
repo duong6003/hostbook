@@ -160,6 +160,35 @@ Do not claim an atomic global lock over independent remote actors.
   provider implementations outside this contract. If a host cannot supply
   reliable evidence, leave the original checkout and remote unchanged.
 
+#### Evidence of remote writer exclusion
+
+Obtain effective ref-update rules through an authenticated, supported
+server-policy read for the exact target. Account for inherited access and
+bypass rules when determining whether each legacy device key, user and
+automation identity can update the ref. A missing identity result or a
+remaining update right blocks handoff. A failed Git command can reflect
+unrelated conditions and supplies no policy evidence.
+
+Bind the result to the server and its stable repository identity, the full
+branch ref, the current connection generation, the authenticated migration
+identity, the normalized legacy identity inventory and the observed effective
+policy revision. Use non-secret identity references. The revision is a
+server-provided version or a comparison of freshly read, complete effective
+policy data. If the server cannot establish current rules for this exact
+binding, stop and report the missing evidence. An actual private target has
+no remote policy requirement.
+
+Read the policy outside the short migration gates. Under the gates, compare
+the latest authenticated observation with the reviewed evidence and the
+current local binding immediately before ownership handoff or publication
+reservation. After a wait or restart, obtain a fresh observation. A changed
+repo, ref, identity, connection or policy invalidates the old evidence. If
+freshness cannot be established, stop the handoff or reservation and release
+the gates before refreshing. Remote exclusion is separate from confirming
+the migration writer's own authority and from reconciling previous sends.
+A local gate cannot prevent a later policy change. The server's active rule
+governs each remote update.
+
 Capture writer inventory and evidence for both boundaries under the reviewed
 plan. Recheck destination filesystem identity, Git common directory, the exact
 connection/ref and prior publication outcomes before cutover. Filesystem and
@@ -272,8 +301,11 @@ SSH or network and does not prove enforcement, encryption or crash safety.
 Its four handoff checkpoints cover drain, cutover, authorized reservation and lost
 acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
 The scoped admission checks exercise the verified intent and changed or missing
-rights, binding and operation evidence. The three upgrade decisions cover a fresh shared registration, an eligible
-legacy migration and a legacy writer that still has access. Counterexamples
+rights, binding and operation evidence. The three upgrade decisions cover a
+fresh shared registration, an eligible legacy migration and a legacy writer
+that still has access. The remote-policy decisions admit matching evidence
+and stop on missing, incomplete or stale evidence for a shared legacy target.
+Counterexamples
 include reused paths, untested recovery, uncertain publication and unresolved
 remote rights. Fixture observations are synthetic.
 
