@@ -233,6 +233,8 @@ remote rights. Fixture observations are synthetic.
 
 The [registration contract](store-registration.md) defines the active binding.
 The [acceptance map](store-acceptance.md) records current coverage and open work.
+The [writer exclusion checkpoint](store-writer-validation.md) records the Linux
+permission and local Git server experiments.
 Concrete ACL verification, backup/restore mechanics and platform durability
 remain open. [Journal/retention](store-journal.md) selects device-local authority,
 protected payload layout and collection policy.
