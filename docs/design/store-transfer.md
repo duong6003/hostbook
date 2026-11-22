@@ -393,7 +393,7 @@ only the adjacent documentation fixture.
 
 The [format/admission proposal](store-format.md) selects identity encoding and
 legacy mapping; [journal/retention](store-journal.md) selects local authority and protected payloads.
-Remaining #35 work includes an implementation-level audit beyond the bounded mutation inventory, vault and lock
-implementation contracts and concrete migration restore and writer-upgrade mechanisms. Broader #35 fixtures and
+Remaining #35 work includes vault and lock implementation contracts and concrete
+migration restore and writer-upgrade mechanisms. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
 neither selects those mechanisms nor completes #35.

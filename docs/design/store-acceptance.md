@@ -1,8 +1,8 @@
 # Store design acceptance map
 
 This is the #35 checkpoint for [the parent feature #33](https://github.com/duong6003/hostbook/issues/33).
-The current comparison target is `main` `6310dcd`. The writer inventory predates
-it and the draft branch still descends from `718890f`. The existing examples are synthetic design checks.
+The current comparison target and completed writer inventory use main `6310dcd`.
+The draft branch still descends from `718890f`. The existing examples are synthetic design checks.
 The runtime fixture column describes evidence still to collect.
 
 ## #35 design gates
@@ -10,7 +10,7 @@ The runtime fixture column describes evidence still to collect.
 | Gate | Evidence in the draft | Remaining work before #35 can close |
 | --- | --- | --- |
 | Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | The first transfer scope is recorded below. Different-ID merge is deferred. |
-| Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Extend the [file-level checkpoint on current main](store-mutations.md#file-level-write-boundaries-on-current-main) to the remaining managed writers and helpers. Confirm complete coverage before final review. |
+| Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Managed writers are mapped at [current main](store-mutations.md#file-level-write-boundaries-on-current-main). Carry the map into final design review and downstream enforcement. |
 | Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | Choose protected secret transport and concrete durability and restoration primitives for macOS and Linux. |
 | Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md) and [staged restore checkpoint](store-migration.md#staged-restore-checkpoint). | Verify native macOS exclusion, specify how the runtime collects ACL and remote policy evidence, and verify restoration including ACLs, ownership and external dependencies. |
 | Parent acceptance mapped with independent review | Runtime plan below and independent review on exact draft commits. | Complete the remaining design decisions and review the assembled final SHA. |
@@ -31,9 +31,8 @@ update-existing outcome, which remains pending.
 
 [#36](https://github.com/duong6003/hostbook/issues/36) depends on #35. The
 remaining #35 work is tracked above. Native macOS two-UID writer exclusion
-still lacks evidence. Writer inventory, durability and migration evidence
-still require a design checkpoint and an independent review of the assembled
-draft.
+still lacks evidence. Durability and migration requirements remain open, along
+with independent review of the assembled draft.
 
 Start #36 with one read-only [v1 context resolver](store-registration.md#registration-authority)
 against an explicitly isolated, verified fixture account root. Resolve an

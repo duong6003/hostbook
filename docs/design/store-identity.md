@@ -266,9 +266,7 @@ The [format and admission slice](store-format.md) selects durable v1 identity
 encoding and legacy SSH/package admission, including multi-alias mapping.
 The [journal/retention slice](store-journal.md) selects device-local transaction
 authority, protected recovery payloads and explicit collection policy.
-Within #35, still deferred:
-finish the implementation-level write-boundary audit beyond the bounded mutation
-inventory and specify durable cache/vault/lock/status mechanisms.
+Within #35, durable cache/vault/lock/status mechanisms still need specification.
 The [acceptance map](store-acceptance.md) tracks these gates and the parent fixtures.
 The migration contract leaves concrete backup/restore and writer-exclusion verification open.
 Runtime implementation and regression suites belong to downstream #36–#46,

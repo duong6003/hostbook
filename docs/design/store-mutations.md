@@ -22,17 +22,12 @@ Comparison with main `6310dcd` updates the Undo and conflict-push entries below.
 [#59](https://github.com/duong6003/hostbook/pull/59) serialize native lock metadata
 and stale-owner recovery. These locks still govern the current single checkout.
 [#57](https://github.com/duong6003/hostbook/pull/57) removes Windows helpers.
-The [file-level checkpoint](#file-level-write-boundaries-on-current-main)
-traces the high-risk routes and their current files. The wider inventory stays open.
-
-The following is a caller-followed inventory of current managed mutation families,
-not an exhaustive syscall audit. Rows group related symbols; code paths below are
-relative to the repository root. External editors, manual Git/SSH/file changes,
-installers/updaters and platform-helper internals are not mediated by this future
-application gate; admission must detect changed inputs rather than promise to
-prevent independent edits. Current connection-key installation is called out
-separately from repository publication. New downstream writers must join the same
-contract. Durable encoding and a complete platform/file-level audit remain open.
+The [file-level inventory](#file-level-write-boundaries-on-current-main)
+maps the managed write entrypoints at this revision. Rows group related symbols.
+Paths are relative to the repository root. OS tools and user commands acting
+outside Hostbook remain external writers. Store admission must detect changed
+inputs from them. Dependency installers and transfer destinations have their
+own authority, as mapped below. New writers must follow the same contract.
 
 ## Proposed ownership
 
@@ -189,6 +184,14 @@ column specifies where a store-bound operation must be validated.
 | [Merge driver and setup](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L642) | `_merge` writes the supplied ours file via a sibling `.hbmerge`; merge setup writes Git config, `.gitattributes` and `.gitignore`, and may commit those tracked files. | Bind callback outputs to the verified Git operation and scratch paths. Device-local Git config and tracked repository setup require their respective LOCAL and USER gates. |
 | [Connect, hub and direct pushes](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2409) | `connect_kho` can install a login key and create a remote bare repo before the local lock. It then changes origin/upstream, fetches refs and can merge the worktree. `restore_origin` restores connection settings, while checkout restoration is separate. `make_kho_here` can create a local bare repo before repointing origin and pushing. `sync_locked` and both conflict-resolution paths can also push. | Require explicit authority for key installation and repository provisioning before those effects. Bind config change and restoration to the transition. Verify incoming data separately. Require PUBLISH admission for each direct or scheduled push to the exact ref. |
 | [Native writer and derived state](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L700) | macOS `lockf` and Linux `flock` serialize access to `STATE/sync.lock.gate`; `sync.lock/pid` and `owner` identify the writer. Acquisition can rename stale state. Sync status, derived index variants and history use the same process `STATE`. | Keep lock, status and derived files under the registered store namespace. Gate identity must survive checkout and connection generation changes. |
+| [Install and update](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/install.sh#L75) | `install.sh` can replace a non-Git application directory, clone or fast-forward the application, install dependencies and invoke `setup`. The app's `update` fast-forwards its own checkout. `need_tmux` can invoke Homebrew after confirmation. | Device installation authority. Verify application/dependency destinations are disjoint from store worktrees, Git directories and protected state before replacing or updating them. Treat `setup` as its own device operation. |
+| [Setup and first run](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2862) | Setup writes the launcher symlink, shell startup files, Ghostty config and the account SSH config and backup. It can chmod the checkout and build the index. First run initializes or clones the repository, configures tracked metadata, initializes the vault, and can import hosts and keys before replacing the SSH Include with a backed-up configuration. It can also connect or provision a hub. | Device LOCAL for explicitly bound account files and launcher. Verify source SSH config and approved destinations before replacement. Separate private bootstrap/USER effects from validated shared RECEIVE. Bind new registration before checkout effects. Apply provisioning and publication checks to the hub/connect branch. |
+| [Group actions and opening](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2138) | Save appends to `groups.tsv`. Group actions rewrite it via `groups.tsv.tmp` to delete a group or reset its mode before opening. `open_many` saves and commits a group mode after selection, and writes `STATE/lastmode` for the local preference. | USER before the first group write, including reset or remember-mode during Open. A receive-only open can choose an ephemeral mode. LOCAL for the device/session preference alone. |
+| [Preferences and bootstrap](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L189) | `cfg_init` can create defaults before command dispatch. Settings, presets and first run replace the device config via a temporary file. Custom theme edits write `CONF/themes/*.theme`. | Device LOCAL under the verified account config namespace. Store selection and credentials use their own authority. Scope editor inputs and prevent derived display callbacks from promoting tracked changes. |
+| [History, checks and permissions](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L1946) | Bootstrap can copy legacy history and create/chmod state. Connect, group open and file actions append or trim history. Check replaces its run directory and updates `last-check.tsv`; it can also unlock the vault. Doctor rebuilds the index and chmods credential public files. | DERIVED for scoped results, index and keyed history. Bind legacy history after migration classification and retain unresolved entries as archival. Check/Doctor resolve their target before state changes; any vault recovery uses USER. Bind chmod to an existing verified store path and preserve content. |
+| [Session state and cleanup](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2963) | Home and footer callbacks write selection and session scratch state. App exit cleans its PID-named temp files and releases its own lock. Startup sweeps temp entries when their PID cannot be signalled. | Use scoped session/derived storage. Cleanup verifies ownership and liveness under the verified temporary root. Journal and rollback payloads use separate recovery authority. |
+| [SSH trust repair and checks](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L1547) | The connection-failure action invokes `ssh-keygen -R` against the default known-hosts file and can rewrite it and its backup. Connection and check SSH processes can add or update host keys according to their effective configuration. Check uses `StrictHostKeyChecking=accept-new`. | Device LOCAL trust effect. Resolve the selected endpoint or hop and its approved known-hosts file before SSH can modify trust. Require explicit repair intent for removing entries and preserve unrelated endpoint trust. A managed host alias alone cannot name the entry to remove. |
+| [Share packages, clipboard and file transport](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L2048) | Share builds a protected staging tree and writes an encrypted package in Downloads or the account home. `_share_build` accepts an output path. Share also copies the encrypted package to the account clipboard. Copying its password or a vault recovery code is a separate action. File send/get writes to an SSH destination or the current local directory, respectively. | Bind export credentials to the selected store and require explicit intent for copying secret material. Restrict scratch and external output to authorized destinations outside managed checkout, Git and recovery roots. Generic export/download cannot substitute for a guarded store write. Remote file transfer uses the resolved SSH endpoint and its own user intent. |
 
 On native arm64 macOS (Darwin 27.2.0, Git 2.42.1), the existing isolated
 `tests/sync.sh` (18), `tests/import-review.sh` (28), `tests/import-package.sh` (2)
@@ -196,7 +199,13 @@ and `tests/test.sh` (151) cases passed. Git transport was restricted to
 disposable local repositories. Tests used temporary state and a file-backed
 test vault cache. The core suite used a private test SSH agent. These results
 cover current behavior, including failed push, import/Undo recovery and vault
-recovery. They do not exercise the proposed store-bound gates.
+recovery. The same native environment also passed isolated install/update,
+onboarding (25 cases), UI/config (111 checks), settings loading, and open-mode
+tests. Install/update used a local repo and existing dependencies. The open-mode
+suite used fake tmux. A separate `ssh-keygen -R -f` probe against a fixture
+known-hosts file preserved the unrelated line and created the expected backup.
+These are current-main checks. The proposed gates require
+downstream runtime validation.
 
 ## Save one existing shared host
 
@@ -266,9 +275,9 @@ backup/restore, rollback boundaries and honest old/new writer compatibility gate
 The [format/admission proposal](store-format.md) selects durable identity encoding
 and legacy SSH/share-package mapping; [journal/retention](store-journal.md) selects
 local authority and protected payloads. Remaining #35 work includes concrete
-upgrade verification and restore mechanisms, implementation-level lock/cache/vault
-contracts and the complete
-platform writer inventory. The [acceptance map](store-acceptance.md) records the
+upgrade verification and restore mechanisms and implementation-level
+lock/cache/vault contracts. The [acceptance map](store-acceptance.md) records the
 parent #33 fixture plan.
-This bounded inventory does not choose those mechanisms or close #35. Downstream
+The managed writer inventory is mapped at the cited main revision. Final #35
+review and runtime enforcement remain separate steps. Downstream
 #36–#46 own runtime enforcement, migration and isolated regression coverage.
