@@ -62,6 +62,23 @@ def existing_destination_decision(case):
     return 'reconcile-evidence'
 
 
+def source_reference_decision(case):
+    jump, groups = case['jump'], case['groups']
+    inputs = case.get('inputs', 'current')
+    require(jump in {'unchanged', 'missing', 'retargeted', 'unverified'}, 'source jump result')
+    require(groups in {'none', 'reviewed', 'unreviewed', 'ambiguous'}, 'source group review')
+    require(inputs in {'current', 'prepared-removal', 'changed'}, 'source input freshness')
+    if inputs == 'changed':
+        return 'refresh-plan'
+    if jump != 'unchanged':
+        return 'block-dependent-host'
+    if groups == 'ambiguous':
+        return 'reconcile-group-binding'
+    if groups == 'unreviewed':
+        return 'review-groups'
+    return 'revalidate-removal'
+
+
 def validate(data):
     require(data['fixture_kind'] == 'documentation-only', 'documentation marker')
     require(data['contract_version'] == 1, 'unsupported conceptual version')
@@ -170,16 +187,23 @@ def validate(data):
     require(decisions == {'reconcile-attempt', 'revalidate-destination-effect',
                           'resolve-name-collision', 'prepare-same-id-replacement',
                           'compare-versions', 'reconcile-evidence'}, 'existing destination coverage')
-    return len(names), len(barriers), len(negatives), len(existing)
+    references = data['source_references']
+    for case in references:
+        require(source_reference_decision(case) == case['expected'], case['case'] + ': source reference decision')
+    require({case['expected'] for case in references} ==
+            {'refresh-plan', 'block-dependent-host', 'review-groups',
+             'reconcile-group-binding', 'revalidate-removal'},
+            'source reference coverage')
+    return len(names), len(barriers), len(negatives), len(existing), len(references)
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('transfer-recovery.json')
-        count, barriers, negatives, existing = validate(json.loads(fixture.read_text()))
+        count, barriers, negatives, existing, references = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
     print(f'PASS: {count} transfer checkpoints, {barriers} publication barriers, '
-          f'{negatives} rejected counterexamples and {existing} existing-destination decisions '
+          f'{negatives} rejected counterexamples, {existing} existing-destination decisions, {references} source-reference checks '
           '(documentation only; no runtime validation)')

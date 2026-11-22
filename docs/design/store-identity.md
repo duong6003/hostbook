@@ -216,8 +216,8 @@ print('PASS: stale same-host edit preserved, independent hosts unaffected, revie
 
 A cross-store transfer **moves**, rather than copies, a host. It preserves its
 stable host ID while changing the store component of its lookup key. Store-bound
-references must be reconciled explicitly; an old source key must not silently
-resolve by alias in another store. Cross-store move semantics differ from the
+references follow the [source-removal checks](store-transfer.md#source-references-before-removal).
+An old source key must not silently resolve by alias in another store. Cross-store move semantics differ from the
 current move between project files. The source is removed only after destination
 success is established; [Cross-store transfer transaction](store-transfer.md)
 defines the proposed ordering, publication evidence and recovery contract.

@@ -141,6 +141,53 @@ replacement means conditionally restoring its previous destination record as a
 new change, subject to current revisions and write authority. Compensation must
 never delete a pre-existing destination or claim an unrelated match as its effect.
 
+## Source references before removal
+
+On main `6310dcd`, source groups contain aliases and
+[`delete_host_raw`](https://github.com/duong6003/hostbook/blob/6310dcdd8bd2ec9f753fc6673079f367c4848cf0/hostbook#L1733)
+removes the alias from groups, dropping empty groups. It leaves history and
+`ProxyJump` directives in place. The current warning compares comma-separated
+jump tokens literally. An isolated macOS OpenSSH probe found the bare
+`relay` dependency but missed `ops@relay:2222`. After deletion the latter
+directive was unchanged and `relay` resolved to a different address from
+an approved local configuration.
+
+| Reference in source | Transfer decision |
+| --- | --- |
+| Group member keyed to the moved host | Show its removal from each affected source group, including any group left empty. Apply only the confirmed removals in the same guarded source change as host deletion. Preserve the other members and group settings. Any destination group membership is a separate explicit action. |
+| Connection history keyed to the moved host | Retain it under the original store and host key as history. A removed entry can be displayed as unavailable. Legacy alias-only history remains archival when its identity is unproven. History must never resolve a replacement by alias. |
+| A surviving managed host's effective jump chain | Compare the planned source view with and without the host. For each hop compare the managed key where applicable, endpoint, login, port and applicable credential binding. A missing, changed or unverified hop blocks removal and identifies the affected host for review. |
+
+Resolve legacy group aliases against the reviewed source snapshot. An ambiguous
+member binding requires reconciliation before removal. Check effective SSH
+configuration under the approved source view, including wildcard, Include and
+Match rules.
+Jump operands can include multiple hops and qualified users and ports.
+An unchanged literal directive does not establish the same effective route.
+An existing approved external hop remains valid if its resolution is unchanged.
+Users can explicitly repair a dependent connection under its own write checks
+and confirm a fresh transfer plan. This step assigns neither new hop aliases
+nor destination group membership.
+
+Evaluate this on explicit transfer, before destination effects and again
+before source removal. Bind the source group revisions and configuration
+inputs to the reviewed plan. Retain the verified pre-removal baseline and
+exact proposed removal state in protected recovery.
+
+Before source publication, compare that baseline with the exact prepared
+result. Verify the current local post-removal state matches the prepared
+result and revalidate current configuration inputs and the original source ref
+base. The transfer's own removal of reviewed group memberships is expected.
+An independent change or new dependency requires reconciliation and fresh
+review before another conditional update. Never use the already-removed
+working tree as the pre-removal baseline.
+
+If this check blocks before deletion, keep the source intact. If it blocks
+after local deletion, preserve the protected original and keep the source
+publication blocked. Retain any confirmed destination effect under the
+existing recovery rules. A destination-side rename or merge of a different
+identity requires its own reference reconciliation.
+
 ## Serialization and revalidation
 
 Use one common per-store mutation gate for transfer, ordinary edits, vault changes,
@@ -299,7 +346,7 @@ retain a blocked, recoverable state with the next decision clearly identified.
 
 [transfer-recovery.json](fixtures/transfer-recovery.json) contains independent
 synthetic failure/restart checkpoints, publication barriers, deliberate invalid
-barrier counterexamples and existing-destination decisions. Run
+barrier counterexamples, existing-destination decisions and source-reference checks. Run
 from the repository root:
 
 ```bash
@@ -313,7 +360,7 @@ only the adjacent documentation fixture.
 
 The [format/admission proposal](store-format.md) selects identity encoding and
 legacy mapping; [journal/retention](store-journal.md) selects local authority and protected payloads.
-Remaining #35 work includes reference reconciliation, different-ID merge lineage,
+Remaining #35 work includes destination reference reconciliation and different-ID merge lineage,
 implementation-level audit beyond the bounded mutation inventory, vault and lock
 implementation contracts and concrete migration restore and writer-upgrade mechanisms. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice

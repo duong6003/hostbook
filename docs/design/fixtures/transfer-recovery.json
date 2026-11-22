@@ -193,6 +193,18 @@
     {"case": "same-revision-with-different-payload", "observed": "inconsistent-revision", "attempt": "settled-accepted", "expected": "reconcile-evidence"},
     {"case": "alias-owned-by-another-id", "observed": "other-id-alias", "attempt": "none", "expected": "resolve-name-collision"}
   ],
+  "source_references": [
+    {"case": "group-removals-reviewed", "jump": "unchanged", "groups": "reviewed", "expected": "revalidate-removal"},
+    {"case": "group-removal-not-reviewed", "jump": "unchanged", "groups": "unreviewed", "expected": "review-groups"},
+    {"case": "legacy-group-alias-unresolved", "jump": "unchanged", "groups": "ambiguous", "expected": "reconcile-group-binding"},
+    {"case": "qualified-hop-disappears", "jump": "missing", "groups": "reviewed", "expected": "block-dependent-host"},
+    {"case": "same-token-now-reaches-another-hop", "jump": "retargeted", "groups": "none", "expected": "block-dependent-host"},
+    {"case": "conditional-hop-cannot-be-verified", "jump": "unverified", "groups": "none", "expected": "block-dependent-host"},
+    {"case": "approved-external-hop-unchanged", "jump": "unchanged", "groups": "none", "expected": "revalidate-removal"},
+    {"case": "source-inputs-change-after-review", "jump": "unchanged", "groups": "reviewed", "inputs": "changed", "expected": "refresh-plan"},
+    {"case": "prepared-group-removal-matches-post-state", "jump": "unchanged", "groups": "reviewed", "inputs": "prepared-removal", "expected": "revalidate-removal"},
+    {"case": "independent-group-edit-after-local-removal", "jump": "unchanged", "groups": "reviewed", "inputs": "changed", "expected": "refresh-plan"}
+  ],
   "publication_barriers": [
     {
       "case": "destination-send-in-flight-when-receive-only-requested",
