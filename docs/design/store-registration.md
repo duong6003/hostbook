@@ -91,6 +91,9 @@ remain prerequisites to runtime use.
   reference in the context.
   New shared writes require successful live preflight and current write rights
   under the [mutation rules](store-mutations.md#proposed-admission-rules).
+  The ordinary Git-only path can reserve a conditional request after a
+  verified read when write access is unknown. It cannot adopt any shared
+  changes until the remote accepts and the original attempt is settled.
 
 ## Callback context and resolution
 

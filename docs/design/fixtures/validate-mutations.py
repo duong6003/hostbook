@@ -8,7 +8,7 @@ from pathlib import Path
 
 USER = {'new', 'import', 'undo', 'vault-recovery', 'vault-bootstrap',
         'internal-callback', 'rollback', 'ordinary-edit', 'ordinary-publish', 'background-publish'}
-PUBLISH = {'ordinary-publish', 'background-publish'}
+PUBLISH = {'ordinary-publish', 'background-publish', 'ordinary-git-attempt'}
 LOCAL = {'derived', 'unlock-existing', 'local-settings'}
 RESOURCES = {'directory', 'vault', 'unlock_cache', 'index_cache', 'writer_gate',
              'sync_status', 'connection', 'mode'}
@@ -21,7 +21,7 @@ def require(condition, message):
 
 def decision(case, stores):
     op = case['operation']
-    require(op in USER | LOCAL | {'receive'}, 'unknown operation')
+    require(op in USER | PUBLISH | LOCAL | {'receive'}, 'unknown operation')
     if 'destination' in case:
         require(case['destination'] is None and op in {'new', 'import'} and
                 'store' not in case, 'only new/import have default routing')
@@ -36,14 +36,19 @@ def decision(case, stores):
     require(rights in {'none', 'read', 'read-write', 'unknown'}, 'rights')
     preflight = case.get('preflight', 'available')
     require(preflight in {'available', 'attempted-unavailable'}, 'preflight')
-    if op in USER and store['role'] == 'shared':
+    if op in (USER | PUBLISH) and store['role'] == 'shared':
         if not case.get('explicit_destination', False):
             return 'reject-destination'
         if store['mode'] != 'two-way':
             return 'reject-mode'
         if preflight == 'attempted-unavailable':
             return 'reject-offline'
-        if rights != 'read-write':
+        if op == 'ordinary-git-attempt':
+            if not case.get('live_read', False) or rights not in {'unknown', 'read-write'}:
+                return 'reject-rights'
+            if not case.get('exact_ref', False):
+                return 'reject-snapshot'
+        elif rights != 'read-write':
             return 'reject-rights'
     if op == 'receive':
         require(store['role'] == 'shared', 'receive example must be shared')
@@ -55,7 +60,7 @@ def decision(case, stores):
             return 'reject-fence'
         if not case.get('reservation', False):
             return 'reject-admission'
-    return 'allow'
+    return 'reserve-conditional-request' if op == 'ordinary-git-attempt' else 'allow'
 
 
 def validate(data):
@@ -86,10 +91,24 @@ def validate(data):
         if case.get('pending_before', False):
             require(case['pending_retained'] and not case['reported_published'],
                     name + ': preserve pending without publication claim')
+        if case['expected'] == 'reserve-conditional-request':
+            require(case['local_shared_write'] is False and case['reported_published'] is False,
+                    name + ': reserve without an accepted write')
+            for change, expected in (
+                    ({'live_read': False}, 'reject-rights'),
+                    ({'rights': 'read'}, 'reject-rights'),
+                    ({'exact_ref': False}, 'reject-snapshot'),
+                    ({'fenced': True}, 'reject-fence'),
+                    ({'reservation': False}, 'reject-admission'),
+                    ({'preflight': 'attempted-unavailable'}, 'reject-offline'),
+                    ({'operation': 'import'}, 'reject-rights'),
+                    ({'store': 1}, 'reject-mode')):
+                require(decision(dict(case, **change), stores) == expected,
+                        name + ': conditional request bypassed a gate')
     require({'new', 'import', 'undo', 'vault-recovery', 'internal-callback',
              'receive', 'derived', 'ordinary-publish'} <= operations, 'missing operation family')
     require({'reject-mode', 'reject-rights', 'reject-snapshot', 'reject-fence',
-             'reject-offline', 'allow'} <=
+             'reject-offline', 'reserve-conditional-request', 'allow'} <=
             {c['expected'] for c in data['cases']}, 'missing decision family')
     return len(data['cases'])
 

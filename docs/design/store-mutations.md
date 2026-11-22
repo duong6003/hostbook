@@ -64,15 +64,23 @@ confirmation does not grant rights. Existing-host actions bind their selected
 store explicitly. Apply the rule to every affected store and every write boundary,
 including internal/sourced callbacks and partial-failure restore paths. A cached
 rights observation cannot substitute for a successful current preflight. Denial,
-unknown rights and network unavailability all block new shared USER writes.
+unknown rights and network unavailability block local shared USER writes.
 
 For an ordinary host edit, the online preflight verifies the exact target and
-fresh record revision. The edit may be prepared in disposable private staging.
-Use the existing Git connection and an exact conditional update. The remote
-checks the sending identity's write rights before it updates the bound ref.
-Only an acknowledged update enters the accepted shared snapshot. A rejected
-attempt leaves that snapshot intact. Fetch or dry-run success cannot establish
-write rights. This path requires no separate provider token or API.
+fresh record revision through an authenticated read. With explicit intent,
+effective two-way mode, a matching connection generation and no fence, prepare
+the edit in disposable private staging. If write access to the exact ref is
+still unknown after that read, this narrow path may reserve and send one exact
+conditional request using the registered Git connection. Explicit denial or
+unavailability blocks admission. Reserve the original ref, base and proposed
+revision durably under the store gate before sending. The remote checks the
+sending identity's write rights before updating that ref. This admission permits
+only the request, leaving local shared content unchanged until acceptance is
+established. Preserve the exact attempt on an ambiguous outcome and settle it
+before replay. Fetch or dry-run success cannot establish write rights.
+This path requires no separate provider token or API. Other shared operations,
+including migration, transfers, import and vault writes, retain their stricter
+write-rights preflight.
 
 Private edits can be saved offline. For a shared edit that loses connectivity
 before admission, keep the input in the open editor/form and report the failed
@@ -98,7 +106,8 @@ repair of existing files must not alter their contents or initiate publication.
 Creating or recovering vault envelopes is USER, even if prompted during login.
 Read/unlock failure must remain a failure; never bootstrap shared content to fix it.
 
-**PUBLISH** requires USER authorization where applicable and the
+**PUBLISH** requires USER authorization where applicable, with the ordinary
+conditional-request admission above, and the
 [publication admission and transition barrier](store-transfer.md#publication-admission-and-transition-barrier):
 under the store gate check effective mode/connection/fence, durably reserve the
 exact attempt before sending, then settle quiescence and remote outcome. Every

@@ -155,6 +155,19 @@
       "expected": "allow"
     },
     {
+      "case": "ordinary-git-reserves-only-the-conditional-request",
+      "operation": "ordinary-git-attempt",
+      "store": 2,
+      "explicit_destination": true,
+      "rights": "unknown",
+      "live_read": true,
+      "exact_ref": true,
+      "reservation": true,
+      "local_shared_write": false,
+      "reported_published": false,
+      "expected": "reserve-conditional-request"
+    },
+    {
       "case": "ordinary-private-offline-allowed",
       "operation": "ordinary-edit",
       "store": 0,
