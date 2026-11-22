@@ -239,5 +239,6 @@ PY
 
 These checks do not exercise encryption, crash recovery, remote settlement or ACLs. macOS/Linux durability and permission
 mechanics remain unverified. The [acceptance map](store-acceptance.md) tracks concrete
-upgrade verification and restoration primitives, update-existing lineage and the SSH resolver.
+upgrade verification and restoration primitives. The first-transfer scope defers
+different-ID merge.
 Downstream #36–#46 own implementation and isolated runtime checks.

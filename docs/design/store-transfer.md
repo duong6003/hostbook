@@ -40,9 +40,9 @@ or decrypted key material. A changed plan requires renewed confirmation.
 
 Classify an existing destination host using
 [the comparison and retry rules](#existing-destination-host) before preparing
-a write. Keep-both requires an explicit choice and valid names for distinct IDs.
-Merging into a different ID remains blocked until the surviving lineage and
-references are defined.
+a write. For distinct IDs, compare the records and allow keep-both with valid
+distinct names or cancellation. Defer merging into a different ID as recorded
+in the [first transfer scope](store-acceptance.md#first-transfer-scope).
 
 Credentials are decrypted only as needed and re-encrypted for the destination
 vault; copying source ciphertext is insufficient. Resolve destination credential
@@ -393,8 +393,7 @@ only the adjacent documentation fixture.
 
 The [format/admission proposal](store-format.md) selects identity encoding and
 legacy mapping; [journal/retention](store-journal.md) selects local authority and protected payloads.
-Remaining #35 work includes different-ID merge lineage and its reference reconciliation,
-implementation-level audit beyond the bounded mutation inventory, vault and lock
+Remaining #35 work includes an implementation-level audit beyond the bounded mutation inventory, vault and lock
 implementation contracts and concrete migration restore and writer-upgrade mechanisms. Broader #35 fixtures and
 downstream #36–#46 runtime implementation/regressions remain separate. This slice
 neither selects those mechanisms nor completes #35.

@@ -64,7 +64,8 @@
       ],
       "expected": {
         "classification": "potential-duplicate-with-different-identity",
-        "choices": ["keep-both-with-valid-names", "explicitly-reconcile-with-existing", "cancel"],
+        "choices": ["keep-both-with-valid-names", "cancel"],
+        "different_id_merge_deferred": true,
         "silently_merge_duplicate_or_overwrite": false
       }
     }

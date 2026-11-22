@@ -233,10 +233,11 @@ crash recovery are specified in the [existing-destination rules](store-transfer.
 
 Different IDs with equal effective (address, port, login) are **potential
 duplicates**, not the same identity. Use resolved SSH values (including defaults)
-for this comparison; do not equate DNS aliases through a network lookup. Offer
-an explicit choice to keep both with valid names, reconcile with the existing
-record, or cancel. A matching alias with different IDs is likewise a name
-collision requiring a choice, even when endpoints differ. Never silently mint a
+for this comparison; do not equate DNS aliases through a network lookup. For
+the first transfer slice, compare both records and offer keeping both with
+distinct valid names or cancelling. A matching alias with different IDs
+requires an explicit free alias or cancellation even when endpoints differ.
+[Different-ID merge is deferred](store-acceptance.md#first-transfer-scope). Never silently mint a
 new ID, rename, duplicate or overwrite to make a transfer succeed. Credential
 names are scoped to the destination vault; a name match must never silently
 overwrite credentials or prove credential equivalence. Credential mapping and

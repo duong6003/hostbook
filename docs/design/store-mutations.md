@@ -241,8 +241,8 @@ backup/restore, rollback boundaries and honest old/new writer compatibility gate
 The [format/admission proposal](store-format.md) selects durable identity encoding
 and legacy SSH/share-package mapping; [journal/retention](store-journal.md) selects
 local authority and protected payloads. Remaining #35 work includes concrete
-upgrade verification and restore mechanisms, reference reconciliation/update-existing
-lineage, implementation-level lock/cache/vault/SSH-resolution design and the complete
+upgrade verification and restore mechanisms, implementation-level lock/cache/vault
+contracts and the complete
 platform writer inventory. The [acceptance map](store-acceptance.md) records the
 parent #33 fixture plan.
 This bounded inventory does not choose those mechanisms or close #35. Downstream

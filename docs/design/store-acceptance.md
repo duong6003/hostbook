@@ -9,11 +9,49 @@ The runtime fixture column describes evidence still to collect.
 
 | Gate | Evidence in the draft | Remaining work before #35 can close |
 | --- | --- | --- |
-| Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | Specify different-ID merge lineage and its reference reconciliation. |
+| Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | The first transfer scope is recorded below. Different-ID merge is deferred. |
 | Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Finish the file-level and platform-helper writer inventory against current main. Verify the mapping includes callbacks, import, undo, vault recovery, direct push and rollback effects. |
 | Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | Choose protected secret transport and concrete durability and restoration primitives for macOS and Linux. |
 | Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md) and [staged restore checkpoint](store-migration.md#staged-restore-checkpoint). | Verify native macOS exclusion, specify how the runtime collects ACL and remote policy evidence, and verify restoration including ACLs, ownership and external dependencies. |
 | Parent acceptance mapped with independent review | Runtime plan below and independent review on exact draft commits. | Complete the remaining design decisions and review the assembled final SHA. |
+
+## First transfer scope
+
+Preserve the moving host ID. For distinct IDs with the same effective endpoint,
+show the comparison and allow keeping both with valid distinct names or
+cancelling. If a name is occupied, continuing requires an explicit free alias.
+Same-ID reconciliation still follows the existing-destination contract.
+Defer merging into a different destination ID until there is a reviewed rule
+for the surviving ID and both stores' references. This is a first-slice scope
+decision. [#33](https://github.com/duong6003/hostbook/issues/33) and
+[#41](https://github.com/duong6003/hostbook/issues/41) still list the broader
+update-existing outcome, which remains pending.
+
+## First #36 slice after #35
+
+[#36](https://github.com/duong6003/hostbook/issues/36) depends on #35. The
+remaining #35 work is tracked above. Native macOS two-UID writer exclusion
+still lacks evidence. Writer inventory, durability and migration evidence
+still require a design checkpoint and an independent review of the assembled
+draft.
+
+Start #36 with one read-only [v1 context resolver](store-registration.md#registration-authority)
+against an explicitly isolated, verified fixture account root. Resolve an
+explicit store ID and expected registration, checkout, connection and policy
+generations to a validated checkout and resource namespaces. Verify the
+checkout filesystem binding and its sidecar store ID before returning the
+context.
+
+Use a private + A + B fixture with distinct checkout, Git common directory,
+vault/cache, index, lock and status paths. Verify each selection returns only
+its own paths. Reject unknown IDs, stale bindings, copied registry authority and duplicate
+or overlapping checkout/Git directories. Compare fixture data before and after each read.
+This slice ends at the resolver and its isolated fixtures. Runtime connection,
+publication, vault access and UI are later work.
+
+The experimental shared-read branch at `6117882` uses a separate
+`snapshots.json` registry. Its Git snapshot and identity validation are
+reference material. #36 uses the device-local v1 registration contract.
 
 ## #33 acceptance and downstream fixtures
 
