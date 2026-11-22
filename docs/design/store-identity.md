@@ -210,9 +210,9 @@ The [journal/retention slice](store-journal.md) selects device-local transaction
 authority, protected recovery payloads and explicit collection policy.
 Within #35, still deferred:
 finish the implementation-level write-boundary audit beyond the bounded mutation
-inventory; specify durable cache/vault/lock/status and SSH resolution mechanisms;
-and complete the parent acceptance-to-fixture mapping. The migration contract
-leaves concrete backup/restore, writer isolation and upgrade representations open.
+inventory and specify durable cache/vault/lock/status and SSH resolution mechanisms.
+The [acceptance map](store-acceptance.md) tracks these gates and the parent fixtures.
+The migration contract leaves concrete backup/restore and writer-exclusion verification open.
 Runtime implementation and regression suites belong to downstream #36–#46,
 not this design slice or #35. No fixture asserts that these behaviors exist at
 the baseline.

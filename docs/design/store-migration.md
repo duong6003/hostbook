@@ -130,6 +130,44 @@ If safe isolation/compatibility cannot be established, STOP and explain which
 writer/access must be upgraded, stopped or isolated; keep the original intact.
 Do not claim an atomic global lock over independent remote actors.
 
+### First supported upgrade
+
+- **Fresh shared store.** Verify a separate checkout and Git common directory
+  with no existing legacy writer route or imported private history. Verify the remote
+  binding and confirm that any legacy publisher is excluded from the intended
+  ref. A newly connected store with valid tracked identity starts receive-only.
+  Initialization of a genuinely empty repository is a separate explicit,
+  authorized operation. Connection cannot initialize metadata or a vault.
+- **Migration of legacy data.** Keep the original checkout and stage a
+  separate target on macOS or Linux. The supported local boundary is a
+  distinct OS writer identity plus filesystem permissions. Check ownership,
+  mode, ACLs and ancestor replacement rights for the target worktree, Git
+  common directory and writable state. The inventoried legacy identities
+  must be unable to modify or replace those resources, including through
+  inherited groups or delegated services. A new directory under the same
+  writable account, a marker file or a source checkout lock provides no
+  evidence of that exclusion. If a legacy writer still shares the target
+  writer identity or its access cannot be established, leave cutover blocked.
+- **Shared migration target.** Use server-enforced rights for the exact repo
+  and full branch ref. A dedicated repo is the simplest destination when it
+  separates legacy credentials. A separate ref in the same repo qualifies
+  only when its server policy also excludes every inventoried legacy Git
+  identity, including device credentials and automation. No reliance on
+  naming, read access or a dry-run push. Require evidence of the enforced
+  server rule and reconciliation of prior attempts before cutover. Keep
+  provider implementations outside this contract. If a host cannot supply
+  reliable evidence, leave the original checkout and remote unchanged.
+
+Capture writer inventory and evidence for both boundaries under the reviewed
+plan. Recheck destination filesystem identity, Git common directory, the exact
+connection/ref and prior publication outcomes before cutover. Filesystem and
+remote observations must remain current after waits and through the ownership
+handoff. The legacy original is quiesced for the snapshot and retained with the
+tested recovery set. A confirmed backup and a restore exercise authorize
+neither cutover nor publication by themselves. Unknown or changed evidence,
+an untested restore, or any surviving legacy write route requires a stop
+with the missing condition named.
+
 Compare the captured full snapshot under gates after each wait and before every
 mutation, restore and publication admission. Gates serialize cooperating writers;
 manual editors and independent remote actors can still change data. Any changed
@@ -188,12 +226,14 @@ selected conceptual decisions/invariants; it does not call the app, Git, vault,
 SSH or network and does not prove enforcement, encryption or crash safety.
 Its four handoff checkpoints cover drain, cutover, authorized reservation and lost
 acknowledgement; premature handoff and ordinary-publisher admissions are rejected.
+The three upgrade decisions cover a fresh shared registration, an eligible
+legacy migration and a legacy writer that still has access. Counterexamples
+include reused paths, untested recovery, uncertain publication and unresolved
+remote rights. Fixture observations are synthetic.
+
 The [registration contract](store-registration.md) defines the active binding.
-Remaining before implementation: concrete writer
-isolation/upgrade negotiation,
-platform ACL/lock/restore mechanics, identity
-reconciliation/update-existing lineage, store SSH resolution and complete parent
-acceptance fixtures. [Journal/retention](store-journal.md) selects device-local
-authority, protected payload layout and collection policy. Remaining representation and compatibility choices must satisfy
-this contract and be reviewed; this slice does not choose them or complete #35.
+The [acceptance map](store-acceptance.md) records current coverage and open work.
+Concrete ACL verification, backup/restore mechanics and platform durability
+remain open. [Journal/retention](store-journal.md) selects device-local authority,
+protected payload layout and collection policy.
 Downstream #36–#46 still own runtime migration and isolated regression coverage.

@@ -238,6 +238,6 @@ PY
 ```
 
 These checks do not exercise encryption, crash recovery, remote settlement or ACLs. macOS/Linux durability and permission
-mechanics remain unverified. Concrete writer isolation/restore/platform
-primitives, update-existing lineage, SSH resolver and full parent acceptance mapping remain later #35 work;
-downstream #36–#46 own implementation and isolated runtime checks.
+mechanics remain unverified. The [acceptance map](store-acceptance.md) tracks concrete
+upgrade verification and restoration primitives, update-existing lineage and the SSH resolver.
+Downstream #36–#46 own implementation and isolated runtime checks.

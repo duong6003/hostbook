@@ -27,6 +27,11 @@
     ],
     "rejected": ["premature-handoff", "ordinary-publisher"]
   },
+  "upgrade": [
+    {"case": "fresh-isolated-shared", "kind": "fresh", "disjoint_checkout": true, "binding_current": true, "legacy_local": "never-exposed", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "not-applicable", "prior_sends": "none", "legacy_quiescent": true, "expected": "connect-receive-only"},
+    {"case": "legacy-with-verified-exclusion-and-restore", "kind": "legacy", "disjoint_checkout": true, "binding_current": true, "legacy_local": "kernel-denied", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "restored-in-staging", "prior_sends": "settled", "legacy_quiescent": true, "expected": "eligible-for-handoff"},
+    {"case": "legacy-job-still-can-write", "kind": "legacy", "disjoint_checkout": true, "binding_current": true, "legacy_local": "writable", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "restored-in-staging", "prior_sends": "settled", "legacy_quiescent": true, "expected": "stop-writer-access"}
+  ],
   "mutation_preflight": {
     "backup_verified": true,
     "snapshot_fresh": true,

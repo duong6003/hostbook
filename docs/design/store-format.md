@@ -200,8 +200,8 @@ PY
 ```
 
 Broad runtime suites provide no evidence for an unimplemented format.
-These examples are decision cases, not a parser,
-crash-safety proof or complete parent acceptance map. Remaining #35 work includes
-lineage/update-existing, concrete writer isolation/restore, platform mechanisms,
-SSH resolver and full acceptance mapping. The [journal/retention proposal](store-journal.md)
+These examples are decision cases, not a parser or crash-safety proof.
+The [acceptance map](store-acceptance.md) tracks lineage, concrete upgrade
+verification and restore, platform mechanisms and the SSH resolver.
+The [journal/retention proposal](store-journal.md)
 selects device-local recovery encoding and collection. Downstream #36–#46 own runtime work.

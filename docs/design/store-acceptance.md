@@ -1,0 +1,32 @@
+# Store design acceptance map
+
+This is the #35 checkpoint for [the parent feature #33](https://github.com/duong6003/hostbook/issues/33).
+The current comparison target is `main` `6310dcd`. The writer inventory predates
+it and the draft branch still descends from `718890f`. The existing examples are synthetic design checks.
+The runtime fixture column describes evidence still to collect.
+
+## #35 design gates
+
+| Gate | Evidence in the draft | Remaining work before #35 can close |
+| --- | --- | --- |
+| Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json) and [transfer](fixtures/transfer.json). | Specify update-existing lineage and reconcile references for both source and destination. Specify store-aware SSH resolution. |
+| Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Finish the file-level and platform-helper writer inventory against current main. Verify the mapping includes callbacks, import, undo, vault recovery, direct push and rollback effects. |
+| Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | Choose protected secret transport and concrete durability and restoration primitives for macOS and Linux. |
+| Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade) and [migration cases](fixtures/migration-decisions.json). | Specify how the runtime verifies OS exclusion and remote policy evidence, and how it restores permissions and complete state on both platforms. |
+| Parent acceptance mapped with independent review | Runtime plan below and independent review on exact draft commits. | Complete the remaining design decisions and review the assembled final SHA. |
+
+## #33 acceptance and downstream fixtures
+
+| Parent behavior | Runtime fixture to retain | Work items |
+| --- | --- | --- |
+| Two machines share one vault and keep private data and history separate | Start two devices with different private commits and vaults. Connect both to one seeded shared vault. Inspect both histories, lock one vault and repeat the receive. | [#36](https://github.com/duong6003/hostbook/issues/36), [#43](https://github.com/duong6003/hostbook/issues/43), [#45](https://github.com/duong6003/hostbook/issues/45) |
+| One connected shared store in the first UI and two isolated shared stores underneath | Exercise private/A/B with independent checkout, index, vault/cache, mode, lock and status. Open the first-release UI with one connected shared store. | [#36](https://github.com/duong6003/hostbook/issues/36), [#45](https://github.com/duong6003/hostbook/issues/45) |
+| Stable rename and retry identity with duplicate names | Use the same aliases and secret names in private/A/B. Confirm lookup, preview and login target the captured store. Rename, interrupt a transfer, then retry without generating a duplicate host. | [#37](https://github.com/duong6003/hostbook/issues/37), [#41](https://github.com/duong6003/hostbook/issues/41), [#42](https://github.com/duong6003/hostbook/issues/42) |
+| Private create/import defaults and shared write restrictions | Create and import with a shared row selected and verify the default destination is private. Attempt shared host, import, vault, undo, callback and rollback writes with stale context, receive-only mode and denied remote access. Check local data, index and remote ref remain intact. Save an authorized edit with an exact ref check. | [#38](https://github.com/duong6003/hostbook/issues/38), [#45](https://github.com/duong6003/hostbook/issues/45) |
+| Transfers both ways and credentials preserved on failure | Transfer matching and distinct identities in both directions with independent vaults. Inject re-encryption or publication failure, retain the source and referenced secrets, and recover without duplicates. | [#40](https://github.com/duong6003/hostbook/issues/40), [#41](https://github.com/duong6003/hostbook/issues/41), [#42](https://github.com/duong6003/hostbook/issues/42) |
+| Existing ProxyJump behavior | Compare effective SSH configuration and jump chains before and after store-aware selection and transfer, including scoped aliases and wildcard precedence. | [#37](https://github.com/duong6003/hostbook/issues/37), [#41](https://github.com/duong6003/hostbook/issues/41) |
+| Concurrent edits, delete/edit and secret conflicts | Use two writers to edit different hosts, the same host and delete versus edit. Inject a secret collision, a locked vault and a rejected send. Preserve both sides and pending work until the documented choice. | [#38](https://github.com/duong6003/hostbook/issues/38), [#44](https://github.com/duong6003/hostbook/issues/44) |
+| Mode send/discard/cancel | Race an admitted publisher with each mode choice. Cover lost acknowledgement, explicit discard, cancellation and restart. Verify discarded work stays discarded. | [#39](https://github.com/duong6003/hostbook/issues/39), [#45](https://github.com/duong6003/hostbook/issues/45) |
+| Disconnect retaining or removing only the local shared checkout | Exercise both choices with clean and pending states. Verify other checkouts, private data and the remote remain intact. Reconnect with fresh generations and receive-only mode. | [#39](https://github.com/duong6003/hostbook/issues/39), [#45](https://github.com/duong6003/hostbook/issues/45) |
+| Migration, backup and recovery | Cover remote/no-remote, independent/locked/partial vaults, attainable and blocked writer isolation, staged recovery, interrupted cutover and conditional rollback. Compare working tree, index and refs as distinct state. | [#43](https://github.com/duong6003/hostbook/issues/43) |
+| Platform, UI, performance and failure coverage | Run isolated failure, concurrency, permissions and retry suites on macOS and Linux. Run vi/en screen checks and record macOS before/after hot-path samples for affected flows. Record missing coverage explicitly. The parent still mentions native Windows, which [#57](https://github.com/duong6003/hostbook/pull/57) removed from the supported platforms. | [#46](https://github.com/duong6003/hostbook/issues/46) |

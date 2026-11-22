@@ -17,6 +17,13 @@ aliases identify hosts. It has no proposed per-store receive-only/two-way policy
 Existing validation, rollback and sync locks are observed mechanisms, not evidence
 that the future authorization boundary already exists.
 
+Comparison with main `6310dcd` updates the Undo and conflict-push entries below.
+[#58](https://github.com/duong6003/hostbook/pull/58) and
+[#59](https://github.com/duong6003/hostbook/pull/59) serialize native lock metadata
+and stale-owner recovery. These locks still govern the current single checkout.
+[#57](https://github.com/duong6003/hostbook/pull/57) removes Windows helpers.
+This comparison covers those changes, with the wider file-level inventory still open.
+
 The following is a caller-followed inventory of current managed mutation families,
 not an exhaustive syscall audit. Rows group related symbols; code paths below are
 relative to the repository root. External editors, manual Git/SSH/file changes,
@@ -139,13 +146,13 @@ always adds PUBLISH and needs fresh online checks.
 | `lib/import.sh`: `import_config_keys`, `import_commit_secret`, `import_discard_secret` | Configuration import before host promotion; `secret_add_key` / `pick_login` | Destination encrypted credentials and Git index can change before host commit; cleanup removes new credential files | USER before vault init/acquisition, targeted commit and discard; failed import cannot bypass mode with cleanup. |
 | `lib/import.sh`: `import_pack`, `apply_import_package`, `pack_apply_raw`, `pack_write_host`, `pack_delete_host`, `import_touch` | `import_content` package route; `_import_apply` opens/classifies/decides then applies | Re-encrypted secrets, host updates/replacements, groups, touched-file manifest; `pack_state_signature` / base index revalidated | USER for every destination effect; stage/review snapshot binds destination store and vault, not only current file signature. |
 | `lib/import.sh`: `apply_import_config`, `apply_import_package` failure branches | Failed application/validation/commit | Touched-file and Git-index restoration, derived index rebuild; rollback data may remain | USER for content restore/removal under same store gate; DERIVED for rebuild. Mode change blocks restoration safely, retaining recovery evidence. |
-| `hostbook`: `undo_last` | Tools undo | `g revert`, abort, invalid-result hard reset; may modify hosts, groups, vault and metadata; force-sync marker | USER including revert/reset, fresh expected revision and store; receive-only cannot undo an earlier two-way commit. Subsequent send uses PUBLISH. |
+| `hostbook`: `undo_last`, `undo_locked` | Tools undo | Locked `revert --no-commit`, validation, commit or path-sensitive rollback that preserves unrelated work. May modify hosts, groups, vault and metadata. A partial revert can block sync and a successful undo sets the force-sync marker. | USER before revert and rollback, with fresh expected revision and store. Receive-only cannot undo an earlier two-way commit. Subsequent send uses PUBLISH. |
 | `hostbook`: `vault_init`, `vault_create`, `vault_passwd`, `vault_new_recovery`, `vault_recover`, `vault_recovery_code` | Startup/default dispatch, `first_run`, login/key acquisition, Secrets vault menu, CLI `vault init/passwd/recover/recovery-code`; `_vault_init`, `_vault_recover` | `secrets/vault.*`, unlock cache, merge setup and commits; recovery rewrites envelopes | USER for vault creation/rekey/recovery, including automatic calls and direct callbacks. Existing-vault unlock-cache write alone is DERIVED. |
 | `hostbook`: `secret_add_key`, `secret_write_key`, `secret_add_password`, `secret_set_password`, `secret_edit`, `secret_replace` | `pick_login`, Secrets actions, imports, `explain` set-password; `_secret_add_key`, `_secret_add_password`, `_secret_replace` | Credential ciphertext/public/meta files and commits; replacement may invoke remote key installation | USER at vault writes, not only after `save_and_sync`; staged key output cannot authorize vault promotion. |
 | `hostbook`: `secret_rename_raw`, `secret_delete_raw`, `migrate_keys_raw`, `migrate_keys` | Secrets rename/delete/migrate; first-run migration; `_secret_rename`, `_secret_delete`, `_migrate` | Credentials plus all referencing config files; agent removal on deletion; migration replaces legacy bindings | USER for every raw write and transaction restore; migration is not DERIVED or RECEIVE. |
 | `hostbook`: `kc_set`, `kc_del`, `vault_identity_run`, `cmd_unlock`, `cmd_lock`, `load_secret`, `agent_ready` | Login/askpass, Secrets menu, `_vault_id`, `_load`; unlock/lock CLI dispatch | Device unlock cache, agent/key bookkeeping; `vault_identity_run` can offer `vault_recover` | DERIVED scoped to existing store/vault; recovery branch requires USER. Shared OS agent does not imply shared vault ownership. |
 | `hostbook`: `sync_ui`, `sync_quiet`, `sync_locked`, `cmd_bg_sync` | CLI `sync` → `_sync_now`; home/background `_bg_sync`; connection setup invokes `sync_locked` | Fetch/pull/rebase/reset/index/status; also `ensure_merge_setup`, auto-`commit_all` and both push branches | Split RECEIVE/DERIVED from USER/PUBLISH; receive-only cannot run current auto-commit/setup/push behavior unchanged. Revalidate network results before applying. |
-| `hostbook`: `resolve_conflict`, `merge_driver` | Tools conflict; `_resolve`; Git merge-driver `_merge` | Merge/editor/checkout/add/commit/reset and direct push; merge driver writes its supplied output | User choice/repair is USER + PUBLISH; validated remote-only application may use RECEIVE. Merge output must bind the intended store/operation, not fallback to default. |
+| `hostbook`: `resolve_conflict`, `merge_driver` | Tools conflict; `_resolve`; Git merge-driver `_merge` | Merge/editor/checkout/add/commit/reset and direct push. A rejected push retains pending work. The merge driver writes its supplied output. | User choice/repair is USER + PUBLISH; validated remote-only application may use RECEIVE. Merge output must bind the intended store/operation, not fallback to default. |
 | `hostbook`: `commit_all`, `save_and_sync`, `apply_change`, `change_locked`, `g` | Shared by above flows; `save_and_sync` commits and schedules later sync, not immediate push | Git index/commits, rollback copies/removals, force marker; `g` routes Git through current `DIR` | Guard content writer **before** effect; commit wrapper alone is too late. Explicit store-aware Git routing; PUBLISH for any send. |
 | `hostbook`: `connect_kho`, `restore_origin`, `make_kho_here` | CLI `kho`, Tools store/hub, first-run | Remote/upstream config and restoration; merge/reset; hub creates bare repo and directly pushes | LOCAL transition fence for connection changes/restores; USER for content merge/bootstrap; direct send needs PUBLISH. No current public disconnect or store sync-mode command found; future disconnect/mode uses same barrier. |
 | `hostbook`: `ensure_merge_setup`, `ensure_git_identity` | `sync_locked`, `resolve_conflict`, `connect_kho`, `vault_create`, `first_run` | Local Git config; synchronized `.gitignore` / `.gitattributes` and setup commit | LOCAL Git config isolated by store; USER for tracked metadata/init commit. Receive-only cannot silently repair tracked setup. |
@@ -180,8 +187,9 @@ backup/restore, rollback boundaries and honest old/new writer compatibility gate
 The [format/admission proposal](store-format.md) selects durable identity encoding
 and legacy SSH/share-package mapping; [journal/retention](store-journal.md) selects
 local authority and protected payloads. Remaining #35 work includes concrete
-upgrade/isolation and restore mechanisms, reference reconciliation/update-existing
-lineage; implementation-level lock/cache/vault/SSH-resolution design; complete
-platform writer mapping and mapping all parent #33 acceptance scenarios to fixtures.
+upgrade verification and restore mechanisms, reference reconciliation/update-existing
+lineage, implementation-level lock/cache/vault/SSH-resolution design and the complete
+platform writer inventory. The [acceptance map](store-acceptance.md) records the
+parent #33 fixture plan.
 This bounded inventory does not choose those mechanisms or close #35. Downstream
 #36–#46 own runtime enforcement, migration and isolated regression coverage.

@@ -34,6 +34,33 @@ def classify(case):
     return 'private-candidate' if remote == 'none' else 'shared-candidate'
 
 
+def upgrade(case):
+    kind, local, remote = case['kind'], case['legacy_local'], case['legacy_remote']
+    require(kind in {'fresh', 'legacy'}, 'upgrade kind')
+    require(local in {'never-exposed', 'kernel-denied', 'writable', 'unknown'}, 'local writer evidence')
+    require(remote in {'verified-excluded', 'writable', 'unknown', 'private'}, 'remote writer evidence')
+    require(case['backup'] in {'not-applicable', 'present', 'restored-in-staging'}, 'backup evidence')
+    require(case['prior_sends'] in {'none', 'settled', 'uncertain'}, 'prior sender state')
+    for field in ('disjoint_checkout', 'binding_current', 'identity_ready', 'legacy_quiescent'):
+        require(type(case[field]) is bool, 'upgrade field: ' + field)
+    if not case['disjoint_checkout'] or not case['binding_current']:
+        return 'stop-target-binding'
+    required_local = 'never-exposed' if kind == 'fresh' else 'kernel-denied'
+    if local != required_local or remote not in {'verified-excluded', 'private'} or not case['legacy_quiescent']:
+        return 'stop-writer-access'
+    if case['prior_sends'] == 'uncertain':
+        return 'stop-publication-reconciliation'
+    if not case['identity_ready']:
+        return 'stop-identity-admission'
+    if kind == 'fresh':
+        require(remote == 'verified-excluded' and case['backup'] == 'not-applicable',
+                'fresh shared connection only')
+        return 'connect-receive-only'
+    if case['backup'] != 'restored-in-staging':
+        return 'stop-backup-verification'
+    return 'eligible-for-handoff'
+
+
 def validate(data):
     require(data['fixture_kind'] == 'documentation-only' and
             data['contract_version'] == 1, 'conceptual fixture marker/version')
@@ -118,16 +145,35 @@ def validate(data):
                     {'effective_two_way': False}, {'actual_write_rights': False},
                     {'snapshot_fresh': False}):
         require(not can_reserve(dict(reserve, **changed)), 'unowned publication admitted')
-    return len(names), len(required)
+    fresh, eligible, blocked = cases = data['upgrade']
+    require([c['expected'] for c in cases] ==
+            ['connect-receive-only', 'eligible-for-handoff', 'stop-writer-access'],
+            'upgrade outcome coverage')
+    for case in cases:
+        require(upgrade(case) == case['expected'], case['case'] + ': upgrade decision')
+    require(upgrade(dict(fresh, identity_ready=False)) == 'stop-identity-admission',
+            'fresh receive-only connection cannot initialize identity')
+    for changes, expected in (
+            ({'disjoint_checkout': False}, 'stop-target-binding'),
+            ({'binding_current': False}, 'stop-target-binding'),
+            ({'legacy_local': 'never-exposed'}, 'stop-writer-access'),
+            ({'legacy_local': 'unknown'}, 'stop-writer-access'),
+            ({'legacy_remote': 'writable'}, 'stop-writer-access'),
+            ({'legacy_remote': 'unknown'}, 'stop-writer-access'),
+            ({'legacy_quiescent': False}, 'stop-writer-access'),
+            ({'backup': 'present'}, 'stop-backup-verification'),
+            ({'prior_sends': 'uncertain'}, 'stop-publication-reconciliation')):
+        require(upgrade(dict(eligible, **changes)) == expected, 'unsafe upgrade admitted: ' + str(changes))
+    return len(names), len(required), len(cases)
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('migration-decisions.json')
-        count, gates = validate(json.loads(fixture.read_text()))
+        count, gates, upgrades = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
     print(f'PASS: {count} synthetic migration cases, {gates} preflight counterexamples, '
-          '4 handoff checkpoints and rejected premature/ordinary admissions '
+          f'4 handoff checkpoints, {upgrades} upgrade decisions and rejected counterexamples '
           '(documentation only; no runtime validation)')
