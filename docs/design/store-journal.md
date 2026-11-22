@@ -163,6 +163,16 @@ subsequent generation after the effect. Advance per-store references afterward; 
 record. An implementation unable to establish these durability steps must stop before the effect. This is ordered
 persistence, not atomic disk/vault/remote commit.
 
+A flush failure before attempting replacement leaves the old authority selected.
+Retain any staged state and stop. If replacement was attempted and acknowledgement
+or directory sync fails, the outcome is uncertain. A readable new selector or
+registry binding is an observation. Keep the durable intent, fences and protected
+recovery, and block dependent writes, publication and cleanup. Under the owning
+gates, reconcile the exact observed binding and retained payload, re-establish
+durability and persist verified evidence before advancing. If that proof remains
+unavailable, keep the operation blocked. File and directory synchronization are
+separate steps. [Linux fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html).
+
 On restart, validate selector/retained metadata chain, decrypt referenced payload and compare manifest IDs/sequence
 and current snapshots. Valid unselected files are orphans, never automatically a newer authority. Torn/missing
 selector, unexpectedly missing payload, unknown version, sequence gap, copied identity or mismatched manifest blocks

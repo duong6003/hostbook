@@ -262,13 +262,13 @@ verified.
 
 ### Local cutover interruption checkpoint
 
-Run the [isolated process-death fixture](fixtures/verify-migration-cutover.py):
+Run the [isolated cutover fixture](fixtures/verify-migration-cutover.py):
 
 ```bash
 python3 -B docs/design/fixtures/verify-migration-cutover.py
 ```
 
-Both cases passed on native arm64 macOS (Darwin 27.2.0) and on arm64 Linux
+Both process-death cases and both injected sync-error cases passed on native arm64 macOS (Darwin 27.2.0) and on arm64 Linux
 in a network-disabled Docker container with temporary storage
 (6.4.16-linuxkit). A child writes and syncs the intended replacement under
 a disposable root. The parent sends SIGKILL at controlled points before the
@@ -279,9 +279,20 @@ child records completion.
 - After atomic registry replacement and directory sync, a fresh process
   reads the new binding. No completion record was written by the old process.
 
-The fixture checks the original and candidate bytes and a synthetic recovery
-marker on every reopen. A second reopen checks that no file was rewritten or
-replaced. This exercises process death around one local registry replacement.
+Two further cases inject `EIO` in `fsync` and exercise the same replacement:
+
+- Pending-file sync fails before replacement. The original binding remains
+  selected and the pending file is retained for inspection.
+- Parent-directory sync fails after replacement. The updated binding is
+  visible, and the operation reports an uncertain outcome. The original,
+  candidate, intent and recovery marker remain available.
+
+The error cases model failed system calls. They do not simulate failing
+storage hardware or establish power-loss durability.
+
+The SIGKILL cases start two fresh readers and verify the original and candidate
+bytes, the recovery marker and file metadata after each reopen. The EIO cases
+check returned status and immediately visible files in the same process.
 Hostbook's actual recovery journal, vault, remote publication, system crash or
 power loss and on-disk durability remain unverified.
 

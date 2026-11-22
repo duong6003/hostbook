@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise process death at two isolated local cutover boundaries."""
+"""Exercise process death and sync errors at isolated local cutover boundaries."""
+from contextlib import nullcontext
+import errno
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 
 OLD = {"checkout": "original", "generation": 1}
@@ -54,18 +57,38 @@ def verify_store_files(root):
     assert (root / "recovery.fixture").read_bytes() == RECOVERY_BYTES
 
 
-def cutover(root, when):
-    assert when in ("before", "after")
+def injected_sync_error(enabled):
+    if not enabled:
+        return nullcontext()
+    return patch.object(os, "fsync", side_effect=OSError(errno.EIO, "fixture sync error"))
+
+
+def apply_cutover(root, replace, fault=None):
     verify_store_files(root)
     assert json.loads((root / "registry.json").read_text()) == OLD
     write_json(root / "intent.json", {"before": OLD, "after": NEW})
     sync_directory(root)
     pending = root / "registry.pending"
-    write_json(pending, NEW)
-    sync_directory(root)
-    if when == "after":
-        os.replace(pending, root / "registry.json")
+    replacement_started = False
+    try:
+        with injected_sync_error(fault == "pending-file"):
+            write_json(pending, NEW)
         sync_directory(root)
+        if replace:
+            replacement_started = True
+            os.replace(pending, root / "registry.json")
+            with injected_sync_error(fault == "registry-directory"):
+                sync_directory(root)
+    except OSError as error:
+        if error.errno != errno.EIO:
+            raise
+        return "uncertain" if replacement_started else "stopped-before-replace"
+    return "replaced" if replacement_started else "pending"
+
+
+def cutover(root, when):
+    assert when in ("before", "after")
+    assert apply_cutover(root, replace=when == "after") == ("replaced" if when == "after" else "pending")
     print("at-boundary", flush=True)
     # Keep the child alive without adding a completion record.
     sys.stdin.buffer.read(1)
@@ -123,6 +146,17 @@ def check(when, selected):
             assert snapshot(root) == before
 
 
+def check_sync_error(fault, observed, outcome):
+    with tempfile.TemporaryDirectory(prefix="hostbook-cutover-error-") as scratch:
+        root = Path(scratch).resolve()
+        prepare(root)
+        assert apply_cutover(root, replace=True, fault=fault) == outcome
+        assert json.loads((root / "registry.json").read_text()) == observed
+        assert (root / "registry.pending").exists() == (observed == OLD)
+        assert json.loads((root / "intent.json").read_text()) == {"before": OLD, "after": NEW}
+        verify_store_files(root)
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == []:
         print(f"Platform: {platform.system()} {platform.release()} ({platform.machine()})", flush=True)
@@ -130,6 +164,10 @@ if __name__ == "__main__":
         print("PASS: SIGKILL before replacement kept the original selection")
         check("after", "selected-new")
         print("PASS: SIGKILL after synced replacement kept the new selection and did not replay")
+        check_sync_error("pending-file", OLD, "stopped-before-replace")
+        print("PASS: pending file EIO stopped before replacement")
+        check_sync_error("registry-directory", NEW, "uncertain")
+        print("PASS: directory EIO after replacement left new binding visible and outcome uncertain")
     else:
         root = Path.cwd()
         assert root == Path(os.environ["HOSTBOOK_STATE"])
