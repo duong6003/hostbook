@@ -567,6 +567,10 @@ class StoreContextTest(unittest.TestCase):
         with self.assertRaises(StoreContextError):
             idle(0)
         shutil.rmtree(folder)
+        folder = history("migration", ["prepared", "staged", "cancelled", "cancelled"], 4, [], retained)
+        with self.assertRaises(StoreContextError):
+            idle(0)
+        shutil.rmtree(folder)
         effect = dict(effect_id=new_id(), store_id=self.entries[1]["store_id"], intent_id=new_id(),
                       evidence_id=None, outcome="intended")
         for terminal in ("cancelled", "rolled-back"):

@@ -180,6 +180,8 @@ def classify(folder, account, ident, kind):
             scope, terminal = (control if kind == "control" else transaction)(record, prior)
             if kind == "transactions" and record["checkpoint"] in TERMINAL and not terminal:
                 unsettled_terminal = True
+                if scope is None:
+                    affected = None
             if seq >= selector["sequence"]:
                 if scope is None:
                     affected = None
