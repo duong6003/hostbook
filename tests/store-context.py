@@ -699,6 +699,23 @@ class StoreContextTest(unittest.TestCase):
                 store_mode.change_mode(lambda:self.account, self.entries[1]["store_id"], self.generations, "two-way")
         self.assertEqual(self.registry.read_bytes(),compact)
 
+    def test_discard_never_resurrects_candidate_when_disposition_missing_or_changed(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        done = store_mode.change_mode(load,store,self.generations,"receive-only","discard-confirmed",[candidate])
+        evidence = next((self.recovery/"modes").glob("*/decision.json"))
+        evidence.unlink()
+        for contents in (None, {"action":"clean","candidates":[]}):
+            if contents is not None:
+                evidence.write_text(json.dumps(contents))
+                evidence.chmod(0o600)
+            with self.assertRaises((StoreContextError,FileNotFoundError)):
+                store_mode.change_mode(load,store,Generations(**done["generations"]),"two-way")
+
     def test_mode_recovers_unpointed_fence_and_releases_terminal_pointer(self):
         import store_mode
         f = self.prepare_receive()

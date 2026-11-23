@@ -74,7 +74,7 @@ def mode_records(recovery, account, store_id, pointer):
                     tail = private_json(history, f"{len(os.listdir(history))}.json")
                 if first["operation"] == "registration-transition":
                     if terminal and tail["detail"]["phase"] == "applied":
-                        for candidate in decision(recovery, ident)["candidates"]:
+                        for candidate in decision(recovery, first)["candidates"]:
                             retired[candidate["attempt_id"]] = candidate
                     if not terminal or pointer == ident:
                         active.append((first, tail))
@@ -90,12 +90,14 @@ def mode_records(recovery, account, store_id, pointer):
     return active[0] if active else None, sorted(set(pending) - retired.keys())
 
 
-def decision(recovery, ident):
-    with open_directory(recovery, ("modes", ident)) as folder:
-        try:
-            record = private_json(folder, "decision.json")
-        except FileNotFoundError:
-            return {"action":"clean", "candidates":[]}
+def decision(recovery, first):
+    with open_directory(recovery, ("modes", first["record_id"])) as folder:
+        require_private_directory(folder, "mode evidence")
+        plan = private_json(folder, first["detail"]["proposed_binding_id"])
+        fields(plan, "entry decision_sha256")
+        record = private_json(folder, "decision.json")
+        require(hashlib.sha256(json_bytes(record)).hexdigest() == plan["decision_sha256"],
+                "mode decision evidence changed")
     fields(record, "action candidates")
     require(record["action"] in ("clean","discard-confirmed") and isinstance(record["candidates"],list)
             and bool(record["candidates"]) == (record["action"] != "clean"), "invalid mode decision")
@@ -139,10 +141,11 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates):
         os.mkdir(ident, 0o700, dir_fd=modes)
         sync_local(modes)
         with open_directory(modes, (ident,)) as evidence:
-            durable_file(evidence, "decision.json", json_bytes({"action":action, "candidates":candidates}))
+            saved = json_bytes({"action":action, "candidates":candidates})
+            durable_file(evidence, "decision.json", saved)
             durable_file(evidence, old_id, json_bytes(entry))
             proposed = dict(entry, effective_mode=wanted, policy_generation=entry["policy_generation"]+3)
-            durable_file(evidence, new_id, json_bytes(proposed))
+            durable_file(evidence, new_id, json_bytes({"entry":proposed,"decision_sha256":hashlib.sha256(saved).hexdigest()}))
             sync_local(evidence)
             reserve(evidence, recovery, rec)
     return rec, rec
@@ -166,7 +169,9 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     ident, detail = first["record_id"], first["detail"]
     with open_directory(recovery, ("modes", ident)) as evidence:
         require_private_directory(evidence, "mode evidence")
-        old, proposed = (private_json(evidence, detail[k]) for k in ("old_binding_id", "proposed_binding_id"))
+        old = private_json(evidence, detail["old_binding_id"])
+        proposed = private_json(evidence, detail["proposed_binding_id"])["entry"]
+        decision(recovery, first)
     validate_entry(old)
     validate_entry(proposed)
     wanted = proposed["effective_mode"]
