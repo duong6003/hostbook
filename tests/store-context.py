@@ -698,6 +698,7 @@ class StoreContextTest(unittest.TestCase):
             with self.assertRaisesRegex(StoreContextError,"registry.*size"):
                 store_mode.change_mode(lambda:self.account, self.entries[1]["store_id"], self.generations, "two-way")
         self.assertEqual(self.registry.read_bytes(),compact)
+        self.assertFalse((self.recovery/"control").exists())
 
     def test_discard_never_resurrects_candidate_when_disposition_missing_or_changed(self):
         import store_mode
@@ -796,6 +797,49 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(final["mode"],"receive-only")
         self.assertNotIn("transition_id",final)
 
+    def test_mode_fences_an_ordinary_admitted_sender_before_it_finishes(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        native = store_publish.send
+        direction = []
+        def while_admitted(*args):
+            paused = store_mode.change_mode(load,store,self.generations,"receive-only")
+            self.assertEqual(paused["mode"],"two-way")
+            self.assertIsNotNone(paused["transition_id"])
+            direction.append(paused)
+            with self.assertRaises(StoreContextError):
+                edit()
+            return native(*args)
+        with patch.object(store_publish,"send",side_effect=while_admitted):
+            result = edit()
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertEqual(direction[0]["settle_attempt"],result["attempt_id"])
+        final = store_mode.change_mode(load,store,Generations(**direction[0]["generations"]),"receive-only")
+        self.assertEqual(final["mode"],"receive-only")
+
+    def test_mode_discovers_retry_reserved_before_registry_or_transition_control(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        reserve = store_publish.reserve_edit
+        def before_fence(*args,**kwargs):
+            reserve(*args,**kwargs)
+            raise RuntimeError("lost send owner before fence")
+        with patch.object(store_publish,"reserve_edit",side_effect=before_fence):
+            with self.assertRaises(RuntimeError):
+                store_mode.change_mode(load,store,self.generations,"receive-only","send-confirmed",[candidate])
+        self.assertIsNone(json.loads(self.registry.read_bytes())["stores"][1]["transition_id"])
+        paused = store_mode.change_mode(load,store,self.generations,"receive-only")
+        self.assertEqual(paused["mode"],"two-way")
+        expected = Generations(**paused["generations"])
+        self.assertEqual(store_publish.settle(load,store,expected,paused["settle_attempt"])["outcome"],"not-accepted")
+        self.assertEqual(store_mode.change_mode(load,store,expected,"receive-only")["mode"],"two-way")
+
     def test_mode_recovers_sender_death_after_fence_before_start_without_resend(self):
         import store_mode
         import store_publish
@@ -824,6 +868,21 @@ class StoreContextTest(unittest.TestCase):
             review = store_mode.change_mode(load,store,Generations(**finished["generations"]),"receive-only")
         self.assertEqual(review["pending"],[candidate])
         self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main"),f.tip)
+
+    def test_mode_can_cancel_unpointed_intent_when_new_fence_would_exceed_capacity(self):
+        import store_mode
+        f = self.prepare_receive()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_mode,"replace_entry",side_effect=RuntimeError("interrupted before pointer")):
+            with self.assertRaises(RuntimeError):
+                store_mode.change_mode(load,store,self.generations,"two-way")
+        current = json.loads(self.registry.read_bytes())
+        compact = len(json.dumps(current,separators=(",",":")).encode())
+        with patch.object(store_mode,"JSON_LIMIT",compact+4):
+            cancelled = store_mode.change_mode(load,store,self.generations,"cancel")
+        self.assertEqual(cancelled["mode"],"receive-only")
+        self.assertEqual(cancelled["generations"]["policy"],self.generations.policy+1)
+        self.assertIsNone(json.loads(self.registry.read_bytes())["stores"][1]["transition_id"])
 
     def test_mode_recovers_unpointed_fence_and_releases_terminal_pointer(self):
         import store_mode

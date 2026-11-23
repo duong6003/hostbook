@@ -219,7 +219,7 @@ def require_idle(recovery_fd, account, store_id, transition=None, sender=None):
                         with open_directory(recovery_fd, ("modes", transition["record_id"])) as plan:
                             decision = private_json(plan, "decision.json")
                         with open_directory(folder, ("records",)) as history:
-                            own = (decision.get("action") == "send-confirmed" and decision.get("send_attempt") == ident
+                            own = (decision.get("action") in ("send-confirmed","drain") and decision.get("send_attempt") == ident
                                    and private_json(history, "1.json") == sender)
                     require(terminal or own or (scope is not None and store_id not in scope),
                             "store has unresolved recovery")

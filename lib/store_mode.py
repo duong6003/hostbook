@@ -14,7 +14,7 @@ from store_checkout import direct_ref, durable_file, make_parents, rename_guarde
 from store_context import (JSON_LIMIT, Generations, acquire_local_lock, entry_generations, fields, fixture_request, index_rows, load_approved_account,
                            open_directory, path_parts, read_registry, registry_entries, require, resolved_store, require_approval_file, require_private_directory,
                            staged_local_file, store_writer, sync_local, valid_id, validate_entry, verify_state_directory)
-from store_journal import classify, private_json, require_idle
+from store_journal import check_owner, control as validate_control, classify, private_json, require_idle
 from store_publish import attempt_binding, boot_id, read_attempt, json_bytes, recovery_root, reserve, select_record, sync_named
 from store_receive import absolute_directory, fetch_from_fd, git, oid, receive, receive_binding, verify_incoming
 from store_read import local_inputs
@@ -59,12 +59,12 @@ def replace_entry(state, account, old, new, verify):
 
 
 def mode_records(recovery, account, store_id, pointer):
-    active, pending, retired, retries = [], [], {}, {}
+    active, pending, retired, retries, inflight = [], [], {}, {}, []
     try:
         control_fd = os.open("control", os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery)
     except FileNotFoundError:
         require(pointer is None, "mode transition evidence missing")
-        return None, pending
+        return None, pending, inflight
     try:
         require_private_directory(control_fd, "recovery controls")
         for ident in os.listdir(control_fd):
@@ -83,7 +83,9 @@ def mode_records(recovery, account, store_id, pointer):
                             retired[candidate["attempt_id"]] = candidate
                     if not terminal or pointer == ident:
                         active.append((first, tail))
-                elif terminal:
+                elif not terminal:
+                    inflight.append(ident)
+                else:
                     with open_directory(recovery, ("edits", ident)) as edit:
                         try:
                             retry = private_json(edit, "retry.json")
@@ -107,7 +109,7 @@ def mode_records(recovery, account, store_id, pointer):
     for ident, saved in retired.items():
         require(ident in pending and candidate_record(recovery, account, store_id, ident) == saved,
                 "retired publication evidence disagrees")
-    return active[0] if active else None, sorted(set(pending) - retired.keys())
+    return active[0] if active else None, sorted(set(pending) - retired.keys()), sorted(inflight)
 
 
 def decision(recovery, first):
@@ -118,11 +120,13 @@ def decision(recovery, first):
         record = private_json(folder, "decision.json")
         require(hashlib.sha256(json_bytes(record)).hexdigest() == plan["decision_sha256"],
                 "mode decision evidence changed")
-    fields(record, "action candidates" + (" send_attempt" if record.get("action") == "send-confirmed" else ""))
+    fields(record, "action candidates" + (" send_attempt" if record.get("action") in ("send-confirmed","drain") else ""))
     if record["action"] == "send-confirmed":
         require(valid_id(record["send_attempt"]) and len(record["candidates"]) == 1, "invalid confirmed sender")
-    require(record["action"] in ("clean","discard-confirmed","send-confirmed") and isinstance(record["candidates"],list)
-            and bool(record["candidates"]) == (record["action"] != "clean"), "invalid mode decision")
+    if record["action"] == "drain":
+        require(valid_id(record["send_attempt"]) and not record["candidates"], "invalid admitted sender")
+    require(record["action"] in ("clean","discard-confirmed","send-confirmed","drain") and isinstance(record["candidates"],list)
+            and bool(record["candidates"]) == (record["action"] in ("discard-confirmed","send-confirmed")), "invalid mode decision")
     return record
 
 
@@ -166,6 +170,56 @@ def verify_retry(recovery, account, first, source):
             and old["generations"]["connection"] == new["generations"]["connection"], "retry binding changed")
 
 
+def preflight_mode(state, entry, wanted):
+    header, _ = read_registry(state)
+    current = entry["policy_generation"]
+    fenced = dict(entry, transition_id="f"*36, policy_generation=current+1)
+    for steps, future in ((1,fenced), (2,dict(fenced,effective_mode=wanted,policy_generation=current+2)),
+                          (2,dict(entry,policy_generation=current+2)), (3,dict(entry,effective_mode=wanted,
+                          policy_generation=current+3))):
+        registry_update(header, future, steps)
+
+
+def commit_mode_control(recovery, first):
+    with open_directory(recovery, ("modes", first["record_id"])) as evidence:
+        temp = str(uuid4())
+        os.mkdir(temp, 0o700, dir_fd=evidence)
+        with open_directory(evidence, (temp,)) as draft:
+            reserve(draft, recovery, first)
+
+
+def recover_sender_links(recovery, account, store):
+    try:
+        drafts = os.open("mode-links", os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery)
+    except FileNotFoundError:
+        return
+    try:
+        if store not in os.listdir(drafts):
+            return
+        with open_directory(drafts, (store,)) as links:
+            require_private_directory(links, "mode links")
+            for ident in os.listdir(links):
+                require(valid_id(ident), "invalid mode link")
+                first = private_json(links, ident)
+                require(first["device_id"] == account.device_id and first["root_id"] == account.recovery_root_id
+                        and first["store_id"] == store and first["record_id"] == ident and first["version"] == 1
+                        and first["sequence"] == 1 and first["previous_sequence"] == 0
+                        and first["operation"] == "registration-transition","invalid prepared mode owner")
+                check_owner(first["owner"])
+                validate_control(first,None)
+                choice = decision(recovery, first)
+                require(choice["action"] == "send-confirmed","invalid prepared mode decision")
+                with open_directory(recovery, ("control",)) as controls:
+                    existing = os.listdir(controls)
+                    if ident in existing or choice["send_attempt"] not in existing:
+                        continue
+                sender, _ = read_attempt(recovery,account,store,choice["send_attempt"])
+                verify_retry(recovery,account,sender,choice["candidates"][0])
+                commit_mode_control(recovery,first)
+    finally:
+        os.close(drafts)
+
+
 def prepare_transition(recovery, account, entry, wanted, action, candidates, send_attempt=None):
     ident = str(uuid4())
     old_id, new_id = str(uuid4()), str(uuid4())
@@ -188,7 +242,14 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates, sen
             proposed = dict(entry, effective_mode=wanted, policy_generation=entry["policy_generation"]+3)
             durable_file(evidence, new_id, json_bytes({"entry":proposed,"decision_sha256":hashlib.sha256(saved).hexdigest()}))
             sync_local(evidence)
-            reserve(evidence, recovery, rec)
+            if action == "send-confirmed":
+                with make_parents(recovery, ("mode-links",entry["store_id"])) as links:
+                    with staged_local_file(evidence, ident, json_bytes(rec)) as temp:
+                        sync_named(evidence,temp)
+                        rename_guarded(evidence,temp,links,ident,exchange=False)
+                        sync_local(links)
+            else:
+                commit_mode_control(recovery,rec)
     return rec, rec
 
 
@@ -223,27 +284,37 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     fenced = dict(old, transition_id=ident, policy_generation=old["policy_generation"]+1)
     changed = dict(fenced, effective_mode=wanted, policy_generation=fenced["policy_generation"]+1)
     cancelled = dict(old, policy_generation=fenced["policy_generation"]+1)
-    require(requested in (wanted, "cancel") and entry in (old, fenced, changed), "mode plan and registration disagree")
+    early_cancel = dict(old,policy_generation=old["policy_generation"]+1)
+    require(requested in (wanted, "cancel") and entry in (old, fenced, changed, early_cancel), "mode plan and registration disagree")
     sender, outcome = None, None
-    if choice["action"] == "send-confirmed":
+    if choice["action"] in ("send-confirmed","drain"):
         sender, current = read_attempt(recovery, account, entry["store_id"], choice["send_attempt"])
-        verify_retry(recovery, account, sender, choice["candidates"][0])
+        if choice["action"] == "send-confirmed":
+            verify_retry(recovery, account, sender, choice["candidates"][0])
+        else:
+            with open_directory(recovery, ("edits",sender["record_id"])) as edit:
+                attempt_binding(edit,account,sender)
         outcome = current["detail"]["outcome"]
         with open_directory(recovery, ("control",sender["record_id"])) as control:
             if private_json(control, "current.json")["sequence"] != current["sequence"]:
                 outcome = "uncertain"
     require_idle(recovery, account, entry["store_id"], transition=first, sender=sender)
     verify(entry)
+    if entry == early_cancel or (entry == old and requested == "cancel" and outcome not in ("reserved","uncertain")):
+        if entry == old:
+            replace_entry(state, account, old, early_cancel, verify)
+        finish_record(recovery, first, tail, "cancelled")
+        return early_cancel
     if entry == old:
-        header, _ = read_registry(state)
-        for steps, future in ((1, fenced), (2, changed), (2, cancelled), (3, proposed)):
-            registry_update(header, future, steps)
+        preflight_mode(state, entry, wanted)
         replace_entry(state, account, old, fenced, verify)
         entry = fenced
     if outcome in ("reserved","uncertain"):
         require(entry == fenced, "unsettled sender crossed the publication fence")
         return entry
-    if tail["detail"]["phase"] == "cancelled" or (entry == fenced and (requested == "cancel" or outcome == "not-accepted")):
+    pending_after_drain = choice["action"] == "drain" and mode_records(recovery, account, entry["store_id"], ident)[1]
+    if tail["detail"]["phase"] == "cancelled" or (entry == fenced and (requested == "cancel" or
+                                                  outcome == "not-accepted" or pending_after_drain)):
         require(entry == fenced, "cancelled transition changed its effective mode")
         finish_record(recovery, first, tail, "cancelled")
         replace_entry(state, account, fenced, cancelled, verify)
@@ -270,7 +341,15 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
         require(context.kind == "shared" and entry["connection"] and entry_generations(entry) == expected,
                 "a current connected shared store is required")
         with recovery_root(account) as recovery:
-            active, pending = mode_records(recovery, account, store_id, entry["transition_id"])
+            recover_sender_links(recovery, account, store_id)
+            active, pending, inflight = mode_records(recovery, account, store_id, entry["transition_id"])
+            if active is None and inflight and wanted not in (entry["effective_mode"], "cancel"):
+                require(len(inflight)==1 and action == "clean", "reconcile active publishers before changing mode")
+                sender, _ = read_attempt(recovery,account,store_id,inflight[0])
+                with open_directory(recovery, ("edits",inflight[0])) as edit:
+                    attempt_binding(edit,account,sender)
+                preflight_mode(state,entry,wanted)
+                active = prepare_transition(recovery,account,entry,wanted,"drain",[],inflight[0])
             if active is None:
                 if wanted == "cancel":
                     return {"store_id":store_id, "mode":entry["effective_mode"], "generations":asdict(expected)}
@@ -283,6 +362,7 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
                                     "generations":asdict(expected)}
                         require(sorted(confirmed) == pending and (action != "clean") == bool(confirmed),
                                 "confirm the exact pending publication candidates")
+                        preflight_mode(state,entry,wanted)
                         active = prepare_transition(recovery, account, entry, wanted, action, candidates)
             if active is not None:
                 def verify(current):
@@ -302,7 +382,8 @@ def send_then_switch(load, store_id, expected, source):
         with store_writer(load, store_id, expected) as (actual, ctx, state, _):
             require(actual == account and ctx.effective_mode == "two-way" and ctx.transition_id is None,
                     "send before switching requires an unfenced two-way registration")
-            active, pending = mode_records(recovery, account, store_id, None)
+            recover_sender_links(recovery,account,store_id)
+            active, pending, _ = mode_records(recovery, account, store_id, None)
             require(not active and pending == [source], "confirm the exact pending candidate")
             candidate = candidate_record(recovery, account, store_id, source, verify_bundle=True)
             local = local_inputs(state, store_id)
@@ -338,7 +419,7 @@ def send_then_switch(load, store_id, expected, source):
             with receive_binding(account,store_id,expected) as (again, remote, _, _, binding):
                 require((again,remote,binding) == (ctx,target,checkout) and local_inputs(state,store_id)==local,
                         "registered sender changed")
-                active, pending = mode_records(recovery,account,store_id,None)
+                active, pending, _ = mode_records(recovery,account,store_id,None)
                 require(not active and pending == [source] and candidate_record(recovery,account,store_id,source,verify_bundle=True)==candidate,
                         "confirmed candidate changed")
                 with absolute_directory(ctx.checkout) as work:
@@ -349,10 +430,12 @@ def send_then_switch(load, store_id, expected, source):
                     require(store_publish.stanza(identity,files.__getitem__,store_id,host)[4] == signature,
                             "confirmed local host revision changed")
                 attempt = str(uuid4())
+                entry = registry_entries(state,account)[0][store_id]
+                preflight_mode(state,entry,"receive-only")
+                active = prepare_transition(recovery,account,entry,"receive-only","send-confirmed",[candidate],attempt)
                 reservation = store_publish.reserve_edit(opened,recovery,account,ctx,target,host,tip,proposed,bundle,
                                                          attempt,str(uuid4()),retry_of=source)
-                entry = registry_entries(state,account)[0][store_id]
-                active = prepare_transition(recovery,account,entry,"receive-only","send-confirmed",[candidate],attempt)
+                commit_mode_control(recovery,active[0])
                 def verify(row):
                     verify_live(load,account,state,writer,row)
                 fenced = apply_transition(state,recovery,account,entry,active,"receive-only",verify)

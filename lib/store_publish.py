@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from store_checkout import direct_ref, durable_file, make_parents, read_ref, rename_guarded, tree
 from store_context import (JSON_LIMIT, Generations, StoreContextError, bound_directory, fields, fixture_request,
-                           index_rows, load_approved_account, open_directory, parse_directory_binding, parse_json, path_parts, positive, read_file, require,
+                           entry_generations, index_rows, load_approved_account, registry_entries, open_directory, parse_directory_binding, parse_json, path_parts, positive, read_file, require,
                            require_approval_file, require_private_directory, staged_local_file, store_writer,
                            sync_local, valid_id, valid_ref, verified_account, verify_path_isolation)
 from store_journal import classify, private_json
@@ -411,7 +411,10 @@ def launch_reserved(load_account, account, recovery, ctx, expected, stage, targe
         lease.close()
     try:
         with open_lease(edit, evidence):
-            with store_writer(load_account, store_id, expected) as (actual, _, _, _lock):
+            with verified_account(account) as (_, state):
+                entries, _ = registry_entries(state, account)
+                current_gen = entry_generations(entries[store_id])
+            with store_writer(load_account, store_id, current_gen) as (actual, _, _, _lock):
                 require(actual == account, "publication account changed")
                 advance(recovery, actual, record, outcome)
     except (OSError, StoreContextError):
