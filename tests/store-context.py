@@ -39,7 +39,8 @@ class StoreContextTest(unittest.TestCase):
         self.recovery = self.root / "recovery"
         self.registry = self.state / "stores/v1/registry.json"
         self.registry.parent.mkdir(parents=True)
-        self.recovery.mkdir()
+        self.state.chmod(0o700)
+        self.recovery.mkdir(mode=0o700)
         isolated = patch.dict(os.environ, {
             "HOSTBOOK_DIR": str(self.root / "private"),
             "HOSTBOOK_STATE": str(self.state),
@@ -76,8 +77,15 @@ class StoreContextTest(unittest.TestCase):
                                                   directory_binding(git), directory_binding(git))
         self.account = Account(directory_binding(self.root), directory_binding(self.state),
                                directory_binding(self.recovery), new_id(), new_id(), bindings)
+        self.recovery_marker = self.recovery / "root.json"
+        self.save_recovery_marker()
         self.generations = Generations(1, 2, 3, 4)
         self.save_registry()
+
+    def save_recovery_marker(self, **overrides):
+        marker = {"version": 1, "device_id": self.account.device_id, "root_id": self.account.recovery_root_id}
+        marker.update(overrides)
+        self.recovery_marker.write_text(json.dumps(marker))
 
     def save_registry(self):
         self.registry.write_text(json.dumps({
@@ -132,18 +140,64 @@ class StoreContextTest(unittest.TestCase):
     def test_copied_registry_does_not_prove_account_or_state_binding(self):
         copy = self.root / "other-state"
         (copy / "stores/v1").mkdir(parents=True)
+        copy.chmod(0o700)
         shutil.copyfile(self.registry, copy / "stores/v1/registry.json")
         with self.assertRaisesRegex(StoreContextError, "state binding"):
             self.resolve(account=replace(self.account, state=replace(self.account.state, path=copy)))
-        with self.assertRaisesRegex(StoreContextError, "account"):
-            self.resolve(account=replace(self.account, state=directory_binding(copy), device_id=new_id()))
+        new_device, new_recovery_id = new_id(), new_id()
+        other_recovery = self.root / "other-recovery"
+        other_recovery.mkdir(mode=0o700)
+        (other_recovery / "root.json").write_text(json.dumps({
+            "version": 1, "device_id": new_device, "root_id": new_recovery_id,
+        }))
+        other_account = replace(self.account, state=directory_binding(copy),
+                                recovery=directory_binding(other_recovery), device_id=new_device,
+                                recovery_root_id=new_recovery_id)
+        with self.assertRaisesRegex(StoreContextError, "registry account binding mismatch"):
+            self.resolve(account=other_account)
+
+    def test_recovery_root_record_must_match_independent_account_evidence(self):
+        # A copied registry still holds the right device ID and checkout IDs.
+        for changes in ({"root_id": new_id()}, {"device_id": new_id()}, {"version": True}):
+            with self.subTest(changes=changes):
+                self.save_recovery_marker(**changes)
+                before = snapshot(self.root)
+                with patch("store_context.registry_entries") as read_registry:
+                    with self.assertRaisesRegex(StoreContextError, "recovery root record"):
+                        self.resolve()
+                    read_registry.assert_not_called()
+                self.assertEqual(snapshot(self.root), before)
+        self.save_recovery_marker()
+        self.assertEqual(self.resolve().checkout, self.root / "private")
+
+    def test_missing_or_redirected_recovery_marker_is_rejected_without_repair(self):
+        self.recovery_marker.unlink()
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "recovery root record"):
+            self.resolve()
+        self.assertEqual(snapshot(self.root), before)
+        self.save_recovery_marker()
+        other = self.recovery_marker.rename(self.root / "copied-root.json")
+        self.recovery_marker.symlink_to(other)
+        with self.assertRaisesRegex(StoreContextError, "recovery root record"):
+            self.resolve()
+
+    def test_state_and_recovery_directories_must_be_private(self):
+        for path in (self.state, self.recovery):
+            with self.subTest(path=path.name):
+                path.chmod(0o755)
+                with self.assertRaisesRegex(StoreContextError, f"{path.name} directory must be private"):
+                    self.resolve()
+                path.chmod(0o700)
 
     def test_moved_checkout_and_wrong_sidecar_are_rejected(self):
         original = Path(self.entries[1]["checkout"]["root"])
         parked = original.rename(self.root / "parked")
         shutil.copytree(parked, original)
-        with self.assertRaisesRegex(StoreContextError, "checkout binding"):
-            self.resolve(1)
+        with patch("store_context.verify_sidecar") as read_sidecar:
+            with self.assertRaisesRegex(StoreContextError, "checkout binding"):
+                self.resolve(1)
+            read_sidecar.assert_not_called()
         shutil.rmtree(original)
         parked.rename(original)
         sidecar = original / ".hostbook/identity.json"

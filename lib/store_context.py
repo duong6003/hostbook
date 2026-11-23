@@ -1,7 +1,8 @@
 """Read-only v1 store resolution for a caller with independent account evidence.
 
-The caller supplies verified bindings from outside the registry. The resolver
-does not bootstrap an account, authorize writes, or open a vault or transport.
+The caller supplies approved bindings from outside the registry. The resolver
+checks those bindings before reading registration data. It does not enroll an
+account, authorize writes, or open a vault or transport.
 """
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -211,8 +212,7 @@ def registry_entries(state_fd, account):
     require(record["format"] == "hostbook-registrations" and type(record["version"]) is int
             and record["version"] == 1 and positive(record["revision"])
             and isinstance(record["stores"], list), "invalid registry header")
-    require(valid_id(account.device_id) and valid_id(account.recovery_root_id) and
-            record["device_id"] == account.device_id and record["recovery_root_id"] == account.recovery_root_id,
+    require(record["device_id"] == account.device_id and record["recovery_root_id"] == account.recovery_root_id,
             "registry account binding mismatch")
     entries, checkouts = {}, {}
     private_count = 0
@@ -298,52 +298,76 @@ def verify_resource(root_fd, parts, expected_type):
     require(expected_type(entry.st_mode), "invalid store resource path")
 
 
+def require_private_directory(fd, label):
+    info = os.fstat(fd)
+    require(info.st_uid == os.geteuid() and info.st_mode & 0o077 == 0,
+            f"{label} directory must be private and owned by this account")
+
+
+@contextmanager
+def verified_account(account):
+    """Recheck approved directory evidence and the journal root before registry access."""
+    root = account.root.path
+    require(root.is_absolute() and root.anchor == "/" and root.parts[1:] and
+            ".." not in root.parts, "invalid verified account root")
+    require(valid_id(account.device_id) and valid_id(account.recovery_root_id), "invalid approved account IDs")
+    fs_root = os.open("/", DIRECTORY_FLAGS)
+    try:
+        with bound_directory(fs_root, root.parts[1:], account.root, "account binding mismatch") as root_fd:
+            require_private_directory(root_fd, "account")
+            with bound_directory(root_fd, path_parts(root, account.recovery.path), account.recovery,
+                                 "recovery binding mismatch") as recovery_fd:
+                require_private_directory(recovery_fd, "recovery")
+                try:
+                    marker = read_json(recovery_fd, "root.json")
+                    fields(marker, "version device_id root_id")
+                except (OSError, ValueError, RecursionError) as exc:
+                    raise StoreContextError("recovery root record unavailable or malformed") from exc
+                require(type(marker["version"]) is int and marker["version"] == 1 and
+                        marker["device_id"] == account.device_id and marker["root_id"] == account.recovery_root_id,
+                        "recovery root record does not match approved account")
+            with bound_directory(root_fd, path_parts(root, account.state.path), account.state,
+                                 "state binding mismatch") as state_fd:
+                require_private_directory(state_fd, "state")
+                verify_path_isolation(root_fd, root, [(account.state,), (account.recovery,)])
+                yield root_fd, state_fd
+    finally:
+        os.close(fs_root)
+
+
 def resolve_store(account, store_id, expected):
     """Return metadata and scoped resource names, without writing to any paths."""
     require(valid_id(store_id), "invalid store ID")
     require(isinstance(expected, Generations) and all(positive(value) for value in vars(expected).values()),
             "invalid expected generations")
-    root = account.root.path
-    require(root.is_absolute() and root.anchor == "/" and root.parts[1:] and
-            ".." not in root.parts, "invalid verified account root")
     try:
-        fs_root = os.open("/", DIRECTORY_FLAGS)
-        try:
-            with bound_directory(fs_root, root.parts[1:], account.root, "account binding mismatch") as root_fd:
-                owner = os.fstat(root_fd)
-                require(owner.st_uid == os.geteuid() and owner.st_mode & 0o077 == 0, "account root must be private")
-                with bound_directory(root_fd, path_parts(root, account.recovery.path), account.recovery,
-                                     "recovery binding mismatch"):
-                    pass
-                with bound_directory(root_fd, path_parts(root, account.state.path), account.state,
-                                     "state binding mismatch") as state_fd:
-                    entries, bindings = registry_entries(state_fd, account)
-                    require(store_id in entries, "unknown store")
-                    entry = entries[store_id]
-                    generations = entry_generations(entry)
-                    require(generations == expected, "stale store generations")
-                    require(store_id in bindings, "store has no checkout")
-                    for key, binding in bindings.items():
-                        verify_checkout(root_fd, root, binding, key == store_id)
-                    groups = [(account.state,), (account.recovery,)]
-                    groups.extend((binding.root, binding.git_dir, binding.git_common_dir)
-                                  for binding in bindings.values())
-                    verify_path_isolation(root_fd, root, groups)
-                    binding = bindings[store_id]
-                    prefix = ("stores", "v1", store_id)
-                    resources = (
-                        (("vault-cache", account.device_id), stat.S_ISDIR),
-                        (("index", str(generations.checkout), "index.tsv"), stat.S_ISREG),
-                        (("sync.lock",), stat.S_ISDIR),
-                        (("connection", str(generations.connection), "status"), stat.S_ISREG),
-                    )
-                    for parts, expected_type in resources:
-                        verify_resource(state_fd, prefix + parts, expected_type)
-        finally:
-            os.close(fs_root)
-    except (OSError, UnicodeError, RecursionError, ValueError) as exc:
-        if isinstance(exc, StoreContextError):
-            raise
+        with verified_account(account) as (root_fd, state_fd):
+            entries, bindings = registry_entries(state_fd, account)
+            require(store_id in entries, "unknown store")
+            entry = entries[store_id]
+            generations = entry_generations(entry)
+            require(generations == expected, "stale store generations")
+            require(store_id in bindings, "store has no checkout")
+            root = account.root.path
+            for key, binding in bindings.items():
+                verify_checkout(root_fd, root, binding, key == store_id)
+            groups = [(account.state,), (account.recovery,)]
+            groups.extend((binding.root, binding.git_dir, binding.git_common_dir)
+                          for binding in bindings.values())
+            verify_path_isolation(root_fd, root, groups)
+            binding = bindings[store_id]
+            prefix = ("stores", "v1", store_id)
+            resources = (
+                (("vault-cache", account.device_id), stat.S_ISDIR),
+                (("index", str(generations.checkout), "index.tsv"), stat.S_ISREG),
+                (("sync.lock",), stat.S_ISDIR),
+                (("connection", str(generations.connection), "status"), stat.S_ISREG),
+            )
+            for parts, expected_type in resources:
+                verify_resource(state_fd, prefix + parts, expected_type)
+    except StoreContextError:
+        raise
+    except (OSError, ValueError, RecursionError) as exc:
         raise StoreContextError("store metadata unavailable or malformed") from exc
     namespace = account.state.path / "stores" / "v1" / store_id
     connection = entry["connection"] or {}
