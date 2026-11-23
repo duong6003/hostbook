@@ -110,6 +110,9 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
+            route_module = source / "lib/store_read.py"
+            if route_module.is_file():
+                shutil.copy2(route_module, app / "lib/store_read.py")
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
             launcher.symlink_to(app / "hostbook")
@@ -458,6 +461,117 @@ class StoreContextTest(unittest.TestCase):
                 refresh(load, context.store_id, self.generations)
         self.assertEqual(context.index.read_bytes(), before[context.index.relative_to(self.root)][1])
         self.assertEqual(list(context.index.parent.iterdir()), [context.index])
+
+    def write_route(self, index, host_id, text, name="db"):
+        self.write_index_host(index, name, host_id)
+        context = self.resolve(index)
+        contents = text.encode()
+        (context.checkout / "team.conf").write_bytes(contents)
+        sidecar = context.checkout / ".hostbook/identity.json"
+        data = json.loads(sidecar.read_text())
+        data["sources"][0]["sha256"] = hashlib.sha256(contents).hexdigest()
+        sidecar.write_text(json.dumps(data))
+        return context
+
+    def route_callback(self, context, action, *args):
+        request = {"account": asdict(self.account), "store_id": context.store_id,
+                   "generations": asdict(context.generations)}
+        cwd = self.root / "shared b"
+        env = dict(os.environ, HOME=str(self.root / "fixture-home"), USER="fixture",
+                   HOSTBOOK_LIB_DIR=str(cwd), PYTHONPATH=str(cwd))
+        for key in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+            env.pop(key, None)
+        return subprocess.run([self.launcher, action, *args], cwd=cwd, env=env,
+                              input=json.dumps(request, default=os.fspath), text=True,
+                              capture_output=True, timeout=10)
+
+    def test_installed_callback_effective_routes_keep_private_a_and_b_separate(self):
+        self.launcher = self.installed_launcher()
+        host_id = new_id()
+        endpoints = ("192.0.2.10", "198.51.100.10", "203.0.113.10")
+        shared_a_stamp = None
+        for index, endpoint in enumerate(endpoints):
+            with self.subTest(index=index):
+                context = self.write_route(index, host_id, f"""Host db
+    HostName {endpoint}
+    User login-{index}
+    ProxyJump local-hop
+Host *
+    Port 2222
+""")
+                defaults = self.state / f"stores/v1/{context.store_id}/ssh/config"
+                defaults.parent.mkdir(parents=True, mode=0o700)
+                defaults.parent.parent.chmod(0o700)
+                defaults.write_text("""Host db
+    HostName 192.0.2.99
+    User wrong
+Host local-hop
+    HostName 203.0.113.1
+    User approved-hop
+""")
+                defaults.chmod(0o600)
+                listing = self.route_callback(context, "_store_hosts")
+                self.assertEqual(listing.returncode, 0, listing.stderr)
+                store_id, listed_id, name, stamp = listing.stdout.strip().split("\t")
+                self.assertEqual((store_id, listed_id, name), (context.store_id, host_id, "db"))
+                if index == 1:
+                    shared_a_stamp = stamp
+                result = self.route_callback(context, "_store_preview", listed_id, stamp)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                route = json.loads(result.stdout)
+                self.assertEqual((route["hostname"], route["user"], route["port"], route["proxyjump"]),
+                                 (endpoint, f"login-{index}", "2222", "local-hop"))
+                defaults.write_text(defaults.read_text().replace("approved-hop", "changed-hop"))
+                stale = self.route_callback(context, "_store_preview", listed_id, stamp)
+                self.assertEqual(stale.returncode, 65)
+                self.assertIn("selection changed", stale.stderr)
+                self.assertEqual(stale.stdout, "")
+                defaults.write_text(defaults.read_text().replace("changed-hop", "approved-hop"))
+
+        renamed = self.write_route(1, host_id, "Host renamed\n    HostName 198.51.100.10\n", "renamed")
+        stale = self.route_callback(renamed, "_store_preview", host_id, shared_a_stamp)
+        self.assertEqual(stale.returncode, 65)
+        listing = self.route_callback(renamed, "_store_hosts")
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertEqual(listing.stdout.split("\t")[:3], [renamed.store_id, host_id, "renamed"])
+
+    def test_installed_callback_rejects_duplicate_and_malformed_host_ids(self):
+        self.launcher = self.installed_launcher()
+        host_id = new_id()
+        context = self.write_route(1, host_id, "Host db\n")
+        listing = self.route_callback(context, "_store_hosts")
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        stamp = listing.stdout.strip().split("\t")[3]
+        sidecar = context.checkout / ".hostbook/identity.json"
+        original = json.loads(sidecar.read_text())
+        for invalid in (original["hosts"] * 2, [dict(original["hosts"][0], host_id="malformed")]):
+            with self.subTest(invalid=invalid):
+                sidecar.write_text(json.dumps(dict(original, hosts=invalid)))
+                failed = self.route_callback(context, "_store_hosts")
+                self.assertEqual(failed.returncode, 65)
+                self.assertIn("invalid or duplicate index host", failed.stderr)
+                unavailable = self.route_callback(context, "_store_preview", host_id, stamp)
+                self.assertEqual(unavailable.returncode, 65)
+                self.assertEqual(unavailable.stdout, "")
+        sidecar.write_text(json.dumps(original))
+        self.entries[1]["checkout"] = self.entries[1]["connection"] = self.entries[1]["effective_mode"] = None
+        self.entries[1]["checkout_generation"] += 1
+        self.entries[1]["connection_generation"] += 1
+        self.save_registry()
+        disconnected = self.route_callback(context, "_store_preview", host_id, stamp)
+        self.assertEqual(disconnected.returncode, 65)
+        self.assertIn("stale store generations", disconnected.stderr)
+
+    def test_installed_callback_never_derives_unsafe_ssh_inputs(self):
+        self.launcher = self.installed_launcher()
+        for directive in ("Match exec true", "Match host db#tag exec true", "Include somewhere.conf", "ProxyCommand false",
+                          "CanonicalizeHostname yes", "IdentityFile /somewhere/local.key"):
+            with self.subTest(directive=directive):
+                context = self.write_route(1, new_id(), f"Host db\n    {directive}\n")
+                result = self.route_callback(context, "_store_hosts")
+                self.assertEqual(result.returncode, 65, result.stderr)
+                self.assertIn("SSH directive", result.stderr)
+                self.assertEqual(result.stdout, "")
 
     def test_writer_lock_and_status_are_isolated_across_processes(self):
         home = self.root / "approved home"

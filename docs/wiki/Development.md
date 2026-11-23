@@ -79,9 +79,27 @@ Rows contain tab-separated store ID, host ID and alias from the v1 sidecar.
 Each explicit refresh checks the declared managed `.conf` source bytes and
 their simple `Host` alias bindings. It rechecks the current approval,
 binding, generations and sidecar before publishing via atomic replacement.
-Quoted or escaped `Host` lists require the scoped SSH resolver. A stale association leaves the previous
-index intact and the command reports failure. Effective SSH settings and
-integration with the search UI are later work.
+Quoted or escaped `Host` lists require explicit reconciliation. A stale association leaves the previous
+index intact and the command reports failure.
+
+`store-hosts STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` refreshes the
+selected store's effective route index. Rows contain the store ID, stable
+host ID, alias and a snapshot stamp. Pass the IDs, same expected generations
+and stamp to `store-preview STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`.
+Preview reads the derived route and rejects a changed selection without
+running SSH. Refresh if the identity, admitted source bytes, approved defaults
+or expected binding change.
+
+The route view reads inventoried sources in sidecar order, followed by the
+optional device-approved file `state/stores/v1/STORE_ID/ssh/config`. Prepare
+this file inside the verified account state with a private `ssh` directory
+and an owner-only config file. Use it for applicable local defaults and
+standalone jump aliases. Hostbook opens this file without following links.
+The scoped route view accepts data-only SSH settings, applies OpenSSH's
+first-value precedence and excludes ambient SSH configuration and other
+stores' files. It rejects external Includes, command directives and managed
+identity files. `_store_hosts` and `_store_preview` also support the isolated
+fixture pipe used by `_store_context`.
 
 `_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
 records local connection status as `unchecked`. It writes only the

@@ -480,7 +480,7 @@ def index_host_tokens(contents, path):
                 yield (path, ordinal, index), token.lower()
 
 
-def index_rows(checkout_fd, store_id):
+def index_rows(checkout_fd, store_id, source_bytes=None):
     identity = verify_sidecar(checkout_fd, store_id)
     paths, occurrences = set(), {}
     for source in identity["sources"]:
@@ -498,6 +498,8 @@ def index_rows(checkout_fd, store_id):
             contents = read_file(source_fd, parts[-1], JSON_LIMIT, require_unlinked_index_source)
         require(hashlib.sha256(contents).hexdigest() == digest, "index source bytes changed since identity review")
         occurrences.update(index_host_tokens(contents, source_path))
+        if source_bytes is not None:
+            source_bytes[source_path] = contents
 
     ids, names = set(), set()
     rows = []
@@ -846,6 +848,10 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
+        if action in ("_store_hosts", "_store_preview", "store-hosts", "store-preview"):
+            from store_read import route_command
+            route_command(action, args[1:])
+            return 0
         refresh = action in ("_refresh_store_index", "_refresh_store_status")
         if refresh or action == "_store_context":
             args = args[1:]
@@ -874,4 +880,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Isolated Python mode excludes the script directory from module lookup.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.modules["store_context"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))
