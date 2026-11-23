@@ -192,7 +192,7 @@ def classify(folder, account, ident, kind):
         return affected, terminal and not unsettled_terminal and selector["sequence"] == len(names)
 
 
-def require_idle(recovery_fd, account, store_id):
+def require_idle(recovery_fd, account, store_id, transition=None):
     for kind in ("transactions", "control"):
         try:
             container = os.open(kind, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery_fd)
@@ -208,7 +208,12 @@ def require_idle(recovery_fd, account, store_id):
                         scope, terminal = classify(folder, account, ident, kind)
                     except (TypeError, KeyError) as exc:
                         raise StoreContextError("invalid recovery record") from exc
-                    require(terminal or (scope is not None and store_id not in scope),
+                    own = False
+                    if (transition is not None and kind == "control" and ident == transition["record_id"]
+                            and scope == {store_id} and transition["operation"] == "registration-transition"):
+                        with open_directory(folder, ("records",)) as history:
+                            own = private_json(history, "1.json") == transition
+                    require(terminal or own or (scope is not None and store_id not in scope),
                             "store has unresolved recovery")
         finally:
             os.close(container)

@@ -141,6 +141,16 @@ Registered list, preview and connect neither read nor rewrite those references.
 A registered selection cannot be used as a legacy group target or undo action.
 Changes to registered mutation and group workflows have their own admission path.
 
+### Change a connected shared store's sync mode
+
+Use `store-mode STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY MODE` with
+`two-way` or `receive-only`. The command returns the effective mode and
+current generations. A durable transition fences the selected store, updates
+its effective mode, then releases the fence. Each registry effect advances
+that store's policy generation. An interrupted transition can resume with the
+same mode and the current generations. A quiescent rejected publication with
+a retained candidate is reported in `pending` before the mode changes.
+
 ### Edit one registered shared host address
 
 `store-edit-address STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`

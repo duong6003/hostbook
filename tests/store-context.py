@@ -115,7 +115,7 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py", "store_mode.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -618,6 +618,58 @@ class StoreContextTest(unittest.TestCase):
             f.git(f.store, "fsck", "--full", "--strict")
             known.update(objects)
             previous.update(fresh)
+
+    def test_mode_switch_changes_only_selected_registration_and_fences_stale_callbacks(self):
+        f = self.prepare_receive()
+        self.assertEqual(f.receive().returncode, 0)
+        store = self.entries[1]["store_id"]
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        def mode(direction, expected):
+            request = dict(account=asdict(self.account),store_id=store,generations=asdict(expected))
+            return subprocess.run([f.app, "_store_mode", direction], cwd=self.root, env=f.env,
+                                  input=json.dumps(request,default=os.fspath), text=True, capture_output=True)
+        up = mode("two-way", self.generations)
+        self.assertEqual(up.returncode, 0, up.stderr)
+        first = json.loads(up.stdout)
+        self.assertEqual(first["mode"], "two-way")
+        self.assertEqual(first["generations"]["policy"], self.generations.policy + 3)
+        self.assertNotEqual(mode("receive-only", self.generations).returncode, 0)
+        down = mode("receive-only", Generations(**first["generations"]))
+        self.assertEqual(down.returncode, 0, down.stderr)
+        now = json.loads(self.registry.read_bytes())
+        self.assertEqual(now["stores"][1]["effective_mode"], "receive-only")
+        self.assertIsNone(now["stores"][1]["transition_id"])
+        self.assertEqual(now["stores"][::2], self.entries[::2])
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(snapshot(f.remote), remote)
+
+    def test_mode_recovers_unpointed_fence_and_releases_terminal_pointer(self):
+        import store_mode
+        f = self.prepare_receive()
+        store = self.entries[1]["store_id"]
+        load = lambda:self.account
+        original = store_mode.replace_entry
+        for stop, wanted in ((1,"two-way"), (3,"receive-only")):
+            current = json.loads(self.registry.read_bytes())["stores"][1]
+            expected = store_context.entry_generations(current)
+            calls = []
+            def interrupted(*args):
+                calls.append(True)
+                if len(calls) == stop:
+                    raise RuntimeError("interrupted registry write")
+                original(*args)
+            with patch.object(store_mode, "replace_entry", side_effect=interrupted):
+                with self.assertRaisesRegex(RuntimeError,"interrupted"):
+                    store_mode.change_mode(load, store, expected, wanted)
+            paused = json.loads(self.registry.read_bytes())["stores"][1]
+            gens = store_context.entry_generations(paused)
+            self.assertEqual(paused["transition_id"] is None, stop == 1)
+            with self.assertRaises(StoreContextError):
+                import store_receive
+                store_receive.receive(load, store, gens)
+            result = store_mode.change_mode(load, store, gens, wanted)
+            self.assertEqual(result["mode"],wanted)
+            self.assertIsNone(json.loads(self.registry.read_bytes())["stores"][1]["transition_id"])
 
     def test_installed_callback_publishes_one_conditional_registered_host_edit(self):
         import store_read
