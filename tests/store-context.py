@@ -340,6 +340,32 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(f.receive().returncode, 65)
         self.assertEqual(snapshot(f.store), diverged)
 
+    def test_receive_finds_pending_from_an_older_connection(self):
+        f = self.prepare_receive()
+        older = f.target.parent.parent / "2"
+        older.mkdir(mode=0o700)
+        marker = older / "receive.pending"
+        marker.write_text("previous connection requires reconciliation")
+        before = snapshot(f.store)
+        result = f.receive()
+        self.assertEqual(result.returncode, 65)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(marker.read_text(), "previous connection requires reconciliation")
+
+    def test_receive_marker_is_complete_before_discovery(self):
+        import store_receive
+        f = self.prepare_receive()
+        marker = f.target.parent.parent.parent / "receive.pending"
+        def interrupt(fd):
+            if not marker.exists():
+                raise OSError("simulated flush failure")
+        with patch.object(store_receive, "sync_local", side_effect=interrupt):
+            with self.assertRaises((OSError, StoreContextError)):
+                store_receive.receive(lambda: self.account, self.entries[1]["store_id"], self.generations)
+        self.assertFalse(marker.exists())
+        self.assertFalse((f.target.parent / "receive.pending").exists())
+        self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), f.base)
+
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
         os.link(f.store / "secrets/vault.pub", self.root / "other-public-key")

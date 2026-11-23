@@ -163,7 +163,8 @@ Git directories, state and recovery. The sender reads from an open descriptor
 for that repository. An unknown binding fails before applying changes.
 
 A receive interrupted at local fast-forward retains `receive.pending` under
-the verified connection directory. It contains the two Git revisions and
+the verified store directory across connection-generation changes. Older
+connection-scoped records also fence the store. It contains the two Git revisions and
 their original store and target binding. Preserve it and compare the branch,
 index and worktree against both revisions before any repair. Pending state
 blocks subsequent receives. The original revision remains accessible in Git.

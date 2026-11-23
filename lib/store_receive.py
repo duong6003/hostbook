@@ -20,7 +20,7 @@ from store_context import (
     DIRECTORY_FLAGS, JSON_LIMIT, Generations, StoreContextError, bound_directory, fields,
     fixture_request, index_rows, load_approved_account, open_directory, parse_directory_binding,
     parse_json, path_parts, read_file, require, require_approval_file, require_private_directory,
-    resolved_store, store_writer, sync_local, verify_path_isolation,
+    resolved_store, staged_local_file, store_writer, sync_local, verify_path_isolation,
     verify_state_directory,
 )
 from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
@@ -95,6 +95,28 @@ def raise_walk_error(exc):
     raise exc
 
 
+def require_no_receive_pending(store_fd):
+    require("receive.pending" not in os.listdir(store_fd), "receive requires reconciliation")
+    # Early versions recorded local receives under their original connection generation.
+    with open_directory(store_fd, ("connection",)) as connections:
+        for name in os.listdir(connections):
+            require(name.isascii() and name.isdigit(), "invalid connection history")
+            with open_directory(connections, (name,)) as generation:
+                require("receive.pending" not in os.listdir(generation), "older receive requires reconciliation")
+
+
+def publish_receive_marker(store_fd, record):
+    name = "receive.pending"
+    with staged_local_file(store_fd, name, json.dumps(record).encode()) as staged:
+        fd = os.open(staged, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=store_fd)
+        try:
+            sync_local(fd)
+        finally:
+            os.close(fd)
+        os.link(staged, name, src_dir_fd=store_fd, dst_dir_fd=store_fd, follow_symlinks=False)
+        sync_local(store_fd)
+
+
 @contextmanager
 def receive_binding(account, store_id, expected):
     with resolved_store(account, store_id, expected) as (context, checkout, root_fd, state_fd):
@@ -127,7 +149,10 @@ def receive_binding(account, store_id, expected):
             verify_path_isolation(root_fd, account.root.path, groups)
             with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
                                  "registered transport changed") as target_fd:
-                yield context, target, target_fd, settings
+                with open_directory(state_fd, parts[:3]) as store_fd:
+                    require_private_directory(store_fd, "store state")
+                    require_no_receive_pending(store_fd)
+                    yield context, target, target_fd, store_fd
 
 
 @contextmanager
@@ -229,7 +254,7 @@ def receive(load_account, store_id, expected):
     with store_writer(load_account, store_id, expected) as (locked, start, state, _lock):
         require(locked == account, "store approval changed")
         with receive_binding(account, store_id, expected) as (context, target, _remote, settings):
-            require(start == context and "receive.pending" not in os.listdir(settings), "receive requires reconciliation")
+            require(start == context, "store binding changed")
             base = check_clean(context)
             local = local_inputs(state, store_id)
     with receive_binding(account, store_id, expected) as (start_again, observed, target_fd, _settings):
@@ -253,19 +278,15 @@ def receive(load_account, store_id, expected):
                             "store changed during receive")
                     verify_state_directory(state_fd, path_parts(account.state.path, context.writer_lock),
                                            lock_fd, "store writer directory changed")
-                    require("receive.pending" not in os.listdir(settings), "receive requires reconciliation")
                     if base != tip:
+                        publish_receive_marker(settings, {
+                            "store_id": store_id, "target_id": context.target_id, "ref": context.ref,
+                            "base": base, "incoming": tip, "connection_generation": expected.connection,
+                            "checkout_generation": expected.checkout,
+                        })
                         git(context.checkout, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
                             "--", str(stage), tip)
                         require(check_clean(context) == base, "checkout changed before local fast-forward")
-                        fd = os.open("receive.pending", os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_WRONLY,
-                                     0o600, dir_fd=settings)
-                        with os.fdopen(fd, "w") as marker:
-                            json.dump({"store_id": store_id, "target_id": context.target_id, "ref": context.ref,
-                                       "connection_generation": expected.connection, "base": base, "incoming": tip}, marker)
-                            marker.flush()
-                            sync_local(marker.fileno())
-                        sync_local(settings)
                         git(context.checkout, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", tip)
                         require(check_clean(context) == tip, "received checkout requires reconciliation")
                         os.unlink("receive.pending", dir_fd=settings)
