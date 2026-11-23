@@ -15,6 +15,23 @@ printf 'keep host data\n' > "$HOSTBOOK_DIR/sentinel"
 git clone -q "$HERE" "$T/source"
 git -C "$T/source" checkout -q -B ci-install
 export HOSTBOOK_REPO="$T/source"
+(
+  export HOME="$T/registered home" HOSTBOOK_DIR="$T/registered home/ssh-hosts"
+  export HOSTBOOK_HOME="$HOME/.local/share/hostbook" HOSTBOOK_STATE="$T/registered state"
+  export XDG_CONFIG_HOME="$T/registered config" HOSTBOOK_SSH_CONFIG="$HOME/.ssh/config"
+  mkdir -p "$HOSTBOOK_DIR/.hostbook" "$HOME/.ssh"
+  printf 'preserve fixture SSH config\n' > "$HOSTBOOK_SSH_CONFIG"
+  printf 'preserve fixture metadata\n' > "$HOSTBOOK_DIR/.hostbook/identity.json"
+  bash "$HERE/install.sh" </dev/null
+  [ -x "$HOME/.local/bin/hostbook" ] && [ "$HOME/.local/bin/hostbook" -ef "$HOSTBOOK_HOME/hostbook" ]
+  git -C "$T/source" commit --allow-empty -qm 'Registered install update fixture'
+  bash "$HERE/install.sh" </dev/null
+  [ "$(git -C "$HOSTBOOK_HOME" rev-parse HEAD)" = "$(git -C "$T/source" rev-parse HEAD)" ]
+  [ "$HOME/.local/bin/hostbook" -ef "$HOSTBOOK_HOME/hostbook" ]
+  [ "$(cat "$HOSTBOOK_SSH_CONFIG")" = 'preserve fixture SSH config' ]
+  [ "$(cat "$HOSTBOOK_DIR/.hostbook/identity.json")" = 'preserve fixture metadata' ]
+  [ ! -e "$HOSTBOOK_STATE" ] && [ ! -e "$XDG_CONFIG_HOME" ]
+)
 bash "$HERE/install.sh" </dev/null
 app="$HOME/.local/share/hostbook"
 export HOSTBOOK_TEST_INSTALLED="$HOME/.local/bin/hostbook"

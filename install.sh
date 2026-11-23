@@ -75,6 +75,17 @@ else say "age $(age --version) đã có"; fi
 if [ -d "$APP/.git" ]; then git -C "$APP" pull -q --ff-only && say "Đã cập nhật hostbook"
 else rm -rf "$APP"; mkdir -p "$(dirname "$APP")"; git clone -q --depth 1 "$REPO" "$APP" && say "Đã tải hostbook"; fi
 
+# Registered checkouts use scoped SSH routes; install only the launcher for them.
+store=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
+if [ -e "$store/.hostbook" ] || [ -L "$store/.hostbook" ]; then
+  [ -x "$APP/hostbook" ] || die "Không tìm thấy chương trình hostbook đã cài"
+  if [ ! "$BIN/hostbook" -ef "$APP/hostbook" ]; then
+    [ ! -e "$BIN/hostbook" ] && [ ! -L "$BIN/hostbook" ] || die "Đường dẫn đã tồn tại: $BIN/hostbook"
+    ln -s "$APP/hostbook" "$BIN/hostbook"
+  fi
+  say "Đã cài $BIN/hostbook"
+  exit 0
+fi
 "$APP/hostbook" setup < /dev/null
 printf '\nXong. Mở terminal mới rồi gõ \033[1mhostbook\033[0m (hoặc \033[1mhb\033[0m).\n'
 command -v tmux >/dev/null 2>&1 || printf 'tmux chưa có: chỉ cần khi mở nhiều server cùng lúc, app sẽ nhắc lúc đó.\n'
