@@ -243,6 +243,14 @@ class StoreContextTest(unittest.TestCase):
         (fake/"python3").write_text('#!/bin/sh\ntouch "$HOME/fake-python-ran"\nexit 0\n')
         (fake/"python3").chmod(0o700)
         hostile = dict(env,PATH=str(fake)+":"+env["PATH"])
+        # Production installs invoke the launcher through a symlink. Resolve it with the system tool.
+        (fake/"readlink").write_text('#!/bin/sh\ntouch "$HOME/ambient-readlink-ran"\nexit 1\n')
+        (fake/"readlink").chmod(0o700)
+        launcher_link = outside/"hostbook"
+        launcher_link.symlink_to(app)
+        untrusted = subprocess.run([launcher_link,"_write","team",block],env=hostile,capture_output=True,timeout=5)
+        self.assertEqual(untrusted.returncode,65)
+        self.assertFalse((outside/"ambient-readlink-ran").exists())
         refused = subprocess.run([app,"_write","team",block],env=hostile,capture_output=True)
         self.assertEqual(refused.returncode,65)
         self.assertFalse((outside/"fake-python-ran").exists())
