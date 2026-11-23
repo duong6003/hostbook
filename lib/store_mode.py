@@ -1,5 +1,6 @@
 """Change a registered shared store's effective mode through its durable fence."""
 from dataclasses import asdict
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,10 +9,10 @@ from uuid import uuid4
 
 from store_checkout import durable_file, make_parents, rename_guarded
 from store_context import (Generations, acquire_local_lock, entry_generations, fields, fixture_request, load_approved_account,
-                           open_directory, read_registry, registry_entries, require, require_private_directory,
+                           open_directory, read_registry, registry_entries, require, require_approval_file, require_private_directory,
                            staged_local_file, store_writer, sync_local, valid_id, validate_entry)
 from store_journal import classify, private_json, require_idle
-from store_publish import boot_id, json_bytes, recovery_root, reserve, select_record, sync_named
+from store_publish import attempt_binding, boot_id, read_attempt, json_bytes, recovery_root, reserve, select_record, sync_named
 from store_receive import receive_binding
 
 
@@ -35,7 +36,7 @@ def replace_entry(state, account, old, new):
 
 
 def mode_records(recovery, account, store_id, pointer):
-    active, pending = [], []
+    active, pending, retired = [], [], {}
     try:
         control_fd = os.open("control", os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery)
     except FileNotFoundError:
@@ -54,6 +55,9 @@ def mode_records(recovery, account, store_id, pointer):
                     first = private_json(history, "1.json")
                     tail = private_json(history, f"{len(os.listdir(history))}.json")
                 if first["operation"] == "registration-transition":
+                    if terminal and tail["detail"]["phase"] == "applied":
+                        for candidate in decision(recovery, ident)["candidates"]:
+                            retired[candidate["attempt_id"]] = candidate
                     if not terminal or pointer == ident:
                         active.append((first, tail))
                 elif terminal and tail["detail"]["outcome"] == "not-accepted":
@@ -62,10 +66,49 @@ def mode_records(recovery, account, store_id, pointer):
         os.close(control_fd)
     require(len(active) <= 1 and (pointer is None or active and active[0][0]["record_id"] == pointer),
             "mode transition needs reconciliation")
-    return active[0] if active else None, sorted(pending)
+    for ident, saved in retired.items():
+        require(ident in pending and candidate_record(recovery, account, store_id, ident) == saved,
+                "retired publication evidence disagrees")
+    return active[0] if active else None, sorted(set(pending) - retired.keys())
 
 
-def prepare_transition(recovery, account, entry, wanted):
+def decision(recovery, ident):
+    with open_directory(recovery, ("modes", ident)) as folder:
+        try:
+            record = private_json(folder, "decision.json")
+        except FileNotFoundError:
+            return {"action":"clean", "candidates":[]}
+    fields(record, "action candidates")
+    require(record["action"] in ("clean","discard-confirmed") and isinstance(record["candidates"],list)
+            and bool(record["candidates"]) == (record["action"] != "clean"), "invalid mode decision")
+    return record
+
+
+def candidate_record(recovery, account, store, attempt, verify_bundle=False):
+    original, tail = read_attempt(recovery, account, store, attempt)
+    require(tail["detail"]["outcome"] == "not-accepted", "candidate was not definitively rejected")
+    detail = original["detail"]
+    with open_directory(recovery, ("edits", attempt)) as edit:
+        evidence = attempt_binding(edit, account, original)
+        if verify_bundle:
+            fd = os.open("proposal.bundle", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=edit)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(fd)
+                require_approval_file(fd, info)
+                require(0 < info.st_size <= 64 * 1024 * 1024, "unsupported candidate bundle")
+                header = [stream.readline(4096) for _ in range(4)]
+                require(header[0] == b"# v2 git bundle\n" and header[1].split(b" ")[0] == b"-"+detail["base_oid"].encode()
+                        and header[2] == detail["proposed_oid"].encode()+b" refs/hostbook/proposal\n"
+                        and header[3] == b"\n", "candidate bundle does not match reservation")
+                pack = stream.read(info.st_size+1)
+                require(pack.startswith(b"PACK") and hashlib.sha1(pack[:-20]).digest() == pack[-20:],
+                        "candidate bundle integrity check failed")
+    return {"attempt_id":attempt, "binding_id":detail["connection_binding_id"], "base_oid":detail["base_oid"],
+            "proposed_oid":detail["proposed_oid"], "host_id":evidence["host_id"], "ref":evidence["ref"]}
+
+
+
+def prepare_transition(recovery, account, entry, wanted, action, candidates):
     ident = str(uuid4())
     old_id, new_id = str(uuid4()), str(uuid4())
     rec = {"format":"hostbook-control", "version":1, "record_id":ident, "device_id":account.device_id,
@@ -78,6 +121,7 @@ def prepare_transition(recovery, account, entry, wanted):
         os.mkdir(ident, 0o700, dir_fd=modes)
         sync_local(modes)
         with open_directory(modes, (ident,)) as evidence:
+            durable_file(evidence, "decision.json", json_bytes({"action":action, "candidates":candidates}))
             durable_file(evidence, old_id, json_bytes(entry))
             proposed = dict(entry, effective_mode=wanted, policy_generation=entry["policy_generation"]+3)
             durable_file(evidence, new_id, json_bytes(proposed))
@@ -133,8 +177,10 @@ def apply_transition(state, recovery, account, entry, active, requested):
     return proposed
 
 
-def change_mode(load_account, store_id, expected, wanted):
+def change_mode(load_account, store_id, expected, wanted, action="clean", confirmed=()):
     require(wanted in ("two-way", "receive-only", "cancel"), "unknown sync mode")
+    require(action in ("clean", "discard-confirmed") and all(valid_id(ident) for ident in confirmed),
+            "invalid mode decision")
     with store_writer(load_account, store_id, expected) as (account, context, state, _):
         entries, _ = registry_entries(state, account)
         entry = entries[store_id]
@@ -147,10 +193,14 @@ def change_mode(load_account, store_id, expected, wanted):
                     return {"store_id":store_id, "mode":entry["effective_mode"], "generations":asdict(expected)}
                 with receive_binding(account, store_id, expected):
                     if wanted != entry["effective_mode"]:
-                        if pending:
+                        candidates = [candidate_record(recovery, account, store_id, a, verify_bundle=True) for a in pending]
+                        if pending and action == "clean":
                             return {"store_id":store_id, "mode":entry["effective_mode"], "pending":pending,
+                                    "candidates":candidates, "choices":["discard-then-switch","cancel"],
                                     "generations":asdict(expected)}
-                        active = prepare_transition(recovery, account, entry, wanted)
+                        require(sorted(confirmed) == pending and (action != "clean") == bool(confirmed),
+                                "confirm the exact pending publication candidates")
+                        active = prepare_transition(recovery, account, entry, wanted, action, candidates)
             if active is not None:
                 entry = apply_transition(state, recovery, account, entry, active, wanted)
             return {"store_id":store_id, "mode":entry["effective_mode"], "generations":asdict(entry_generations(entry))}
@@ -158,16 +208,17 @@ def change_mode(load_account, store_id, expected, wanted):
 
 def mode_command(action, args):
     if action == "_store_mode":
-        require(len(args) == 1, "one requested sync mode is required")
+        require(len(args) >= 1, "one requested sync mode is required")
         account, store_id, expected = fixture_request()
         def load():
             return account
     else:
-        require(len(args) == 6, "store ID, four generations and requested mode are required")
+        require(len(args) >= 6, "store ID, four generations and requested mode are required")
         store_id, expected = args[0], Generations(*(int(x) for x in args[1:5]))
+        args = args[5:]
         home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
         def load():
             return load_approved_account(home)
-    result = change_mode(load, store_id, expected, args[-1])
+    result = change_mode(load, store_id, expected, args[0], args[1] if len(args) > 1 else "clean", args[2:])
     print(json.dumps(result))
     return 75 if "pending" in result else 0

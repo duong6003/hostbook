@@ -149,7 +149,11 @@ current generations. A durable transition fences the selected store, updates
 its effective mode, then releases the fence. Each registry effect advances
 that store's policy generation. An interrupted transition can resume with the
 same mode and the current generations. A quiescent rejected publication with
-a retained candidate is reported in `pending` before the mode changes.
+a retained candidate is reported in `pending` before the mode changes. Use
+`cancel` to keep the current mode and candidates, or append
+`discard-confirmed ATTEMPT_ID ...` to the requested mode. Discard requires
+every currently reviewed ID; the applied transition retires those exact edits
+and preserves unrelated files and the user's Git index.
 
 ### Edit one registered shared host address
 

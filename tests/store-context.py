@@ -643,6 +643,33 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(f.store), before)
         self.assertEqual(snapshot(f.remote), remote)
 
+    def test_mode_cancel_preserves_and_confirmed_discard_retires_exact_edit(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        load, store = lambda:self.account, self.entries[1]["store_id"]
+        with patch.object(store_publish, "send", return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        note = f.store / "notes"
+        note.write_text("independent staged note")
+        f.git(f.store,"add","notes")
+        note.write_text("independent unstaged note")
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        review = store_mode.change_mode(load,store,self.generations,"receive-only")
+        self.assertEqual(review["pending"],[candidate])
+        self.assertEqual(review["choices"],["discard-then-switch","cancel"])
+        cancel = store_mode.change_mode(load,store,self.generations,"cancel")
+        self.assertEqual(cancel["mode"],"two-way")
+        with self.assertRaises(StoreContextError):
+            store_mode.change_mode(load,store,self.generations,"receive-only","discard-confirmed",[new_id()])
+        done = store_mode.change_mode(load,store,self.generations,"receive-only","discard-confirmed",[candidate])
+        self.assertEqual(done["mode"],"receive-only")
+        enabled = store_mode.change_mode(load,store,Generations(**done["generations"]),"two-way")
+        again = store_mode.change_mode(load,store,Generations(**enabled["generations"]),"receive-only")
+        self.assertNotIn("pending", again)
+        self.assertEqual(snapshot(f.store),before)
+        self.assertEqual(snapshot(f.remote),remote)
+
     def test_mode_recovers_unpointed_fence_and_releases_terminal_pointer(self):
         import store_mode
         f = self.prepare_receive()
