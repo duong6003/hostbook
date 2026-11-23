@@ -31,6 +31,7 @@ LOCAL_OPTIONS = SSH_OPTIONS | {"globalknownhostsfile", "userknownhostsfile", "st
 DIRECTIVE = re.compile(r"([A-Za-z][A-Za-z0-9]*)(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)")
 SSH_NAME = re.compile(r"[A-Za-z0-9._-]+")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_.:\[\]-]|%h)+")
+SECRET_COMMENT = re.compile(rb"(?m)^[ \t]*#[ \t]*secret[ \t]*:")
 JUMP = re.compile(r"(?:ssh://)?(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+\])(?::[0-9]+)?")
 
 
@@ -112,6 +113,7 @@ def ssh_view(files, local):
             copy = root / f"input-{number}.conf"
             copy.write_bytes(contents)
             lines.append(f"Include {copy}")
+        lines.extend(("Host *", "ConnectTimeout 15"))
         config.write_text("\n".join(lines) + "\n")
         yield config
 
@@ -178,6 +180,25 @@ def selected_route(load_account, store_id, expected, host_id, stamp):
         return routes["hosts"][host_id], files, local
 
 
+def connect_route(load_account, store_id, expected, host_id, stamp):
+    import subprocess
+
+    selection = selected_route(load_account, store_id, expected, host_id, stamp)
+    route, files, local = selection
+    require(not any(SECRET_COMMENT.search(contents) for contents in files),
+            "store SSH credential binding requires an approved login")
+    alias = route["name"]
+    with ssh_view(files, local) as config:
+        require(effective(config, alias) == {key: value for key, value in route.items() if key != "name"},
+                "effective SSH selection changed; refresh the store hosts")
+        require(selected_route(load_account, store_id, expected, host_id, stamp) == selection,
+                "SSH selection changed; refresh the store hosts")
+        env = {key: value for key, value in os.environ.items() if not key.startswith("SSH_")}
+        env.update(SHELL="/bin/sh", LC_ALL="C", PATH="/usr/bin:/bin")
+        result = subprocess.run([SSH, "-F", str(config), "--", alias], env=env)
+    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+
+
 def route_command(action, args):
     listing = action.endswith("hosts")
     selector_count = 0 if listing else 2
@@ -197,5 +218,8 @@ def route_command(action, args):
         sys.stdout.write(refresh_routes(load, store_id, expected))
     else:
         host_id, stamp = args
+        if action.endswith("connect"):
+            return connect_route(load, store_id, expected, host_id, stamp)
         route, _, _ = selected_route(load, store_id, expected, host_id, stamp)
         print(json.dumps(dict(route, store_id=store_id, host_id=host_id)))
+    return 0

@@ -848,10 +848,9 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
-        if action in ("_store_hosts", "_store_preview", "store-hosts", "store-preview"):
+        if action in ("_store_hosts", "_store_preview", "_store_connect", "store-hosts", "store-preview", "store-connect"):
             from store_read import route_command
-            route_command(action, args[1:])
-            return 0
+            return route_command(action, args[1:])
         refresh = action in ("_refresh_store_index", "_refresh_store_status")
         if refresh or action == "_store_context":
             args = args[1:]

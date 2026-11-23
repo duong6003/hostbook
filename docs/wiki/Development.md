@@ -101,6 +101,19 @@ stores' files. It rejects external Includes, command directives and managed
 identity files. `_store_hosts` and `_store_preview` also support the isolated
 fixture pipe used by `_store_context`.
 
+`store-connect STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`
+opens the selected registered route. It rechecks the current listing
+snapshot and runs native OpenSSH with a private copy of the same configuration
+for the target and its ProxyJump children. The scoped connection disables
+ambient keys, the ambient agent and control-socket reuse. At this checkpoint
+it supports interactive authentication for routes without managed credentials.
+A store with a managed credential marker needs the registered vault consumer.
+
+Legacy history, groups and undo still use checkout-local aliases and paths.
+Registered list, preview and connect neither read nor rewrite those references.
+A registered selection cannot be used as a legacy group target or undo action.
+Changes to registered mutation and group workflows have their own admission path.
+
 `_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
 records local connection status as `unchecked`. It writes only the
 selected store and connection generation's local status file after

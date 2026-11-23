@@ -7,9 +7,11 @@ import os
 from pathlib import Path
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+from threading import Thread
 import unittest
 from unittest.mock import patch
 from dataclasses import asdict, replace
@@ -534,6 +536,63 @@ Host local-hop
         listing = self.route_callback(renamed, "_store_hosts")
         self.assertEqual(listing.returncode, 0, listing.stderr)
         self.assertEqual(listing.stdout.split("\t")[:3], [renamed.store_id, host_id, "renamed"])
+
+    def test_installed_callback_connects_through_the_selected_local_jump(self):
+        self.launcher = self.installed_launcher()
+        host_id = new_id()
+        context = self.write_route(1, host_id, """Host db
+    HostName 198.51.100.10
+    User destination
+    ProxyJump approved-hop
+""")
+        with socket.socket() as hop:
+            hop.bind(("127.0.0.1", 0))
+            hop.listen()
+            hop.settimeout(5)
+            local = self.state / f"stores/v1/{context.store_id}/ssh/config"
+            local.parent.mkdir(parents=True, mode=0o700)
+            local.parent.parent.chmod(0o700)
+            known_hosts = self.root / "known_hosts"
+            known_hosts.touch()
+            local.write_text(f"""Host approved-hop
+    HostName 127.0.0.1
+    User jump
+    Port {hop.getsockname()[1]}
+Host *
+    GlobalKnownHostsFile none
+    UserKnownHostsFile "{known_hosts}"
+    StrictHostKeyChecking yes
+    ConnectTimeout 2
+""")
+            local.chmod(0o600)
+            rows = self.route_callback(context, "_store_hosts")
+            self.assertEqual(rows.returncode, 0, rows.stderr)
+            stamp = rows.stdout.strip().split("\t")[3]
+            received = []
+
+            def server():
+                try:
+                    peer, _ = hop.accept()
+                    with peer:
+                        peer.settimeout(3)
+                        received.append(peer.recv(256))
+                except OSError:
+                    return
+
+            listener = Thread(target=server)
+            listener.start()
+            try:
+                result = self.route_callback(context, "_store_connect", host_id, stamp)
+            finally:
+                listener.join(timeout=6)
+            self.assertEqual(result.returncode, 255, result.stderr)
+            self.assertEqual(len(received), 1)
+            self.assertTrue(received[0].startswith(b"SSH-2.0-OpenSSH_"))
+
+            local.write_text(local.read_text().replace("User jump", "User stale"))
+            stale = self.route_callback(context, "_store_connect", host_id, stamp)
+            self.assertEqual(stale.returncode, 65)
+            self.assertIn("selection changed", stale.stderr)
 
     def test_installed_callback_rejects_duplicate_and_malformed_host_ids(self):
         self.launcher = self.installed_launcher()
