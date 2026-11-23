@@ -23,7 +23,7 @@ from store_context import (
     resolved_store, store_writer, sync_local, verify_path_isolation,
     verify_state_directory,
 )
-from store_read import MAX_ROUTE_BYTES, snapshot_config
+from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
 
 GIT = "/usr/bin/git"
 SAFE_ENV = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
@@ -174,7 +174,7 @@ def check_clean(context):
     return oid(repo, "HEAD^{commit}")
 
 
-def verify_incoming(stage, tip, base, store_id):
+def verify_incoming(stage, tip, base, store_id, local):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
     tree = git(stage, "ls-tree", "-rlz", "--full-tree", tip).split(b"\0")[:-1]
@@ -209,13 +209,16 @@ def verify_incoming(stage, tip, base, store_id):
         file = view / path
         file.parent.mkdir(parents=True, exist_ok=True)
         contents = git(stage, "cat-file", "blob", blob.decode())
-        if path != IDENTITY:
-            snapshot_config(contents)
         file.write_bytes(contents)
     require(changed <= {p.encode() for p in sources | {IDENTITY}}, "receive currently supports host-source changes only")
     with absolute_directory(view) as view_fd:
-        incoming, _ = index_rows(view_fd, store_id)
+        files = {}
+        incoming, _ = index_rows(view_fd, store_id, files, MAX_ROUTE_BYTES)
         require(sources == {source["path"] for source in incoming["sources"]}, "unbound incoming SSH source")
+    prepared, _ = managed_credentials(files, incoming["hosts"])
+    with ssh_view(prepared, local) as config:
+        for host in incoming["hosts"]:
+            effective(config, host["name"])
     previous = parse_json(git(stage, "show", base + ":" + IDENTITY))
     require(incoming == previous or incoming["generation"] > previous["generation"],
             "incoming identity generation did not advance")
@@ -228,6 +231,7 @@ def receive(load_account, store_id, expected):
         with receive_binding(account, store_id, expected) as (context, target, _remote, settings):
             require(start == context and "receive.pending" not in os.listdir(settings), "receive requires reconciliation")
             base = check_clean(context)
+            local = local_inputs(state, store_id)
     with receive_binding(account, store_id, expected) as (start_again, observed, target_fd, _settings):
         require((start_again, observed) == (context, target), "registered transport changed")
         plain_git(target_fd, target.path, bare=True)
@@ -240,8 +244,9 @@ def receive(load_account, store_id, expected):
             git(stage, "fetch", "--no-tags", "--no-recurse-submodules", "--upload-pack=" + uploader,
                 "--", "file:///unused", context.ref + ":refs/hostbook/incoming", pass_fds=(target_fd,))
             tip = oid(stage, "refs/hostbook/incoming^{commit}")
-            verify_incoming(stage, tip, base, store_id)
+            verify_incoming(stage, tip, base, store_id, local)
             with store_writer(load_account, store_id, expected) as (current, gated, state_fd, lock_fd):
+                require(local_inputs(state_fd, store_id) == local, "registered SSH inputs changed")
                 require(current == account and gated == context, "registered checkout changed")
                 with receive_binding(current, store_id, expected) as (latest, bound, _, settings):
                     require((latest, bound) == (context, target) and check_clean(latest) == base,

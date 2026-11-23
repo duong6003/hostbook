@@ -194,7 +194,7 @@ class StoreContextTest(unittest.TestCase):
     def prepare_receive(self):
         store = self.root / "shared a"
         remote, author = self.root / "team.git", self.root / "author"
-        env = dict(PATH="/usr/bin:/bin", HOME=str(self.root), HOSTBOOK_STATE=str(self.state),
+        env = dict(PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin", HOME=str(self.root), HOSTBOOK_STATE=str(self.state),
                    XDG_CONFIG_HOME=str(self.root / "config"), HOSTBOOK_SSH_CONFIG=str(self.root / "ssh.conf"),
                    GIT_CONFIG_NOSYSTEM="1",
                    GIT_CONFIG_GLOBAL=os.devnull, GIT_ALLOW_PROTOCOL="file", GIT_AUTHOR_NAME="fixture",
@@ -260,6 +260,30 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(f.git(f.store, "status", "--porcelain"), "")
         self.assertEqual(snapshot(f.remote), before_remote)
         self.assertEqual(snapshot(self.root / "shared b"), before_b)
+
+    def test_receive_uses_the_registered_reader_for_ssh_and_credentials(self):
+        f = self.prepare_receive()
+        path = f.author / "team.conf"
+        manifest = f.author / ".hostbook/identity.json"
+        def publish(text):
+            path.write_text(text)
+            metadata = json.loads(manifest.read_bytes())
+            metadata["generation"] += 1
+            metadata["sources"][0]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            manifest.write_text(json.dumps(metadata))
+            f.git(f.author, "commit", "-qam", "Change fixture settings")
+            f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+        for invalid in ("# secret: bad name\nHost db\n", "Host db\n  Port fixture-invalid\n"):
+            publish(invalid)
+            before = snapshot(f.store)
+            result = f.receive()
+            self.assertEqual(result.returncode, 65, result.stderr)
+            self.assertEqual(snapshot(f.store), before)
+        valid = "# secret: login\nHost db\n  HostName 192.0.2.2\n  IdentityFile ~/ssh-hosts/secrets/login.pub\n"
+        publish(valid)
+        result = f.receive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((f.store / "team.conf").read_text(), valid)
 
     def test_receive_blocks_dirty_checkout_and_unverified_binding(self):
         f = self.prepare_receive()
