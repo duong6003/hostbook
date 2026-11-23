@@ -23,7 +23,7 @@ from store_context import (JSON_LIMIT, Generations, StoreContextError, bound_dir
                            require_approval_file, require_private_directory, staged_local_file, store_writer,
                            sync_local, valid_id, valid_ref, verified_account, verify_path_isolation)
 from store_journal import classify, private_json
-from store_read import DIRECTIVE, INDEX_NAME, local_inputs, selected_route
+from store_read import DIRECTIVE, INDEX_NAME, local_inputs, managed_credentials, selected_route
 from store_receive import (GIT, SAFE_ENV, IDENTITY, absolute_directory, fetch_from_fd, git, git_result, oid, plain_git,
                            receive, receive_binding, verify_incoming)
 
@@ -62,9 +62,10 @@ def stanza(identity, contents, store_id, host_id):
     host = matches[0]
     binding = host["bindings"][0]
     selected, result = host["name"].lower(), None
+    source_files = {}
     for source in identity["sources"]:
         path = source["path"]
-        text = contents(path)
+        text = source_files[path] = contents(path)
         require(hashlib.sha256(text).hexdigest() == source["sha256"], "host source revision mismatch")
         lines = text.splitlines(keepends=True)
         alias, ordinal, start, address, last = "", 0, None, None, None
@@ -93,7 +94,8 @@ def stanza(identity, contents, store_id, host_id):
             elif line and not line.startswith("#"):
                 raise StoreContextError("unsupported existing host stanza")
     require(result is not None, "selected host is unavailable")
-    return result
+    _, credentials = managed_credentials(source_files, identity["hosts"])
+    return (*result[:4], (*result[4], credentials.get(selected)))
 
 
 def prepare_proposal(stage, base, tip, store_id, host_id, address, attempt, signature):

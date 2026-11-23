@@ -716,6 +716,25 @@ class StoreContextTest(unittest.TestCase):
         self.assertFalse((self.recovery / "control").exists())
         self.assertFalse((self.recovery / "edits").exists())
 
+    def test_edit_refuses_changed_bound_credential_across_blank_comment_lines(self):
+        import store_publish
+        import store_read
+        f, _, publish = self.prepare_edit()
+        store = self.entries[1]["store_id"]
+        load = lambda: self.account
+        def bound(name):
+            return "# secret: " + name + "\n\n# local note\nHost db\n  HostName 192.0.2.2\n"
+        publish(bound("old-login"))
+        self.assertEqual(f.receive().returncode, 0)
+        row = store_read.refresh_routes(load, store, self.generations).strip().split("\t")
+        publish(bound("new-login"))
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        with self.assertRaisesRegex(StoreContextError, "host revision changed"):
+            store_publish.publish_address(load, store, self.generations, row[1], row[3], "192.0.2.88")
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(snapshot(f.remote), remote)
+        self.assertFalse((self.recovery / "control").exists())
+
     def test_edit_rejected_at_send_retains_exact_candidate_without_local_adoption(self):
         import store_publish
         f, edit, publish = self.prepare_edit()
