@@ -614,6 +614,39 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), f.base)
         self.assertTrue((f.target.parent.parent.parent / "receive.pending").is_file())
 
+    def test_receive_keeps_latest_of_two_editor_saves_and_reports_recovery(self):
+        import store_checkout
+        import store_receive
+        f = self.prepare_receive()
+        source = f.store / "team.conf"
+        earlier, latest = b"# first editor save\n", b"# second editor save\n"
+        install, check = store_checkout.install_sources, store_checkout.check_contents
+        count = 0
+        def editor(parent, name, *args):
+            nonlocal count
+            def save(data):
+                temp = f.store/"editor-save"
+                temp.write_bytes(data)
+                temp.replace(source)
+            if name.isdigit() and count == 1:
+                save(latest)
+                count = 2
+            result = check(parent,name,*args)
+            if name == "team.conf" and count == 0:
+                save(earlier)
+                count = 1
+            return result
+        def interleaved(*args):
+            with patch.object(store_checkout,"check_contents",side_effect=editor):
+                return install(*args)
+        with patch.object(store_checkout,"install_sources",side_effect=interleaved):
+            with self.assertRaisesRegex(StoreContextError,"multiple editor saves"):
+                store_receive.receive(lambda:self.account,self.entries[1]["store_id"],self.generations)
+        self.assertEqual(source.read_bytes(),latest)
+        saved = self.recovery/"receives"
+        self.assertIn(earlier,[p.read_bytes() for p in saved.glob("*/*") if p.name.isdigit()])
+        self.assertEqual(f.git(f.store,"rev-parse","HEAD"),f.base)
+
     def test_receive_preserves_filemode_change(self):
         f = self.prepare_receive()
         f.git(f.store, "config", "core.filemode", "true")

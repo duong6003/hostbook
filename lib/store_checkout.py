@@ -253,7 +253,7 @@ def prepare_receive_files(recovery_fd, checkout_fd, stage, changes, before, reco
             yield capture, paths
 
 
-def install_sources(checkout_fd, capture, paths, before, filemode):
+def install_sources(checkout_fd, capture, paths, before, after, filemode):
     for i, path in enumerate(paths):
         parts = path.split("/")
         with make_parents(checkout_fd, parts[:-1]) as parent:
@@ -273,10 +273,19 @@ def install_sources(checkout_fd, capture, paths, before, filemode):
                 try:
                     check_contents(capture, slot, before[path], filemode)
                 except (StoreContextError, OSError):
-                    # Restore the actual displaced editor save; the private slot retains the other inode.
+                    # Another editor may already have replaced the incoming file. Leave its latest
+                    # save live and the earlier save in the captured slot wherever possible.
+                    try:
+                        check_contents(parent, name, after[path], filemode)
+                    except (StoreContextError, OSError):
+                        raise StoreContextError("multiple editor saves require receive recovery") from None
                     rename_guarded(capture, slot, parent, name, exchange=True)
                     sync_local(capture)
                     sync_local(parent)
+                    try:
+                        check_contents(capture, slot, after[path], filemode)
+                    except (StoreContextError, OSError):
+                        raise StoreContextError("multiple editor saves require receive recovery") from None
                     raise
             else:
                 rename_guarded(capture, slot, parent, name, exchange=False)
@@ -325,7 +334,7 @@ def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage,
                 check_worktree(checkout_fd, before, filemode)
                 install_git_pack(git_fd, stage)
                 verify_binding()
-                install_sources(checkout_fd, capture, paths, before, filemode)
+                install_sources(checkout_fd, capture, paths, before, after, filemode)
                 verify_binding()
                 set_index()
                 append_reflog(git_fd, ref, base, tip, log_updates)
