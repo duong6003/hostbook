@@ -31,6 +31,10 @@ def unlinked(_fd, info):
 def read_ref(git_fd, full_ref):
     require(read_file(git_fd, "HEAD", 4096, unlinked) == b"ref: " + full_ref.encode() + b"\n",
             "registered branch is not checked out")
+    return direct_ref(git_fd, full_ref)
+
+
+def direct_ref(git_fd, full_ref):
     parts = full_ref.split("/")
     try:
         with open_directory(git_fd, parts[:-1]) as parent:

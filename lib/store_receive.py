@@ -23,7 +23,7 @@ from store_context import (
     resolved_store, staged_local_file, store_writer, sync_local, verify_path_isolation,
     verify_state_directory,
 )
-from store_checkout import OID, check_index, check_worktree, fast_forward, prepare_receive_files, read_index, read_ref, tree
+from store_checkout import OID, direct_ref, check_index, check_worktree, fast_forward, prepare_receive_files, read_index, read_ref, tree
 from store_journal import require_idle
 from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
 
@@ -324,6 +324,28 @@ def receive_command(action, args):
 
 if __name__ == "__main__":
     # Git appends its URL path. The approved repository is the inherited descriptor.
+    if len(sys.argv) == 6 and sys.argv[1] == "verify-transaction":
+        ref, old, new, phase = sys.argv[2:]
+        if phase != "prepared":
+            sys.exit(0)
+        # receive-pack runs the prepared hook with the transaction's native ref locks held.
+        try:
+            rows = sys.stdin.buffer.read(16385).splitlines()
+            expected = f"{old} {new} {ref}".encode()
+            head = f"{old} {new} HEAD".encode()
+            require(rows.count(expected) == 1 and all(row in (expected, head) for row in rows),
+                    "unexpected native ref update")
+            fd = os.open(".", DIRECTORY_FLAGS)
+            try:
+                require(direct_ref(fd, ref) == old, "registered remote ref is not direct")
+                if head in rows:
+                    require(read_file(fd, "HEAD", 4096) == b"ref: " + ref.encode() + b"\n",
+                            "unexpected native HEAD update")
+            finally:
+                os.close(fd)
+        except (OSError, StoreContextError):
+            sys.exit(1)
+        sys.exit(0)
     if len(sys.argv) == 4 and sys.argv[1] == "upload" and sys.argv[3] == "/unused":
         os.fchdir(int(sys.argv[2]))
         os.execve(GIT, [GIT, "upload-pack", "--strict", "."], SAFE_ENV)

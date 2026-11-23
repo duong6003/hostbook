@@ -158,8 +158,10 @@ A rejected or uncertain operation reports its attempt ID and leaves the
 checkout and its index intact. Accepted publication attempts a clean receive;
 `local: reconciliation-required` preserves an independently dirty checkout.
 The current local receiver supports ordinary POSIX-accessible repositories
-without executable server hooks. Its policy never disables a configured
-remote hook to enable publication. A user can retry pre-admission errors
+without executable server hooks. Git checks the exact direct branch under its
+native ref transaction lock. This requires Git 2.29 or later on systems that
+support directory traversal through inherited `/dev/fd` handles. On macOS,
+Git must advertise configured hook commands (`git help --config`). A user can retry pre-admission errors
 with their original editor input. Use the original attempt for reconciliation
 once a publication has been admitted.
 

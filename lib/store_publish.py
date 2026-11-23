@@ -17,7 +17,7 @@ import sys
 import tempfile
 from uuid import uuid4
 
-from store_checkout import durable_file, make_parents, read_ref, rename_guarded, tree
+from store_checkout import direct_ref, durable_file, make_parents, read_ref, rename_guarded, tree
 from store_context import (JSON_LIMIT, Generations, StoreContextError, bound_directory, fields, fixture_request,
                            index_rows, load_approved_account, open_directory, parse_directory_binding, parse_json, path_parts, positive, read_file, require,
                            require_approval_file, require_private_directory, staged_local_file, store_writer,
@@ -199,14 +199,41 @@ def sync_named(parent, name):
         os.close(fd)
 
 
-def send(stage, target_fd, lease_fd, ref, tip, proposed):
+def send(stage, target_fd, lease_fd, ref, tip, proposed, edit, start):
     require_plain_receiver(target_fd)
+    if direct_ref(target_fd, ref) != tip:
+        return "not-accepted"
+    version = re.match(rb"git version ([0-9]+)\.([0-9]+)", git("/", "--version"))
+    require(version and tuple(map(int, version.groups())) >= (2, 29), "Git transaction hook required")
+    command = shlex.join([sys.executable, "-I", "-B", "-S", str(Path(__file__).with_name("store_receive.py")),
+                          "verify-transaction", ref, tip, proposed])
+    with make_parents(edit, ("hooks",)) as hooks:
+        durable_file(hooks, "reference-transaction", ("#!/bin/sh\nexec " + command + ' "$1"\n').encode())
+        os.chmod("reference-transaction", 0o700, dir_fd=hooks)
+        sync_named(hooks, "reference-transaction")
+        sync_local(hooks)
+        hook_path = f"/dev/fd/{hooks}"
+        if os.access(hook_path + "/reference-transaction", os.X_OK):
+            config = ["-c", "core.hooksPath=" + hook_path]
+        else:
+            # Darwin does not traverse directory children through /dev/fd. An explicit command
+            # (unlike lookup-by-filename) aborts the prepared transaction when exec fails.
+            options = git(stage, "help", "--config").splitlines()
+            require(b"hook.<friendly-name>.command" in options and b"hook.<friendly-name>.event" in options,
+                    "Git cannot enforce an exact direct-ref transaction on this platform")
+            config = ["-c", "hook.hostbook-guard.event=reference-transaction",
+                      "-c", "hook.hostbook-guard.command=" + command]
+        return send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, config, start)
+
+
+def send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, config, start):
     client, remote = socket.socketpair()
     with client, remote:
         # Only the admitted parent opens receive-pack. Its cwd is the verified directory inode.
-        server = subprocess.Popen([GIT, "receive-pack", "."], env=SAFE_ENV,
+        start()
+        server = subprocess.Popen([GIT, *config, "receive-pack", "."], env=SAFE_ENV,
                                   stdin=remote, stdout=remote, stderr=subprocess.DEVNULL,
-                                  preexec_fn=lambda: os.fchdir(target_fd), pass_fds=(target_fd, lease_fd))
+                                  preexec_fn=lambda: os.fchdir(target_fd), pass_fds=(target_fd, lease_fd, hooks))
         remote.close()
         relay = shlex.join([sys.executable, "-I", "-B", "-S", str(Path(__file__).with_name("store_receive.py")),
                             "relay", str(client.fileno())])
@@ -265,7 +292,9 @@ def publish_address(load_account, store_id, expected, host_id, stamp, text):
         with receive_binding(account, store_id, expected) as (current, remote, target_fd, _, checkout):
             require((current, remote, checkout) == (ctx, target, binding), "registered binding changed")
             require_plain_receiver(target_fd)
+            advertised = direct_ref(target_fd, ctx.ref)
             tip = fetch_from_fd(stage, target_fd, ctx.ref, "refs/hostbook/incoming")
+            require(tip == advertised == direct_ref(target_fd, ctx.ref), "registered branch changed during fetch")
             verify_incoming(stage, tip, base, store_id, local)
             proposed = prepare_proposal(stage, base, tip, store_id, host_id, address, attempt, signature)
             shutil.rmtree(stage / "validated")
@@ -325,12 +354,16 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
                 sync_local(edit)
                 reserve(edit, recovery, record)
         # The admitted client and receive-pack both inherit this lease through transport completion.
-        try:
+        started = False
+        def start():
+            nonlocal started
             durable_file(edit, "send-started", attempt.encode())
             sync_local(edit)
-            outcome = send(stage, target_fd, fd, ctx.ref, tip, proposed)
+            started = True
+        try:
+            outcome = send(stage, target_fd, fd, ctx.ref, tip, proposed, edit, start)
         except (OSError, StoreContextError, subprocess.TimeoutExpired):
-            outcome = "uncertain"
+            outcome = "uncertain" if started else "not-accepted"
         finally:
             lease.close()
         try:
@@ -413,7 +446,9 @@ def observe_attempt(account, edit, original, evidence):
             with tempfile.TemporaryDirectory(prefix="settle-", dir=account.state.path) as folder:
                 stage = Path(folder)
                 git(stage, "init", "-q", "--bare", "--template=")
+                observed = direct_ref(directory, evidence["ref"])
                 tip = fetch_from_fd(stage, directory, evidence["ref"], "refs/hostbook/observed")
+                require(tip == observed == direct_ref(directory, evidence["ref"]), "original branch changed during fetch")
                 proposal = original["detail"]["proposed_oid"]
                 if git_result(stage, "merge-base", "--is-ancestor", proposal, tip)[0] == 0:
                     return "accepted"

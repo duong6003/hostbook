@@ -752,6 +752,51 @@ class StoreContextTest(unittest.TestCase):
         self.assertTrue(bundle.is_file())
         self.assertEqual(bundle.stat().st_mode & 0o777, 0o600)
 
+    def test_edit_rejects_symbolic_remote_ref_even_at_native_push(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        ref, other = "refs/heads/main", "refs/heads/other"
+        f.git(f.remote, "update-ref", other, f.tip)
+        send_git = store_publish.git_result
+        def retarget(*args, **kwargs):
+            if "push" in args:
+                f.git(f.remote, "symbolic-ref", ref, other)
+            return send_git(*args, **kwargs)
+        before = snapshot(f.store)
+        with patch.object(store_publish, "git_result", side_effect=retarget):
+            result = edit()
+        self.assertNotEqual(result["outcome"], "accepted")
+        self.assertEqual(f.git(f.remote, "rev-parse", other), f.tip)
+        self.assertEqual(f.git(f.remote, "symbolic-ref", ref), other)
+        self.assertEqual(snapshot(f.store), before)
+
+    def test_edit_declines_existing_symbolic_ref_before_reservation(self):
+        f, edit, _ = self.prepare_edit()
+        ref, other = "refs/heads/main", "refs/heads/other"
+        f.git(f.remote, "update-ref", other, f.tip)
+        f.git(f.remote, "symbolic-ref", ref, other)
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        with self.assertRaisesRegex(StoreContextError, "branch revision"):
+            edit()
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(snapshot(f.remote), remote)
+        self.assertFalse((self.recovery / "control").exists())
+
+    def test_before_send_repository_lock_records_definitive_no_send(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        reserve = store_publish.reserve
+        def concurrent_lock(*args):
+            reserve(*args)
+            (f.remote / "packed-refs.lock").touch()
+        with patch.object(store_publish, "reserve", side_effect=concurrent_lock):
+            result = edit()
+        self.assertEqual(result["outcome"], "not-accepted")
+        receipt = self.recovery / "edits" / result["attempt_id"]
+        self.assertFalse((receipt / "send-started").exists())
+        self.assertTrue((receipt / "proposal.bundle").is_file())
+        self.assertEqual(f.git(f.remote, "rev-parse", "refs/heads/main"), f.tip)
+
     def test_settle_lost_acknowledgement_against_original_ref_after_restart(self):
         import store_publish
         f, edit, _ = self.prepare_edit()
@@ -780,6 +825,13 @@ class StoreContextTest(unittest.TestCase):
         with (receipt / "lease").open("rb") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             self.assertNotEqual(settle().returncode, 0)
+        # An alias to an unrelated branch containing the proposal does not prove acceptance.
+        original_ref = "refs/heads/main"
+        tip = f.git(f.remote, "rev-parse", original_ref)
+        f.git(f.remote, "update-ref", "refs/heads/unrelated", tip)
+        f.git(f.remote, "symbolic-ref", original_ref, "refs/heads/unrelated")
+        self.assertEqual(json.loads(settle().stdout)["outcome"], "uncertain")
+        f.git(f.remote, "update-ref", "--no-deref", original_ref, tip)
         resolved = settle()
         self.assertEqual(resolved.returncode, 0, resolved.stderr)
         self.assertEqual(json.loads(resolved.stdout)["outcome"], "accepted")
@@ -791,7 +843,10 @@ class StoreContextTest(unittest.TestCase):
         import store_publish
         f, edit, _ = self.prepare_edit()
         before = snapshot(f.store)
-        with patch.object(store_publish, "send", return_value="uncertain"):
+        def no_ack(*args):
+            args[-1]()
+            return "uncertain"
+        with patch.object(store_publish, "send", side_effect=no_ack):
             result = edit()
         args = (lambda: self.account, self.entries[1]["store_id"], self.generations, result["attempt_id"])
         self.assertEqual(store_publish.settle(*args)["outcome"], "uncertain")
