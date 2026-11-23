@@ -217,11 +217,20 @@ Any other observed tip after a send remains uncertain. Settlement never resends 
 `store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` receives an
 existing full branch from a prepared local bare Git repository. A clean,
 regular attached checkout can fast-forward its validated host sources and v1
-identity in receive-only or two-way mode. The command accepts the operating
-system account's existing filesystem access. It does not ask for a store
-password or publish. It refuses dirty or divergent checkouts, pending
-recovery, unsupported Git configuration, and changes to vault or other tracked
-files. Network transports and vault updates require separate admission.
+identity in receive-only or two-way mode. The command uses the operating
+system account's existing filesystem access. Dirty or divergent checkouts,
+pending recovery, and unsupported Git configuration block the receive.
+
+An existing complete vault can also receive new or updated encrypted password
+records while locked. Both the accepted and incoming snapshots must carry the
+same vault public recipient, password envelope and recovery envelope. Each
+changed record needs a supported password metadata file and one complete
+armored X25519 age archive. The installed age tools inspect the recipient
+syntax, envelope types and archive structure. Unlocking and decrypting with
+the intended identity is the check for ciphertext authenticity and
+decryptability. The previous bytes remain available in Git and local recovery.
+Key updates, deletions, vault creation and envelope replacements require
+separate handling. Network transports require a registered network provider.
 A verified terminal publication/control or cancellation before any transaction
 effect can release its fence. Transfer or migration completion/compensation
 after effects requires protected recovery evidence. Receive preserves those
@@ -256,8 +265,8 @@ Original inodes are retained there even after success so an editor with an
 open file can finish its save. If an editor replaces a file during receive,
 Hostbook restores the displaced edit and keeps evidence for reconciliation.
 These local captures stay outside Git and require explicit retention review.
-This command currently handles host sources whose resulting paths and sidecar
-can all be validated. It requires a conventional non-shallow Git directory.
+Host sources and their resulting paths must match the validated sidecar.
+Receive requires a conventional non-shallow Git directory.
 
 `_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
 records local connection status as `unchecked`. It writes only the

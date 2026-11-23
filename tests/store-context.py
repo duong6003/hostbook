@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Resolve verified, disposable store registrations without opening live state."""
 import fcntl
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -386,6 +387,69 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(result.returncode,65,result.stderr)
         self.assertEqual(snapshot(f.store),before)
         self.assertFalse((f.target.parent.parent.parent/"receive.pending").exists())
+
+    def test_locked_receive_adopts_encrypted_password_records_with_existing_vault(self):
+        names = ("age","age-keygen","age-plugin-batchpass","age-inspect")
+        if not all(shutil.which(name) for name in names):
+            self.skipTest("requires age tools including age-inspect")
+        tools = Path(shutil.which("age")).parent
+        env = {"PATH":str(tools),"HOME":str(self.root),"XDG_CONFIG_HOME":str(self.root/"config")}
+        def age(name, args=(), data=b"", passphrase=None):
+            with ExitStack() as opened:
+                extra, inherited = {}, ()
+                if passphrase:
+                    reader, writer = os.pipe()
+                    opened.callback(os.close,reader)
+                    with os.fdopen(writer,"wb") as stream:
+                        stream.write(passphrase+b"\n")
+                    extra, inherited = {"AGE_PASSPHRASE_FD":str(reader)}, (reader,)
+                return subprocess.run([str(tools/name),*args],input=data,env=dict(env,**extra),pass_fds=inherited,
+                                      capture_output=True,check=True,timeout=30).stdout
+        identity = age("age-keygen")
+        recipient = age("age-keygen",["-y"],identity)
+        vault = self.root/"shared a/secrets"
+        (vault/"vault.pub").write_bytes(recipient)
+        for target, password in (("vault.key.age",b"fixture unlock"),("vault.recovery.age",b"fixture recovery")):
+            (vault/target).write_bytes(age("age",["-a","-e","-j","batchpass"],identity,password))
+        def encrypt(data):
+            return age("age",["-a","-r",recipient.strip().decode()],data)
+        old = encrypt(b"synthetic initial password")
+        (vault/"login.meta").write_bytes(b"type=password\n")
+        (vault/"login.age").write_bytes(old)
+        f = self.prepare_receive()
+        remote_vault = f.author/"secrets"
+        original = snapshot(f.store)
+        def publish():
+            f.git(f.author,"add","secrets")
+            f.git(f.author,"commit","-qm","Update fixture encrypted records")
+            f.git(f.author,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        changed = encrypt(b"synthetic received password")
+        for bad in (b"unsealed fixture",changed[:40]):
+            (remote_vault/"login.age").write_bytes(bad)
+            publish()
+            self.assertEqual(f.receive().returncode,65)
+            self.assertEqual(snapshot(f.store),original)
+        (remote_vault/"login.age").write_bytes(changed)
+        (remote_vault/"extra.age").write_bytes(encrypt(b"synthetic new record"))
+        publish()
+        self.assertEqual(f.receive().returncode,65)
+        self.assertEqual(snapshot(f.store),original)
+        (remote_vault/"extra.meta").write_bytes(b"type=password\ncreated=2026-01-02\n")
+        publish()
+        remote_before, other_before = snapshot(f.remote),snapshot(self.root/"shared b")
+        result = f.receive()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((vault/"login.age").read_bytes(),changed)
+        self.assertEqual((vault/"extra.age").read_bytes(),(remote_vault/"extra.age").read_bytes())
+        self.assertEqual((vault/"vault.pub").read_bytes(),recipient)
+        self.assertEqual(snapshot(f.remote),remote_before)
+        self.assertEqual(snapshot(self.root/"shared b"),other_before)
+        self.assertIn(old,[p.read_bytes() for p in (self.recovery/"receives").glob("*/*") if p.name.isdigit()])
+        prior = snapshot(f.store)
+        (remote_vault/"vault.key.age").write_bytes(b"unverified replacement")
+        publish()
+        self.assertEqual(f.receive().returncode,65)
+        self.assertEqual(snapshot(f.store),prior)
 
     def test_receive_uses_the_registered_reader_for_ssh_and_credentials(self):
         f = self.prepare_receive()

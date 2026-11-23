@@ -181,7 +181,7 @@ def absolute_directory(path):
         os.close(root)
 
 
-def verify_incoming(stage, tip, base, store_id, local, requested=None):
+def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
     incoming_files = tree(stage, tip, git)
@@ -207,7 +207,18 @@ def verify_incoming(stage, tip, base, store_id, local, requested=None):
         file = view / path
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_bytes(contents)
-    require(changed <= {p.encode() for p in sources | {IDENTITY}}, "receive currently supports host-source changes only")
+    vault_changes = {name.decode() for name in changed if name.startswith(b"secrets/")}
+    if vault_changes:
+        from store_vault import receive_password_records
+        require(vault_account is not None, "encrypted changes require a registered receive")
+        def contents(blob):
+            return git(stage, "cat-file", "blob", blob.decode())
+        receive_password_records(vault_account, vault_changes, tree(stage,base,git), incoming_files, contents)
+        for path in vault_changes:
+            file = view/path
+            file.parent.mkdir(exist_ok=True)
+            file.write_bytes(contents(incoming_files[path]))
+    require(changed <= {p.encode() for p in sources | vault_changes | {IDENTITY}}, "unsupported incoming file change")
     with absolute_directory(view) as view_fd:
         files = {}
         incoming, _ = index_rows(view_fd, store_id, files, MAX_ROUTE_BYTES)
@@ -303,7 +314,7 @@ def receive(load_account, store_id, expected):
                 accepted = fetch_from_fd(stage, local_git, context.ref, "refs/hostbook/accepted")
                 require(accepted == base, "local branch changed during receive")
             tip = fetch_direct(stage, target_fd, context.ref, "refs/hostbook/incoming")
-            after, changed = verify_incoming(stage, tip, base, store_id, local)
+            after, changed = verify_incoming(stage, tip, base, store_id, local, vault_account=account)
             before = tree(stage, base, git)
             prepare_adoption(stage, original_index, before, base, tip)
             with store_writer(load_account, store_id, expected) as (current, gated, state_fd, lock_fd):
