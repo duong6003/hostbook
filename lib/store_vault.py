@@ -48,9 +48,9 @@ def read_vault(root_fd, account, binding):
     return VaultMaterial(tuple(evidence), recipient, password, recovery)
 
 
-def receive_password_records(account, changes, before, incoming, blob):
+def receive_password_records(account, changes, before, incoming, blob, read_passphrase=None):
     """Inspect encrypted records from the approved source without unlocking the existing vault."""
-    from store_login import age_installations, verified_programs
+    from store_login import age_installations, verified_age_tools, verified_programs
     from store_read import SECRET_NAME
 
     anchors = ("secrets/vault.pub", "secrets/vault.key.age", "secrets/vault.recovery.age")
@@ -89,6 +89,7 @@ def receive_password_records(account, changes, before, incoming, blob):
     inspect_tool("age",["-e","-r",pub.decode()],b"")
     for path in anchors[1:]:
         archive(blob(before[path]), "scrypt")
+    verify = []
     for name in names:
         prefix = "secrets/"+name
         encrypted, metadata = prefix+".age", prefix+".meta"
@@ -101,6 +102,15 @@ def receive_password_records(account, changes, before, incoming, blob):
             require(re.fullmatch(rb"type=password\n(?:created=[0-9]{4}-[0-9]{2}-[0-9]{2}\n)?",meta),
                     "unsupported password credential metadata")
             archive(blob(files[encrypted]),"X25519")
+        if before.get(encrypted) != incoming[encrypted] and (encrypted in before or read_passphrase is not None):
+            verify.append(incoming[encrypted])
+    if verify:
+        require(read_passphrase is not None, "unlock the existing vault to receive replacement ciphertext")
+        tool_dir, evidence = verified_age_tools(account)
+        passphrase = read_passphrase()
+        require(verified_age_tools(account) == (tool_dir,evidence), "vault tools changed during verification")
+        vault = VaultUnlockCache(tool_dir)
+        vault.verify_passwords(blob(before[anchors[1]]),pub,passphrase,(blob(oid) for oid in verify))
 
 
 class VaultUnlockCache:
@@ -144,6 +154,13 @@ class VaultUnlockCache:
             yield reader
         finally:
             os.close(reader)
+
+    def verify_passwords(self, envelope, recipient, passphrase, ciphertexts):
+        identity = self._decrypt(envelope, passphrase)
+        require(self._run("age-keygen",("-y",),identity).strip() == recipient,
+                "accepted vault envelope does not match its recipient")
+        for ciphertext in ciphertexts:
+            require(self.open_secret(identity, ciphertext), "received password is empty")
 
     def open_secret(self, identity, ciphertext):
         with self._secret_pipe(identity) as reader:

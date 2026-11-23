@@ -228,14 +228,19 @@ identity in receive-only or two-way mode. The command uses the operating
 system account's existing filesystem access. Dirty or divergent checkouts,
 pending recovery, and unsupported Git configuration block the receive.
 
-An existing complete vault can also receive new or updated encrypted password
-records while locked. Both the accepted and incoming snapshots must carry the
+A locked existing vault can receive a new password record or metadata for an
+existing record. Replacing an existing password ciphertext requires
+`store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY --verify-vault`.
+The command prompts on the terminal, opens the original accepted vault envelope,
+checks its public recipient, and decrypts each new or changed ciphertext
+in memory before updating the checkout. A failed unlock or decryption
+preserves the previous active password. Both snapshots must carry the
 same vault public recipient, password envelope and recovery envelope. Each
 changed record needs a supported password metadata file and one complete
 armored X25519 age archive. The installed age tools inspect the recipient
-syntax, envelope types and archive structure. Unlocking and decrypting with
-the intended identity is the check for ciphertext authenticity and
-decryptability. The previous bytes remain available in Git and local recovery.
+syntax, envelope types and archive structure. New records first received while
+locked have structural validation only. Use `--verify-vault` on the incoming
+update to confirm that the intended identity can decrypt them. The previous bytes remain available in Git and local recovery.
 Key updates, deletions, vault creation and envelope replacements require
 separate handling. Network transports require a registered network provider.
 A verified terminal publication/control or cancellation before any transaction

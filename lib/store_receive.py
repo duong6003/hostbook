@@ -181,7 +181,7 @@ def absolute_directory(path):
         os.close(root)
 
 
-def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None):
+def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None, read_passphrase=None):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
     incoming_files = tree(stage, tip, git)
@@ -213,7 +213,7 @@ def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_
         require(vault_account is not None, "encrypted changes require a registered receive")
         def contents(blob):
             return git(stage, "cat-file", "blob", blob.decode())
-        receive_password_records(vault_account, vault_changes, tree(stage,base,git), incoming_files, contents)
+        receive_password_records(vault_account, vault_changes, tree(stage,base,git), incoming_files, contents, read_passphrase)
         for path in vault_changes:
             file = view/path
             file.parent.mkdir(exist_ok=True)
@@ -290,7 +290,7 @@ def install_adoption(account, context, binding, store_fd, record, stage, origina
                         sync_local(store_fd)
 
 
-def receive(load_account, store_id, expected):
+def receive(load_account, store_id, expected, *, read_passphrase=None):
     with store_writer(load_account, store_id, expected) as (account, start, state, _lock):
         with receive_binding(account, store_id, expected) as (context, target, _, _store, binding):
             require(start == context, "store binding changed")
@@ -314,7 +314,8 @@ def receive(load_account, store_id, expected):
                 accepted = fetch_from_fd(stage, local_git, context.ref, "refs/hostbook/accepted")
                 require(accepted == base, "local branch changed during receive")
             tip = fetch_direct(stage, target_fd, context.ref, "refs/hostbook/incoming")
-            after, changed = verify_incoming(stage, tip, base, store_id, local, vault_account=account)
+            after, changed = verify_incoming(stage, tip, base, store_id, local, vault_account=account,
+                                             read_passphrase=read_passphrase)
             before = tree(stage, base, git)
             prepare_adoption(stage, original_index, before, base, tip)
             with store_writer(load_account, store_id, expected) as (current, gated, state_fd, lock_fd):
@@ -342,6 +343,11 @@ def receive(load_account, store_id, expected):
 
 
 def receive_command(action, args):
+    read_passphrase = None
+    if args and args[-1] == "--verify-vault":
+        from store_login import prompt_passphrase
+        read_passphrase = prompt_passphrase
+        args = args[:-1]
     if action == "_store_receive" and not args:
         account, store_id, expected = fixture_request()
         def load():
@@ -352,7 +358,7 @@ def receive_command(action, args):
         home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
         def load():
             return load_approved_account(home)
-    print(json.dumps(receive(load, store_id, expected)))
+    print(json.dumps(receive(load, store_id, expected, read_passphrase=read_passphrase)))
     return 0
 
 
