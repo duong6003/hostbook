@@ -643,7 +643,7 @@ Host *
             self.assertEqual(len(launches), 1)
 
     def test_registered_vault_tools_cannot_resolve_into_the_selected_checkout(self):
-        from store_login import verified_age_dir
+        from store_login import verified_age_tools
 
         checkout = self.resolve(1).checkout
         package = checkout / "1.0" / "bin"
@@ -657,7 +657,23 @@ Host *
                 (directory / program).symlink_to(tool)
             with patch("store_login.age_installations", return_value=((directory, checkout),)):
                 with self.assertRaisesRegex(StoreContextError, "in an approved tool directory"):
-                    verified_age_dir(self.account)
+                    verified_age_tools(self.account)
+
+    def test_registered_vault_tools_reject_group_writable_install_ancestry(self):
+        from store_login import verified_age_tools
+
+        with tempfile.TemporaryDirectory(prefix="hb-tools-", dir="/tmp") as installed:
+            directory = Path(installed).resolve() / "install" / "bin"
+            directory.mkdir(parents=True)
+            directory.parent.chmod(0o770)
+            for program in ("age", "age-keygen", "age-plugin-batchpass"):
+                tool = directory / program
+                tool.write_text("#!/bin/sh\nexit 1\n")
+                tool.chmod(0o700)
+            with patch("store_login.age_installations", return_value=((directory, None),)), \
+                    patch("store_login.tool_ancestry", return_value=(directory, directory.parent)):
+                with self.assertRaisesRegex(StoreContextError, "in an approved tool directory"):
+                    verified_age_tools(self.account)
 
     def test_public_connect_execs_the_registered_launcher_in_place(self):
         fixture_bin = self.root / "bin-stub"
@@ -807,6 +823,26 @@ Host db
                 self.assertFalse(sockets[0].exists())
                 self.assertEqual(snapshot(self.root), before)
 
+                if index == 2:
+                    with tempfile.TemporaryDirectory(prefix="hb-tools-", dir="/tmp") as installed:
+                        program_dir = Path(installed).resolve()
+                        binary = program_dir / "age"
+                        for program in ("age", "age-keygen", "age-plugin-batchpass"):
+                            path = program_dir / program
+                            path.write_text("#!/bin/sh\nexit 1\n")
+                            path.chmod(0o700)
+
+                        def replace_tool():
+                            binary.write_text(f"#!/bin/sh\n: > '{marker}'\nexit 97\n")
+                            return passphrase
+
+                        with patch("store_login.age_installations", return_value=((program_dir, None),)), \
+                                patch("store_login.tool_ancestry", return_value=(program_dir,)):
+                            with self.assertRaisesRegex(StoreContextError, "vault tools changed during unlock"):
+                                connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                              read_passphrase=replace_tool)
+                        self.assertFalse(marker.exists())
+
                 def rotate_during_unlock():
                     (context.vault / "login.age").write_bytes(ciphertext + b"changed")
                     return passphrase
@@ -847,6 +883,34 @@ Host relay
                         transport.assert_not_called()
 
                     (context.vault / "login.age").write_bytes(ciphertext)
+                    (context.vault / "relay.age").write_bytes(swapped)
+                    extended = text + """    ProxyJump repeated
+# secret: zz-repeat
+Host repeated
+    HostName 192.0.2.52
+    User repeated-user
+"""
+                    source.write_text(extended)
+                    identity_data["sources"][0]["sha256"] = hashlib.sha256(extended.encode()).hexdigest()
+                    identity_data["hosts"].append({"name": "repeated", "host_id": new_id(), "bindings": [
+                        {"path": "team.conf", "host_ordinal": 3, "token_ordinal": 1},
+                    ]})
+                    sidecar.write_text(json.dumps(identity_data))
+                    (context.vault / "zz-repeat.meta").write_bytes(b"type=key\n")
+                    (context.vault / "zz-repeat.pub").write_bytes(public_key)
+                    (context.vault / "zz-repeat.age").write_bytes(swapped)
+                    stamp = refresh_routes(load, context.store_id, self.generations).strip().split("\n")[0].split("\t")[3]
+                    with patch("store_read.launch_ssh") as transport:
+                        with self.assertRaisesRegex(StoreContextError, "store public and private key do not match"):
+                            connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                          read_passphrase=lambda: passphrase)
+                        transport.assert_not_called()
+
+                    source.write_text(text)
+                    identity_data["sources"][0]["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+                    identity_data["hosts"].pop()
+                    sidecar.write_text(json.dumps(identity_data))
+                    stamp = refresh_routes(load, context.store_id, self.generations).strip().split("\n")[0].split("\t")[3]
                     (context.vault / "relay.meta").write_bytes(b"type=password\n")
                     (context.vault / "relay.age").unlink()
 

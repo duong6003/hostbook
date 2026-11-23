@@ -1,11 +1,13 @@
 """Open registered-store key credentials for one native SSH launch."""
 from contextlib import contextmanager
 from dataclasses import dataclass
+import grp
 import os
 from pathlib import Path
 import pwd
 import stat
 import subprocess
+import sys
 import time
 
 from store_context import (JSON_LIMIT, StoreContextError, bound_directory, open_directory,
@@ -35,7 +37,11 @@ def age_installations():
     )
 
 
-def verified_age_dir(account):
+def tool_ancestry(directory, target):
+    return dict.fromkeys((directory, *directory.parents, target, *target.parents))
+
+
+def verified_age_tools(account):
     protected = {(item.device, item.inode) for item in (account.root, account.state, account.recovery)}
     for checkout in account.checkouts.values():
         protected.update((item.device, item.inode) for item in (checkout.root, checkout.git_dir, checkout.git_common_dir))
@@ -52,11 +58,25 @@ def verified_age_dir(account):
                 continue
             if paths != [target / name for name in AGE_PROGRAMS]:
                 continue
-            for parent in (target, *target.parents):
-                info = parent.stat()
-                require((info.st_dev, info.st_ino) not in protected
-                        and info.st_uid in owners and not info.st_mode & stat.S_IWOTH,
-                        "untrusted registered vault tool directory")
+            admin_group = None
+            brew = cellar and target.is_relative_to(cellar)
+            if brew and sys.platform == "darwin":
+                admin_group = grp.getgrnam("admin").gr_gid
+            evidence = []
+            for parent in tool_ancestry(directory, target):
+                fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    info = os.fstat(fd)
+                    admin_cellar = (admin_group is not None and info.st_gid == admin_group
+                                    and parent.is_relative_to(cellar.parent.parent))
+                    require((info.st_dev, info.st_ino) not in protected and info.st_uid in owners
+                            and not info.st_mode & stat.S_IWOTH
+                            and (not info.st_mode & stat.S_IWGRP or admin_cellar),
+                            "untrusted registered vault tool directory")
+                    require_no_acl_grants(fd)
+                    evidence.append((info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid))
+                finally:
+                    os.close(fd)
             for path in paths:
                 fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 try:
@@ -65,10 +85,11 @@ def verified_age_dir(account):
                             and not info.st_mode & 0o022 and os.access(path, os.X_OK),
                             "untrusted registered vault tool")
                     require_no_acl_grants(fd)
+                    evidence.append((*file_evidence(info), info.st_mode, info.st_uid, info.st_gid))
                 finally:
                     os.close(fd)
-            return target
-        except (OSError, RuntimeError, StoreContextError):
+            return target, tuple(evidence)
+        except (OSError, KeyError, RuntimeError, StoreContextError):
             continue
     raise StoreContextError("registered login requires age, age-keygen and batchpass in an approved tool directory")
 
@@ -138,8 +159,7 @@ def ssh_agent(socket):
         child.wait(timeout=5)
 
 
-def agent_keys(env, data=None):
-    args = ["-L"] if data is None else ["-q", "-"]
+def agent_keys(env, *args, data=None):
     try:
         return subprocess.run(["/usr/bin/ssh-add", *args], input=data or b"", env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -163,20 +183,36 @@ def scoped_login(load_account, store_id, expected, config, targets, read_passphr
     if not keys:
         yield verify
         return
-    cache = VaultUnlockCache(verified_age_dir(selection[0]))
-    cache.unlock(load_account, store_id, expected, (read_passphrase or prompt_passphrase)())
+    tool_dir, evidence = verified_age_tools(selection[0])
+    passphrase = (read_passphrase or prompt_passphrase)()
+    try:
+        same_tools = verified_age_tools(selection[0]) == (tool_dir, evidence)
+    except StoreContextError:
+        same_tools = False
+    require(same_tools, "registered vault tools changed during unlock")
+    cache = VaultUnlockCache(tool_dir)
+    cache.unlock(load_account, store_id, expected, passphrase)
+    del passphrase
     verify()
     socket = config.parent / "agent"
     with ssh_agent(socket) as env:
-        public_files, offers = {}, set()
+        public_files, verified = {}, []
         identity = cache.get(load_account, store_id, expected)
         for number, (name, key) in enumerate(keys.items()):
-            offers.add(tuple(key.public_key.split()[:2]))
-            agent_keys(env, cache.open_secret(identity, key.ciphertext))
-            actual = {tuple(line.split()[:2]) for line in agent_keys(env).splitlines()}
-            require(actual == offers, "store public and private key do not match")
+            if number:
+                agent_keys(env, "-D")
+            private = cache.open_secret(identity, key.ciphertext)
+            agent_keys(env, "-q", "-", data=private)
+            actual = [line.split()[:2] for line in agent_keys(env, "-L").splitlines()]
+            require(actual == [key.public_key.split()[:2]], "store public and private key do not match")
+            verified.append(private)
             public_files[name] = config.parent / f"key-{number}.pub"
             public_files[name].write_bytes(key.public_key)
+        if len(verified) > 1:
+            agent_keys(env, "-D")
+            for private in verified:
+                agent_keys(env, "-q", "-", data=private)
+        del private, verified
         entries = "".join(f"Host {alias}\n  IdentityFile {public_files[name]}\n"
                           for alias, name in targets.items() if name in public_files)
         configuration = config.read_text().replace("IdentityAgent none\n", f"IdentityAgent {socket}\n", 1)

@@ -122,7 +122,11 @@ and offers that key only for the selected destination or bound hop.
 It checks the credential and route again after unlocking. Plaintext key
 material and the vault identity travel in process memory or inherited pipes.
 The vault tools must come from the OS package, the OS account's local
-installer directory or a canonical Homebrew package. The connection's
+installer directory or a canonical Homebrew age package. Directory modes
+and ACLs must protect those tools. A canonical macOS Homebrew package may
+use directories writable by the OS admin group within its Homebrew prefix.
+Hostbook also rechecks the executables and plugin after the vault prompt.
+Invoke the Bash and Python launcher with a trusted PATH. The connection's
 private agent closes with its owner even if the launcher is terminated.
 An unbound route uses interactive authentication without ambient keys.
 A password marker uses OpenSSH's native terminal prompt. Registered
