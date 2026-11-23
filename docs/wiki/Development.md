@@ -163,6 +163,13 @@ remote hook to enable publication. A user can retry pre-admission errors
 with their original editor input. Use the original attempt for reconciliation
 once a publication has been admitted.
 
+After a lost acknowledgement, run
+`store-settle STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY ATTEMPT_ID`
+with the current registry generations. It acquires the original attempt's
+sender lease and checks the original approved repository inode and full ref.
+A proposal reachable from that ref establishes acceptance. An absent proposal
+after a send remains uncertain. Settlement never resends or changes the checkout.
+
 ### Receive a registered Git update
 
 `store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` receives an

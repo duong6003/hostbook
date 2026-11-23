@@ -19,9 +19,9 @@ from uuid import uuid4
 
 from store_checkout import durable_file, make_parents, read_ref, rename_guarded, tree
 from store_context import (JSON_LIMIT, Generations, StoreContextError, bound_directory, fields, fixture_request,
-                           index_rows, load_approved_account, open_directory, parse_json, path_parts, read_file, require,
+                           index_rows, load_approved_account, open_directory, parse_directory_binding, parse_json, path_parts, positive, read_file, require,
                            require_approval_file, require_private_directory, staged_local_file, store_writer,
-                           sync_local, valid_id, verified_account)
+                           sync_local, valid_id, valid_ref, verified_account, verify_path_isolation)
 from store_journal import classify, private_json
 from store_read import DIRECTIVE, INDEX_NAME, local_inputs, selected_route
 from store_receive import (GIT, SAFE_ENV, IDENTITY, absolute_directory, fetch_from_fd, git, git_result, oid, plain_git,
@@ -175,14 +175,18 @@ def advance(recovery, account, original, outcome):
             rec = dict(current, previous_sequence=n, sequence=n+1,
                        detail=dict(current["detail"], sender_state="quiescent", outcome=outcome))
             name = f"{n+1}.json"
-            with staged_local_file(history, name, json_bytes(rec)) as temp:
-                sync_named(history, temp)
-                os.link(temp, name, src_dir_fd=history, dst_dir_fd=history, follow_symlinks=False)
-                sync_local(history)
-            with staged_local_file(control_fd, "current.json", selector(rec)) as temp:
+            with staged_local_file(control_fd, name, json_bytes(rec)) as temp:
                 sync_named(control_fd, temp)
-                os.replace(temp, "current.json", src_dir_fd=control_fd, dst_dir_fd=control_fd)
-                sync_local(control_fd)
+                os.link(temp, name, src_dir_fd=control_fd, dst_dir_fd=history, follow_symlinks=False)
+                sync_local(history)
+            select_record(control_fd, rec)
+
+
+def select_record(control_fd, rec):
+    with staged_local_file(control_fd, "current.json", selector(rec)) as temp:
+        sync_named(control_fd, temp)
+        os.replace(temp, "current.json", src_dir_fd=control_fd, dst_dir_fd=control_fd)
+        sync_local(control_fd)
 
 
 def sync_named(parent, name):
@@ -352,6 +356,107 @@ def open_lease(edit, evidence):
         yield
     finally:
         os.close(fd)
+
+
+def read_attempt(recovery, account, store_id, attempt, repair=False):
+    with open_directory(recovery, ("control", attempt)) as control_fd:
+        require_private_directory(control_fd, "publication control")
+        classify(control_fd, account, attempt, "control")
+        selected = private_json(control_fd, "current.json")["sequence"]
+        with open_directory(control_fd, ("records",)) as history:
+            original = private_json(history, "1.json")
+            require(original["operation"] == "publish" and original["store_id"] == store_id and
+                    original["detail"]["attempt_id"] == attempt, "publication reservation mismatch")
+            tail = private_json(history, f"{len(os.listdir(history))}.json")
+            if tail["sequence"] != selected:
+                require(tail["sequence"] == selected + 1, "ambiguous publication history")
+                if repair:
+                    select_record(control_fd, tail)
+            return original, tail
+
+
+def attempt_binding(edit, account, original):
+    require_private_directory(edit, "publication evidence")
+    record = private_json(edit, "binding.json")
+    fields(record, "version binding_id store_id device_id target_id uid ref generations bare_repository "
+                   "lease_device lease_inode host_id")
+    fields(record["generations"], "registration checkout connection policy")
+    detail = original["detail"]
+    require(type(record["version"]) is int and record["version"] == 1 and record["device_id"] == account.device_id
+            and record["binding_id"] == detail["connection_binding_id"] and record["store_id"] == original["store_id"]
+            and type(record["uid"]) is int and record["uid"] == os.geteuid() and valid_ref(record["ref"])
+            and valid_id(record["host_id"]) and valid_id(record["target_id"])
+            and all(positive(k) for k in record["generations"].values())
+            and record["generations"]["connection"] == detail["connection_generation"]
+            and type(record["lease_device"]) is int and record["lease_device"] >= 0 and positive(record["lease_inode"]),
+            "invalid original publication binding")
+    return record
+
+
+def observe_attempt(account, edit, original, evidence):
+    try:
+        started = read_file(edit, "send-started", 64, require_approval_file)
+    except FileNotFoundError:
+        # The exclusive sender lease is already held. Launch always follows the durable marker.
+        return "not-accepted"
+    require(started == original["record_id"].encode(), "incomplete send marker")
+    target = parse_directory_binding(evidence["bare_repository"])
+    with verified_account(account) as (root, _state):
+        groups = [(target,), (account.state,), (account.recovery,)]
+        groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
+        verify_path_isolation(root, account.root.path, groups)
+        with bound_directory(root, path_parts(account.root.path, target.path), target,
+                             "original registered transport changed") as directory:
+            plain_git(directory, bare=True)
+            with tempfile.TemporaryDirectory(prefix="settle-", dir=account.state.path) as folder:
+                stage = Path(folder)
+                git(stage, "init", "-q", "--bare", "--template=")
+                tip = fetch_from_fd(stage, directory, evidence["ref"], "refs/hostbook/observed")
+                proposal = original["detail"]["proposed_oid"]
+                if git_result(stage, "merge-base", "--is-ancestor", proposal, tip)[0] == 0:
+                    return "accepted"
+    return "uncertain"
+
+
+def settle(load_account, store_id, expected, attempt):
+    require(valid_id(attempt), "invalid publication attempt")
+    account = load_account()
+    with recovery_root(account) as recovery, open_directory(recovery, ("edits", attempt)) as edit:
+        original, _ = read_attempt(recovery, account, store_id, attempt)
+        evidence = attempt_binding(edit, account, original)
+        with open_lease(edit, evidence):
+            with store_writer(load_account, store_id, expected) as (current, _, _, _lock):
+                require(current == account, "publication account changed")
+                _, tail = read_attempt(recovery, account, store_id, attempt, repair=True)
+                outcome = tail["detail"]["outcome"]
+            if outcome in ("reserved", "uncertain"):
+                try:
+                    result = observe_attempt(account, edit, original, evidence)
+                except (OSError, StoreContextError):
+                    result = "uncertain"
+                with store_writer(load_account, store_id, expected) as (current, _, _, _lock):
+                    require(current == account, "publication account changed")
+                    if result != outcome:
+                        advance(recovery, current, original, result)
+                outcome = result
+    return {"store_id":store_id, "attempt_id":attempt, "outcome":outcome}
+
+
+def settle_command(action, args):
+    if action == "_store_settle":
+        require(len(args) == 1, "one publication attempt is required")
+        account, store_id, expected = fixture_request()
+        def load():
+            return account
+    else:
+        require(len(args) == 6, "store ID, four generations and attempt ID are required")
+        store_id, expected = args[0], Generations(*(int(x) for x in args[1:5]))
+        home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+        def load():
+            return load_approved_account(home)
+    result = settle(load, store_id, expected, args[-1])
+    print(json.dumps(result))
+    return 0 if result["outcome"] in ("accepted", "not-accepted") else 75
 
 
 def edit_command(action, args):

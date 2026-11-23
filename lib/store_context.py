@@ -852,6 +852,9 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
+        if action in ("_store_settle", "store-settle"):
+            from store_publish import settle_command
+            return settle_command(action, args[1:])
         if action in ("_store_edit_address", "store-edit-address"):
             from store_publish import edit_command
             return edit_command(action, args[1:])

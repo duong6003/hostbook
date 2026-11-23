@@ -733,6 +733,53 @@ class StoreContextTest(unittest.TestCase):
         self.assertTrue(bundle.is_file())
         self.assertEqual(bundle.stat().st_mode & 0o777, 0o600)
 
+    def test_settle_lost_acknowledgement_against_original_ref_after_restart(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        send = store_publish.send
+        def lose_ack(*args):
+            self.assertEqual(send(*args), "accepted")
+            return "uncertain"
+        before = snapshot(f.store)
+        with patch.object(store_publish, "send", side_effect=lose_ack):
+            result = edit()
+        self.assertEqual(result["outcome"], "uncertain")
+        with self.assertRaisesRegex(StoreContextError, "unresolved recovery"):
+            edit()
+        entry = self.entries[1]
+        attempt = result["attempt_id"]
+        entry["connection"]["ref"] = "refs/heads/replacement"
+        entry["connection_generation"] += 1
+        self.save_registry()
+        f.git(f.remote, "update-ref", entry["connection"]["ref"], f.tip)
+        request = json.dumps({"account":asdict(self.account),"store_id":entry["store_id"],
+                              "generations":asdict(replace(self.generations, connection=4))}, default=os.fspath)
+        def settle():
+            return subprocess.run([f.app, "_store_settle", attempt], cwd=self.root, env=f.env,
+                                  input=request, text=True, capture_output=True, timeout=30)
+        receipt = self.recovery / "edits" / attempt
+        with (receipt / "lease").open("rb") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertNotEqual(settle().returncode, 0)
+        resolved = settle()
+        self.assertEqual(resolved.returncode, 0, resolved.stderr)
+        self.assertEqual(json.loads(resolved.stdout)["outcome"], "accepted")
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(f.git(f.remote,"rev-parse",entry["connection"]["ref"]), f.tip)
+        self.assertEqual(json.loads(settle().stdout)["outcome"], "accepted")
+
+    def test_settle_absent_unknown_candidate_preserves_uncertainty_and_bundle(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        before = snapshot(f.store)
+        with patch.object(store_publish, "send", return_value="uncertain"):
+            result = edit()
+        args = (lambda: self.account, self.entries[1]["store_id"], self.generations, result["attempt_id"])
+        self.assertEqual(store_publish.settle(*args)["outcome"], "uncertain")
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(f.git(f.remote, "rev-parse", "refs/heads/main"), f.tip)
+        self.assertTrue((self.recovery / "edits" / result["attempt_id"] / "proposal.bundle").is_file())
+
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
         os.link(f.store / "secrets/vault.pub", self.root / "other-public-key")
