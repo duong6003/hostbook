@@ -132,6 +132,31 @@ class StoreContextTest(unittest.TestCase):
         approval.chmod(0o600)
         return approval
 
+    def test_legacy_writers_reject_managed_checkout_before_bootstrap(self):
+        app = Path(__file__).resolve().parents[1] / "hostbook"
+        store = self.root / "shared a"
+        (self.root / "home").mkdir()
+        block = self.root / "input"
+        block.write_text("Host new\n  HostName 192.0.2.10\n")
+        env = dict(os.environ, HOME=str(self.root / "home"), HOSTBOOK_DIR=str(store),
+                   HOSTBOOK_STATE=str(self.root / "legacy state"), HOSTBOOK_LANG="en")
+        for key in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+            env.pop(key, None)
+        before = snapshot(self.root)
+        for action in (["_write", "team", str(block)], ["_bg_sync"], ["_vault_init"],
+                       ["_rename", "old", "new"], ["_import_write", str(block)]):
+            result = subprocess.run([app, *action], env=env, stdin=subprocess.DEVNULL,
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 65, action)
+            self.assertEqual(snapshot(self.root), before, action)
+        # A broken identity file must not reopen the legacy path.
+        (store / ".hostbook/identity.json").unlink()
+        before = snapshot(self.root)
+        result = subprocess.run(["/bin/bash", "-c", '. "$1" _write team "$2"', "test", app, block],
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 65)
+        self.assertEqual(snapshot(self.root), before)
+
     def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
         launcher = self.installed_launcher()
         elsewhere = self.root / "unrelated directory"

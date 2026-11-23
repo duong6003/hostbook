@@ -40,10 +40,30 @@ case ${1:-} in
       exec python3 -I -B -S "${SELF%/*}/lib/store_context.py" "$@"
     fi;;
 esac
+# ---------- languages (docs/design/screens.md#language) ----------
+# UI text lives in lang/<code>.sh as L_<key>='…' (a printf format when the key takes arguments). vi.sh is the complete
+# base and other languages override it, so a missing translation shows Vietnamese rather than a key name.
+lang_load(){
+  local d=${HOSTBOOK_LANG_DIR:-${SELF%/*}/lang} l
+  l=${HOSTBOOK_LANG:-}; [ -n "$l" ] || cfg lang "" l   # HOSTBOOK_LANG overrides the config (tests, one-off runs)
+  case $l in vi|en) ;; *) l=;; esac   # a name is used as a file name below: only known languages
+  if [ -z "$l" ]; then case ${LC_ALL:-${LC_MESSAGES:-${LANG:-}}} in vi*) l=vi;; *) l=en;; esac; fi
+  # every language file defines every key (tests/screens.sh, S11), so one file is enough
+  UI_LANG=$l; if [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; elif [ -f "$d/vi.sh" ]; then . "$d/vi.sh"; UI_LANG=vi; fi   # no lang dir (a copied script): keys show as ‹L_…›, nothing fails
+}
+t(){ # key [args…] → text for key (printf format when arguments follow); an unknown key prints ‹L_key›
+  local _k=L_$1; shift
+  if [ $# -gt 0 ]; then printf -- "${!_k-‹${_k}›}" "$@"; else printf '%s' "${!_k-‹${_k}›}"; fi; }
 LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
 IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; esac
 private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
+# A v1 checkout requires explicit registration and scoped store operations.
+if [ -e "$DIR/.hostbook" ] || [ -L "$DIR/.hostbook" ]; then
+  HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
+  t err_legacy_store >&2; printf '\n' >&2
+  if [ "${BASH_SOURCE:-}" = "$0" ]; then exit 65; else return 65; fi
+fi
 STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
 SSHCFG=${HOSTBOOK_SSH_CONFIG:-}   # test override for ~/.ssh/config
 IDX=$STATE/index.tsv; HIST=$STATE/history; ST=$STATE/status; FLASH=$STATE/flash
@@ -100,20 +120,6 @@ is_url(){ case $1 in *://*|*@*:*) return 0;; esac; return 1; }   # a git URL (ss
 valid_name(){ case $1 in ""|*[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0-9._-]*) return 1;; esac; }   # server names allow only letters, digits, . _ - (untrusted repository names must not execute as commands)
 ver_ge(){ [ "$(printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$2" ]; }   # $1 >= $2
 
-# ---------- languages (docs/design/screens.md#language) ----------
-# UI text lives in lang/<code>.sh as L_<key>='…' (a printf format when the key takes arguments). vi.sh is the complete
-# base and other languages override it, so a missing translation shows Vietnamese rather than a key name.
-lang_load(){
-  local d=${HOSTBOOK_LANG_DIR:-${SELF%/*}/lang} l
-  l=${HOSTBOOK_LANG:-}; [ -n "$l" ] || cfg lang "" l   # HOSTBOOK_LANG overrides the config (tests, one-off runs)
-  case $l in vi|en) ;; *) l=;; esac   # a name is used as a file name below: only known languages
-  if [ -z "$l" ]; then case ${LC_ALL:-${LC_MESSAGES:-${LANG:-}}} in vi*) l=vi;; *) l=en;; esac; fi
-  # every language file defines every key (tests/screens.sh, S11), so one file is enough
-  UI_LANG=$l; if [ -f "$d/$l.sh" ]; then . "$d/$l.sh"; elif [ -f "$d/vi.sh" ]; then . "$d/vi.sh"; UI_LANG=vi; fi   # no lang dir (a copied script): keys show as ‹L_…›, nothing fails
-}
-t(){ # key [args…] → text for key (printf format when arguments follow); an unknown key prints ‹L_key›
-  local _k=L_$1; shift
-  if [ $# -gt 0 ]; then printf -- "${!_k-‹${_k}›}" "$@"; else printf '%s' "${!_k-‹${_k}›}"; fi; }
 tv(){ local _o=$1 _k=L_$2; shift 2; if [ $# -gt 0 ]; then printf -v "$_o" -- "${!_k-‹${_k}›}" "$@"; else printf -v "$_o" '%s' "${!_k-‹${_k}›}"; fi; }
 
 # Progress screens are text: `title`, a short line, then one line that shows what runs, elapsed / limit and how to cancel.
