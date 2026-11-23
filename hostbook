@@ -32,6 +32,11 @@ resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this she
   SELF=; CDPATH= cd -- "$d" 2>/dev/null && SELF=$PWD/${p##*/}; CDPATH= cd -- "$o" 2>/dev/null || :
 }
 resolve_self "$0"
+# The explicit fixture query runs before state initialization and other modules.
+if [ "${1:-}" = _store_context ] && [ "${BASH_SOURCE:-}" = "$0" ]; then
+  [ "$#" -eq 1 ] && command -v python3 >/dev/null 2>&1 || exit 64
+  exec python3 -I -B "${SELF%/*}/lib/store_context.py"
+fi
 LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
 IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; esac
 private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }

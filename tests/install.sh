@@ -17,11 +17,13 @@ git -C "$T/source" checkout -q -B ci-install
 export HOSTBOOK_REPO="$T/source"
 bash "$HERE/install.sh" </dev/null
 app="$HOME/.local/share/hostbook"
+export HOSTBOOK_TEST_INSTALLED="$HOME/.local/bin/hostbook"
 [ -x "$HOME/.local/bin/hostbook" ] && [ -d "$app/.git" ]
 for module in ui import settings hosts; do [ -s "$app/lib/$module.sh" ]; done
 "$HOME/.local/bin/hostbook" --version | grep -q '^hostbook '
 (cd "$T" && "$HOME/.local/bin/hostbook" _header > "$T/header")
 [ -s "$T/header" ]
+python3 -B "$HERE/tests/store-context.py" -k installed_callback
 printf 'update fixture\n' > "$T/source/ci-update-probe"
 git -C "$T/source" add ci-update-probe
 git -C "$T/source" commit -qm 'CI update fixture'
@@ -30,5 +32,6 @@ git -C "$T/source" commit -qm 'CI update fixture'
 for module in ui import settings hosts; do [ -s "$app/lib/$module.sh" ]; done
 (cd "$T" && "$HOME/.local/bin/hostbook" _header > "$T/header")
 [ -s "$T/header" ]
+python3 -B "$HERE/tests/store-context.py" -k installed_callback
 [ "$(cat "$HOSTBOOK_DIR/sentinel")" = 'keep host data' ]
 printf 'Unix install and update passed; host data preserved.\n'

@@ -17,10 +17,10 @@ Core files:
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
 | `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
-| `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. The resolver checks independent account and checkout bindings and the recovery journal's v1 `root.json` before returning a context. |
+| `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. Checks verified account and checkout bindings and the v1 recovery root. The fixture-only `_store_context` callback takes its request over a pipe and runs before legacy state setup. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and rollback regressions. |
 | `tests/sync.sh`, `tests/discovery.sh` | Isolated sync/locking failures and synthetic VPN discovery/address controls. |
-| `tests/install.sh` | Isolated Unix installation and update using a local Git repository. |
+| `tests/install.sh` | Isolated Unix installation and update using a local Git repository, including the fixture store callback from another directory. |
 | `tests/test.sh` | Core regression tests with isolated data. |
 | `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
 | `tests/onboarding.sh` | Vault setup and first-run flows with synthetic credentials. |

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 import re
 import stat
+import sys
 
 
 class StoreContextError(ValueError):
@@ -150,8 +151,11 @@ def read_file(parent, name, limit):
 
 
 def read_json(parent, name):
-    return json.loads(read_file(parent, name, JSON_LIMIT).decode("utf-8"),
-                      object_pairs_hook=unique_object, parse_constant=nonfinite)
+    return parse_json(read_file(parent, name, JSON_LIMIT))
+
+
+def parse_json(contents):
+    return json.loads(contents.decode("utf-8"), object_pairs_hook=unique_object, parse_constant=nonfinite)
 
 
 def valid_ref(ref):
@@ -378,3 +382,56 @@ def resolve_store(account, store_id, expected):
         namespace / "index" / str(generations.checkout) / "index.tsv",
         namespace / "sync.lock", namespace / "connection" / str(generations.connection) / "status",
     )
+
+
+def fixture_directory(value):
+    fields(value, "path device inode")
+    require(isinstance(value["path"], str) and type(value["device"]) is int
+            and value["device"] >= 0 and positive(value["inode"]), "invalid fixture directory binding")
+    return DirectoryBinding(Path(value["path"]), value["device"], value["inode"])
+
+
+def fixture_account(value):
+    fields(value, "root state recovery device_id recovery_root_id checkouts")
+    root = fixture_directory(value["root"])
+    require(root.path.parent == Path("/tmp").resolve() and root.path.name.startswith("hostbook-context-"),
+            "fixture account must be in a Hostbook scratch directory")
+    checkouts = value["checkouts"]
+    require(isinstance(checkouts, dict), "invalid fixture checkout bindings")
+    bindings = {}
+    for binding_id, binding in checkouts.items():
+        fields(binding, "store_id checkout_id root git_dir git_common_dir")
+        require(valid_id(binding_id) and valid_id(binding["store_id"]) and valid_id(binding["checkout_id"]),
+                "invalid fixture checkout IDs")
+        bindings[binding_id] = CheckoutBinding(
+            binding["store_id"], binding["checkout_id"], fixture_directory(binding["root"]),
+            fixture_directory(binding["git_dir"]), fixture_directory(binding["git_common_dir"]),
+        )
+    return Account(root, fixture_directory(value["state"]), fixture_directory(value["recovery"]),
+                   value["device_id"], value["recovery_root_id"], bindings)
+
+
+def fixture_command():
+    """Run one fixture query supplied by the test launcher over a pipe."""
+    try:
+        require(len(sys.argv) == 1 and stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode),
+                "a fixture request pipe is required")
+        contents = sys.stdin.buffer.read(JSON_LIMIT + 1)
+        require(len(contents) <= JSON_LIMIT, "fixture request exceeds size limit")
+        request = parse_json(contents)
+        fields(request, "account store_id generations")
+        fields(request["generations"], "registration checkout connection policy")
+        context = resolve_store(fixture_account(request["account"]), request["store_id"],
+                                Generations(**request["generations"]))
+        print(json.dumps({"store_id": context.store_id, "checkout": str(context.checkout),
+                          "generations": request["generations"]}))
+        return 0
+    except StoreContextError as error:
+        print(error, file=sys.stderr)
+    except (OSError, ValueError, RecursionError):
+        print("invalid fixture request", file=sys.stderr)
+    return 65
+
+
+if __name__ == "__main__":
+    sys.exit(fixture_command())

@@ -4,11 +4,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from dataclasses import replace
+from dataclasses import asdict, replace
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -32,7 +33,7 @@ def snapshot(root):
 
 class StoreContextTest(unittest.TestCase):
     def setUp(self):
-        scratch = tempfile.TemporaryDirectory(prefix="hostbook-context-")
+        scratch = tempfile.TemporaryDirectory(prefix="hostbook-context-", dir=Path("/tmp").resolve())
         self.addCleanup(scratch.cleanup)
         self.root = Path(scratch.name).resolve()
         self.state = self.root / "state"
@@ -96,6 +97,63 @@ class StoreContextTest(unittest.TestCase):
     def resolve(self, index=0, *, account=None, generations=None):
         return resolve_store(account or self.account, self.entries[index]["store_id"],
                              generations or self.generations)
+
+    def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
+        launcher = os.environ.get("HOSTBOOK_TEST_INSTALLED")
+        if launcher is None:
+            source = Path(__file__).resolve().parents[1]
+            app = self.root / "installed app"
+            (app / "lib").mkdir(parents=True)
+            shutil.copy2(source / "hostbook", app / "hostbook")
+            shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
+            launcher = self.root / "bin" / "hostbook"
+            launcher.parent.mkdir()
+            launcher.symlink_to(app / "hostbook")
+
+        elsewhere = self.root / "unrelated directory"
+        elsewhere.mkdir()
+        (elsewhere / "lib").mkdir()
+        (elsewhere / "lib/store_context.py").write_text("raise RuntimeError('wrong module')\n")
+        env = dict(os.environ, HOME=str(self.root / "fixture-home"),
+                   HOSTBOOK_STATE=str(self.root / "do-not-bootstrap"),
+                   HOSTBOOK_LIB_DIR=str(elsewhere / "lib"), PYTHONPATH=str(elsewhere / "lib"))
+        for key in ("SSH_AUTH_SOCK", "SSH_AGENT_PID"):
+            env.pop(key, None)
+
+        def call(request, cwd):
+            return subprocess.run([launcher, "_store_context"], cwd=cwd, env=env,
+                                  text=True, input=json.dumps(request, default=os.fspath),
+                                  capture_output=True, timeout=10)
+
+        before = snapshot(self.root)
+        for index, cwd in ((0, elsewhere), (1, self.root), (2, elsewhere)):
+            request = {"account": asdict(self.account), "store_id": self.entries[index]["store_id"],
+                       "generations": asdict(self.generations)}
+            result = call(request, cwd)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {
+                "store_id": request["store_id"], "checkout": self.entries[index]["checkout"]["root"],
+                "generations": request["generations"],
+            })
+
+        request["generations"]["policy"] += 1
+        stale = call(request, elsewhere)
+        self.assertEqual(stale.returncode, 65)
+        self.assertEqual(stale.stdout, "")
+        self.assertIn("stale store generations", stale.stderr)
+
+        request["account"]["root"]["path"] = elsewhere
+        outside = call(request, elsewhere)
+        self.assertEqual(outside.returncode, 65)
+        self.assertEqual(outside.stdout, "")
+        self.assertIn("fixture account must be", outside.stderr)
+
+        missing_pipe = subprocess.run([launcher, "_store_context"], cwd=elsewhere, env=env,
+                                      stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=10)
+        self.assertEqual(missing_pipe.returncode, 65)
+        self.assertEqual(missing_pipe.stdout, "")
+        self.assertIn("fixture request pipe is required", missing_pipe.stderr)
+        self.assertEqual(snapshot(self.root), before)
 
     def test_three_contexts_are_independent_and_resolution_does_not_write(self):
         before = snapshot(self.root)
