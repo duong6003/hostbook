@@ -115,7 +115,7 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -245,7 +245,7 @@ class StoreContextTest(unittest.TestCase):
                                   HOSTBOOK_DIR=str(store)), input=json.dumps(request, default=os.fspath).encode(),
                                   capture_output=True, timeout=15)
         return SimpleNamespace(store=store, remote=remote, author=author, base=base, tip=tip,
-                               target=target, git=git, receive=receive)
+                               target=target, git=git, receive=receive, app=app, env=dict(env, HOSTBOOK_DIR=str(store)))
 
     def test_installed_callback_receives_exact_branch_into_clean_shared_store(self):
         f = self.prepare_receive()
@@ -618,6 +618,120 @@ class StoreContextTest(unittest.TestCase):
             f.git(f.store, "fsck", "--full", "--strict")
             known.update(objects)
             previous.update(fresh)
+
+    def test_installed_callback_publishes_one_conditional_registered_host_edit(self):
+        import store_read
+        f = self.prepare_receive()
+        self.assertEqual(f.receive().returncode, 0)
+        entry = self.entries[1]
+        store_id = entry["store_id"]
+        request = {"account": asdict(self.account), "store_id": store_id,
+                   "generations": asdict(self.generations), "address": "192.0.2.88"}
+        app = f.app
+        def edit():
+            row = store_read.refresh_routes(lambda: self.account, store_id, self.generations).strip().split("\t")
+            return subprocess.run([app, "_store_edit_address", row[1], row[3]], cwd=self.root, env=f.env,
+                                  input=json.dumps(request, default=os.fspath).encode(),
+                                  capture_output=True, timeout=30)
+        before = snapshot(f.store)
+        self.assertEqual(edit().returncode, 65)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(f.git(f.remote, "rev-parse", "refs/heads/main"), f.tip)
+        entry["effective_mode"] = "two-way"
+        self.save_registry()
+        result = edit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual(record["outcome"], "accepted")
+        tip = f.git(f.remote, "rev-parse", "refs/heads/main")
+        self.assertEqual(f.git(f.remote, "rev-parse", tip + "^"), f.tip)
+        self.assertEqual(f.git(f.remote, "show", tip + ":team.conf"), "Host db\n  HostName 192.0.2.88")
+        self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), tip)
+        self.assertEqual(f.git(f.store, "status", "--porcelain"), "")
+        control = self.recovery / "control" / record["attempt_id"]
+        first = json.loads((control / "records/1.json").read_bytes())
+        self.assertEqual(first["detail"]["outcome"], "reserved")
+        self.assertEqual(first["detail"]["base_oid"], f.tip)
+        self.assertEqual(first["detail"]["proposed_oid"], tip)
+        selector = json.loads((control / "current.json").read_bytes())
+        last = json.loads((control / "records" / f"{selector['sequence']}.json").read_bytes())
+        self.assertEqual((last["detail"]["sender_state"], last["detail"]["outcome"]), ("quiescent", "accepted"))
+
+    def prepare_edit(self):
+        import store_publish
+        import store_read
+        f = self.prepare_receive()
+        self.assertEqual(f.receive().returncode, 0)
+        entry = self.entries[1]
+        entry["effective_mode"] = "two-way"
+        self.save_registry()
+        store_id = entry["store_id"]
+        load = lambda: self.account
+        row = store_read.refresh_routes(load, store_id, self.generations).strip().split("\t")
+        def edit():
+            return store_publish.publish_address(load, store_id, self.generations, row[1], row[3], "192.0.2.88")
+        def publish(text, add_host=False):
+            path = f.author / "team.conf"
+            path.write_text(text)
+            manifest = f.author / ".hostbook/identity.json"
+            meta = json.loads(manifest.read_bytes())
+            meta["generation"] += 1
+            meta["sources"][0]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            if add_host:
+                meta["hosts"].append(dict(name="web", host_id=new_id(), bindings=[
+                    dict(path="team.conf", host_ordinal=2, token_ordinal=1)]))
+            manifest.write_text(json.dumps(meta))
+            f.git(f.author, "commit", "-qam", "Independent remote fixture change")
+            f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+        return f, edit, publish
+
+    def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
+        f, edit, publish = self.prepare_edit()
+        publish("Host db\n  HostName 192.0.2.2\nHost web\n  HostName 192.0.2.44\n", add_host=True)
+        prior = f.git(f.author, "rev-parse", "HEAD")
+        notes = f.store / "notes"
+        notes.write_text("staged")
+        f.git(f.store, "add", "notes")
+        notes.write_text("unstaged")
+        before = snapshot(f.store)
+        result = edit()
+        self.assertEqual(result["outcome"], "accepted")
+        self.assertEqual(result["local"], "reconciliation-required")
+        self.assertEqual(snapshot(f.store), before)
+        tip = f.git(f.remote, "rev-parse", "refs/heads/main")
+        self.assertEqual(f.git(f.remote, "rev-parse", tip + "^"), prior)
+        self.assertEqual(f.git(f.remote, "show", tip + ":team.conf"),
+                         "Host db\n  HostName 192.0.2.88\nHost web\n  HostName 192.0.2.44")
+        self.assertNotIn("notes", f.git(f.remote, "ls-tree", "-r", "--name-only", tip).splitlines())
+
+    def test_edit_refuses_same_host_revision_even_if_address_changes_back(self):
+        f, edit, publish = self.prepare_edit()
+        publish("Host db\n  HostName 192.0.2.33\n")
+        publish("Host db\n  HostName 192.0.2.2\n")
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        with self.assertRaisesRegex(StoreContextError, "host revision changed"):
+            edit()
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(snapshot(f.remote), remote)
+        self.assertFalse((self.recovery / "control").exists())
+        self.assertFalse((self.recovery / "edits").exists())
+
+    def test_edit_rejected_at_send_retains_exact_candidate_without_local_adoption(self):
+        import store_publish
+        f, edit, publish = self.prepare_edit()
+        send = store_publish.send
+        def race(*args):
+            publish("Host db\n  HostName 192.0.2.77\n")
+            return send(*args)
+        before = snapshot(f.store)
+        with patch.object(store_publish, "send", side_effect=race):
+            result = edit()
+        self.assertEqual(result["outcome"], "not-accepted")
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(f.git(f.remote, "show", "refs/heads/main:team.conf"), "Host db\n  HostName 192.0.2.77")
+        bundle = self.recovery / "edits" / result["attempt_id"] / "proposal.bundle"
+        self.assertTrue(bundle.is_file())
+        self.assertEqual(bundle.stat().st_mode & 0o777, 0o600)
 
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()

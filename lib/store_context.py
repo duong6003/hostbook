@@ -826,18 +826,19 @@ def approve_account(home, root, confirmation):
     return {"stores": plan["stores"]}
 
 
-def fixture_request():
+def fixture_request(extra=None):
     require(stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode), "a fixture request pipe is required")
     contents = sys.stdin.buffer.read(JSON_LIMIT + 1)
     require(len(contents) <= JSON_LIMIT, "fixture request exceeds size limit")
     request = parse_json(contents)
-    fields(request, "account store_id generations")
+    fields(request, "account store_id generations" + (" " + extra if extra else ""))
     fields(request["generations"], "registration checkout connection policy")
     account = parse_account(request["account"])
     root = account.root.path
     require(root.parent == Path("/tmp").resolve() and root.name.startswith("hostbook-context-"),
             "fixture account must be in a Hostbook scratch directory")
-    return account, request["store_id"], Generations(**request["generations"])
+    bound = (account, request["store_id"], Generations(**request["generations"]))
+    return (*bound, request[extra]) if extra else bound
 
 
 def main(args):
@@ -851,6 +852,9 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
+        if action in ("_store_edit_address", "store-edit-address"):
+            from store_publish import edit_command
+            return edit_command(action, args[1:])
         if action in ("_store_receive", "store-receive"):
             from store_receive import receive_command
             return receive_command(action, args[1:])

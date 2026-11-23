@@ -141,6 +141,28 @@ Registered list, preview and connect neither read nor rewrite those references.
 A registered selection cannot be used as a legacy group target or undo action.
 Changes to registered mutation and group workflows have their own admission path.
 
+### Edit one registered shared host address
+
+`store-edit-address STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`
+accepts one literal IPv4 or unscoped IPv6 address on standard input. Use the
+host ID and current selection stamp from `store-hosts`. This explicit Git-only
+save requires effective two-way mode and the prepared local bare connection.
+It supports a single literal stanza with one HostName and independent literal
+host stanzas in the reviewed sources. Other SSH forms remain available for reading.
+
+On save, Hostbook reads the exact configured branch, compares the selected
+host through intervening first-parent revisions, and builds a direct child
+with a private index. A confirmed store/ref binding, exact base and proposal,
+private incremental Git bundle and sender lease precede the conditional push.
+A rejected or uncertain operation reports its attempt ID and leaves the
+checkout and its index intact. Accepted publication attempts a clean receive;
+`local: reconciliation-required` preserves an independently dirty checkout.
+The current local receiver supports ordinary POSIX-accessible repositories
+without executable server hooks. Its policy never disables a configured
+remote hook to enable publication. A user can retry pre-admission errors
+with their original editor input. Use the original attempt for reconciliation
+once a publication has been admitted.
+
 ### Receive a registered Git update
 
 `store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` receives an

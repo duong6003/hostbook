@@ -34,7 +34,7 @@ SAFE_ENV = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLO
 IDENTITY = ".hostbook/identity.json"
 
 
-def git(cwd, *args, data=b"", pass_fds=()):
+def git_result(cwd, *args, data=b"", pass_fds=()):
     cmd = [GIT, "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
            "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "fetch.fsckObjects=true", *args]
     with subprocess.Popen(cmd, cwd=cwd, env=SAFE_ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -51,7 +51,12 @@ def git(cwd, *args, data=b"", pass_fds=()):
             if isinstance(error, subprocess.TimeoutExpired):
                 raise StoreContextError("registered Git operation timed out") from None
             raise
-    require(child.returncode == 0, "registered Git operation failed")
+    return child.returncode, out
+
+
+def git(cwd, *args, data=b"", pass_fds=()):
+    rc, out = git_result(cwd, *args, data=data, pass_fds=pass_fds)
+    require(rc == 0, "registered Git operation failed")
     return out
 
 
@@ -322,4 +327,21 @@ if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "upload" and sys.argv[3] == "/unused":
         os.fchdir(int(sys.argv[2]))
         os.execve(GIT, [GIT, "upload-pack", "--strict", "."], SAFE_ENV)
+    if len(sys.argv) == 4 and sys.argv[1] == "relay" and sys.argv[3] == "/unused":
+        # Relay an already connected socket. This helper never opens a repository or transport.
+        import socket
+        from threading import Thread
+        with socket.socket(fileno=int(sys.argv[2])) as peer:
+            def forward():
+                try:
+                    while data := os.read(0, 65536):
+                        peer.sendall(data)
+                    peer.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+            Thread(target=forward, daemon=True).start()
+            while data := peer.recv(65536):
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+        sys.exit(0)
     sys.exit(65)
