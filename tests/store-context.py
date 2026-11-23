@@ -167,12 +167,17 @@ class StoreContextTest(unittest.TestCase):
         if disposable_account:
             import pwd
             approved_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
-            self.assertEqual(approved_home,Path("/home/hostbook-fixture"))
+            self.assertIn(approved_home,(Path("/fixture-home"),Path("/home/hostbook-fixture")))
+            self.assertFalse((approved_home/".config").exists())
             self.assertTrue(Path("/.dockerenv").exists())
         else:
             approved_home = self.root/"approved-home"
             approved_home.mkdir(mode=0o700)
-        self.write_local_approval(approved_home)
+        approval = self.write_local_approval(approved_home)
+        if disposable_account:
+            self.addCleanup(approval.parent.parent.rmdir)
+            self.addCleanup(approval.parent.rmdir)
+            self.addCleanup(approval.unlink)
         body = (source/"hostbook").read_text()
         if not disposable_account:
             body = body.replace("local authority_home=~",'local authority_home="' + str(approved_home) + '"')
@@ -231,7 +236,40 @@ class StoreContextTest(unittest.TestCase):
             self.assertEqual(result.returncode,0,(args,result.stderr))
             self.assertEqual(json.loads(result.stdout)["store_id"],self.entries[0]["store_id"])
         self.assertEqual(snapshot(shared),prior)
-
+        # Ordinary callbacks must not trust ambient interpreter resolution or mutate claimed XDG state.
+        fake = self.root/"fake-tools"
+        fake.mkdir()
+        (fake/"python3").write_text('#!/bin/sh\ntouch "$HOME/fake-python-ran"\nexit 0\n')
+        (fake/"python3").chmod(0o700)
+        hostile = dict(env,PATH=str(fake)+":"+env["PATH"])
+        refused = subprocess.run([app,"_write","team",block],env=hostile,capture_output=True)
+        self.assertEqual(refused.returncode,65)
+        self.assertFalse((outside/"fake-python-ran").exists())
+        denied = subprocess.run([app,"store-add","invalid","not-an-address"],env=hostile,capture_output=True)
+        self.assertNotEqual(denied.returncode,0)
+        self.assertFalse((outside/"fake-python-ran").exists())
+        config_parent = approved_home/".config/hostbook"
+        config_parent.chmod(0o000)
+        try:
+            if os.geteuid() != 0:
+                denied = subprocess.run([app,"_write","team",block],env=env,capture_output=True)
+                self.assertEqual(denied.returncode,65)
+        finally:
+            config_parent.chmod(0o700)
+        routed = dict(hostile,HOSTBOOK_DIR=str(outside),XDG_STATE_HOME=str(shared),XDG_CONFIG_HOME=str(shared))
+        routed.pop("HOSTBOOK_STATE",None)
+        for args in (["_write","new",block],["_list"],["_header"],["_preview","h:db"],
+                     ["_footer","h:db"],["_footers",str(shared),"h:db"],["_demo"]):
+            subprocess.run([app,*args],env=routed,capture_output=True,timeout=15)
+            self.assertEqual(snapshot(shared),prior,args)
+        self.assertFalse((outside/"fake-python-ran").exists())
+        for name in ("base","ours","theirs"):
+            (outside/name).write_text("Host legacy\n")
+        (outside/"ours.hbmerge").symlink_to(shared/"unexpected.conf")
+        merged = subprocess.run([app,"_merge",outside/"base",outside/"ours",outside/"theirs","team.conf"],
+                                env=dict(env,HOSTBOOK_DIR=str(outside)),capture_output=True)
+        self.assertEqual(merged.returncode,0,merged.stderr)
+        self.assertEqual(snapshot(shared),prior)
 
     def test_legacy_refusal_does_not_load_translations_from_caller(self):
         app = Path(__file__).resolve().parents[1] / "hostbook"
@@ -1480,6 +1518,9 @@ class StoreContextTest(unittest.TestCase):
         config = home / ".config/hostbook"
         config.mkdir(parents=True)
         approval = config / "store-account-v1.json"
+        self.addCleanup(config.parent.rmdir)
+        self.addCleanup(config.rmdir)
+        self.addCleanup(approval.unlink,missing_ok=True)
         command = [launcher, "_approve_store_account", str(self.root)]
         planned = subprocess.run(command, cwd=elsewhere, env=env, stdin=subprocess.DEVNULL,
                                  capture_output=True, text=True, timeout=10)

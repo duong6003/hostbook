@@ -954,6 +954,24 @@ def main(args):
                         (binding.root.device,binding.root.inode) == (info.st_dev,info.st_ino)
                         for binding in account.checkouts.values()), "selection is not the approved checkout")
             return 0
+        if args and args[0] == "_legacy_merge_install":
+            require(len(args)==3 and re.fullmatch(r"\.hostbook-merge\.[a-zA-Z0-9]+",args[1])
+                    and args[2] not in ("",".","..") and "/" not in args[2], "invalid merge output")
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            account = load_approved_account(home)
+            parent = os.open(".",DIRECTORY_FLAGS)
+            try:
+                cwd = Path.cwd()
+                check_legacy_destinations(account, (str(cwd),str(cwd/args[1]),str(cwd/args[2])))
+                source = os.stat(args[1],dir_fd=parent,follow_symlinks=False)
+                target = os.stat(args[2],dir_fd=parent,follow_symlinks=False)
+                require(all(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 for info in (source,target))
+                        and source.st_uid == os.geteuid() and source.st_mode & 0o077 == 0,"merge output changed")
+                os.replace(args[1],args[2],src_dir_fd=parent,dst_dir_fd=parent)
+                sync_local(parent)
+            finally:
+                os.close(parent)
+            return 0
         if args and args[0] == "_legacy_write_host":
             require(len(args) == 4, "legacy directory, project and input are required")
             home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
