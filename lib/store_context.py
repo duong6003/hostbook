@@ -480,9 +480,10 @@ def index_host_tokens(contents, path):
                 yield (path, ordinal, index), token.lower()
 
 
-def index_rows(checkout_fd, store_id, source_bytes=None):
+def index_rows(checkout_fd, store_id, source_bytes=None, max_source_bytes=None):
     identity = verify_sidecar(checkout_fd, store_id)
     paths, occurrences = set(), {}
+    total_bytes = 0
     for source in identity["sources"]:
         fields(source, "path sha256")
         source_path, digest = source["path"], source["sha256"]
@@ -496,6 +497,8 @@ def index_rows(checkout_fd, store_id, source_bytes=None):
         paths.add(source_path.casefold())
         with open_directory(checkout_fd, parts[:-1]) as source_fd:
             contents = read_file(source_fd, parts[-1], JSON_LIMIT, require_unlinked_index_source)
+        total_bytes += len(contents)
+        require(max_source_bytes is None or total_bytes <= max_source_bytes, "SSH sources exceed size limit")
         require(hashlib.sha256(contents).hexdigest() == digest, "index source bytes changed since identity review")
         occurrences.update(index_host_tokens(contents, source_path))
         if source_bytes is not None:

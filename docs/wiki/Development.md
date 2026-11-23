@@ -98,7 +98,8 @@ standalone jump aliases. Hostbook opens this file without following links.
 The scoped route view accepts data-only SSH settings, applies OpenSSH's
 first-value precedence and excludes ambient SSH configuration and other
 stores' files. It rejects external Includes, command directives and managed
-identity files. `_store_hosts` and `_store_preview` also support the isolated
+identity files. Registered routing uses the system OpenSSH at `/usr/bin/ssh`.
+The combined admitted source limit is 16 MiB. `_store_hosts` and `_store_preview` also support the isolated
 fixture pipe used by `_store_context`.
 
 `store-connect STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`

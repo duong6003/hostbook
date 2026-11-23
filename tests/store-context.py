@@ -495,9 +495,9 @@ class StoreContextTest(unittest.TestCase):
         for index, endpoint in enumerate(endpoints):
             with self.subTest(index=index):
                 context = self.write_route(index, host_id, f"""Host db
-    HostName {endpoint}
-    User login-{index}
-    ProxyJump local-hop
+    HostName "{endpoint}"
+    User "login-{index}@example.org"
+    ProxyJump "local-hop"
 Host *
     Port 2222
 """)
@@ -522,7 +522,7 @@ Host local-hop
                 self.assertEqual(result.returncode, 0, result.stderr)
                 route = json.loads(result.stdout)
                 self.assertEqual((route["hostname"], route["user"], route["port"], route["proxyjump"]),
-                                 (endpoint, f"login-{index}", "2222", "local-hop"))
+                                 (endpoint, f"login-{index}@example.org", "2222", "local-hop"))
                 defaults.write_text(defaults.read_text().replace("approved-hop", "changed-hop"))
                 stale = self.route_callback(context, "_store_preview", listed_id, stamp)
                 self.assertEqual(stale.returncode, 65)
@@ -531,6 +531,7 @@ Host local-hop
                 defaults.write_text(defaults.read_text().replace("changed-hop", "approved-hop"))
 
         renamed = self.write_route(1, host_id, "Host renamed\n    HostName 198.51.100.10\n", "renamed")
+        self.assertIsNotNone(shared_a_stamp)
         stale = self.route_callback(renamed, "_store_preview", host_id, shared_a_stamp)
         self.assertEqual(stale.returncode, 65)
         listing = self.route_callback(renamed, "_store_hosts")
@@ -543,7 +544,7 @@ Host local-hop
         context = self.write_route(1, host_id, """Host db
     HostName 198.51.100.10
     User destination
-    ProxyJump approved-hop
+    ProxyJump "approved-hop"
 """)
         with socket.socket() as hop:
             hop.bind(("127.0.0.1", 0))
@@ -620,6 +621,53 @@ Host *
         disconnected = self.route_callback(context, "_store_preview", host_id, stamp)
         self.assertEqual(disconnected.returncode, 65)
         self.assertIn("stale store generations", disconnected.stderr)
+
+    def test_installed_callback_requires_refresh_if_the_derived_cache_is_corrupt(self):
+        self.launcher = self.installed_launcher()
+        host_id = new_id()
+        context = self.write_route(1, host_id, "Host db\n")
+        rows = self.route_callback(context, "_store_hosts")
+        self.assertEqual(rows.returncode, 0, rows.stderr)
+        stamp = rows.stdout.strip().split("\t")[3]
+        cache = context.index.parent / "routes.json"
+        data = json.loads(cache.read_text())
+        del data["hosts"][host_id]["hostname"]
+        for broken in ([], data):
+            cache.write_text(json.dumps(broken))
+            result = self.route_callback(context, "_store_preview", host_id, stamp)
+            self.assertEqual(result.returncode, 65)
+            self.assertIn("refresh the store hosts", result.stderr)
+            self.assertEqual(result.stdout, "")
+
+    def test_route_refresh_reports_when_system_openssh_is_unavailable(self):
+        from store_read import refresh_routes
+
+        context = self.write_route(1, new_id(), "Host db\n")
+        with patch("store_read.SSH", str(self.root / "not-installed-ssh")):
+            with self.assertRaisesRegex(StoreContextError, "requires system OpenSSH"):
+                refresh_routes(lambda: self.account, context.store_id, self.generations)
+
+    def test_route_snapshot_limits_total_source_bytes_before_publishing(self):
+        from store_read import refresh_routes
+
+        context = self.write_route(1, new_id(), "Host db\n")
+        sidecar = context.checkout / ".hostbook/identity.json"
+        data = json.loads(sidecar.read_text())
+        contents = b"Host relay\n"
+        (context.checkout / "relay.conf").write_bytes(contents)
+        data["sources"].append({"path": "relay.conf", "sha256": hashlib.sha256(contents).hexdigest()})
+        data["hosts"].append({"host_id": new_id(), "name": "relay", "bindings": [
+            {"path": "relay.conf", "host_ordinal": 1, "token_ordinal": 1},
+        ]})
+        sidecar.write_text(json.dumps(data))
+        load = lambda: self.account
+        refresh_routes(load, context.store_id, self.generations)
+        original = (context.index.parent / "routes.json").read_bytes()
+
+        with patch("store_read.MAX_ROUTE_BYTES", 16, create=True):
+            with self.assertRaisesRegex(StoreContextError, "SSH sources exceed size limit"):
+                refresh_routes(load, context.store_id, self.generations)
+        self.assertEqual((context.index.parent / "routes.json").read_bytes(), original)
 
     def test_installed_callback_never_derives_unsafe_ssh_inputs(self):
         self.launcher = self.installed_launcher()

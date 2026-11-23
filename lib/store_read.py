@@ -11,7 +11,7 @@ import sys
 
 from store_context import (
     JSON_LIMIT, Generations, StoreContextError, acquire_local_lock, bound_directory, fixture_request,
-    index_rows, load_approved_account, open_directory, path_parts, read_file, require,
+    index_rows, load_approved_account, open_directory, parse_json, path_parts, read_file, require,
     require_approval_file, require_private_directory, resolved_store, staged_local_file,
     store_state_directory, valid_id, verify_state_directory,
 )
@@ -19,7 +19,9 @@ from store_context import (
 
 SSH = "/usr/bin/ssh"
 ROUTES = "routes.json"
-ROUTE_VERSION = 1
+ROUTE_VERSION = 2
+MAX_ROUTE_BYTES = 16 * 1024 * 1024
+ROUTE_FIELDS = {"hostname", "user", "port", "proxyjump", "name"}
 STAMP = re.compile(r"[0-9a-f]{64}")
 SSH_OPTIONS = frozenset("""
     addressfamily batchmode checkhostip compression connectionattempts connecttimeout
@@ -29,17 +31,19 @@ SSH_OPTIONS = frozenset("""
 """.split())
 LOCAL_OPTIONS = SSH_OPTIONS | {"globalknownhostsfile", "userknownhostsfile", "stricthostkeychecking"}
 DIRECTIVE = re.compile(r"([A-Za-z][A-Za-z0-9]*)(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)")
-SSH_NAME = re.compile(r"[A-Za-z0-9._-]+")
+SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_.:\[\]-]|%h)+")
 SECRET_COMMENT = re.compile(rb"(?m)^[ \t]*#[ \t]*secret[ \t]*:")
 JUMP = re.compile(r"(?:ssh://)?(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+\])(?::[0-9]+)?")
 
 
-def validate_config(contents, local=False):
+def snapshot_config(contents, local=False):
     import shlex
 
     # Admit data-only directives before OpenSSH sees the view, even in inactive sections.
+    output = []
     for line in contents.decode("utf-8").split("\n"):
+        output.append(line)
         line = line.rstrip("\r").strip(" \t")
         if not line or line.startswith("#"):
             continue
@@ -47,11 +51,15 @@ def validate_config(contents, local=False):
         require(not re.search(r"[\x00-\x08\x0a-\x1f\x7f]", line) and match, "invalid SSH directive")
         option, value = match[1].lower(), match[2]
         require(option in (LOCAL_OPTIONS if local else SSH_OPTIONS), f"unapproved SSH directive: {option}")
+        quoted = False
         if option in ("match", "proxyjump", "hostname", "user"):
             # OpenSSH considers '#' a comment only at the beginning of an argument.
             value = re.split(r"(?:^|[ 	])#", value, maxsplit=1)[0].rstrip(" 	")
+            quoted = option != "match" and value.startswith('"') and value.endswith('"')
+            if quoted:
+                value = value[1:-1]
             require(not any(mark in value for mark in ("\\", "'", '"')), f"unsupported SSH directive: {option}")
-            args = re.split(r"[ 	]+", value) if value else []
+            args = re.split(r"[ 	]+", value) if option == "match" else [value]
         else:
             args = shlex.split(value, comments=True)
         require(args, "empty SSH directive")
@@ -65,12 +73,16 @@ def validate_config(contents, local=False):
         elif option == "proxyjump":
             require(len(args) == 1 and all(JUMP.fullmatch(hop) for hop in args[0].split(",")),
                     "invalid SSH directive: ProxyJump")
+            if quoted:
+                # Some versions retain ProxyJump's original quotes in derived or child arguments.
+                output[-1] = f"ProxyJump {value}"
         elif option in ("hostname", "user"):
-            pattern = SSH_HOST if option == "hostname" else SSH_NAME
+            pattern = SSH_HOST if option == "hostname" else SSH_USER
             require(len(args) == 1 and pattern.fullmatch(args[0]) and not args[0].startswith("-"),
                     f"invalid SSH directive: {option}")
         elif option == "stricthostkeychecking":
             require(args in (["yes"], ["ask"]), "invalid SSH directive: StrictHostKeyChecking")
+    return "\n".join(output).encode("utf-8")
 
 
 def local_inputs(state_fd, store_id):
@@ -83,23 +95,24 @@ def local_inputs(state_fd, store_id):
         return b""
 
 
-def route_inputs(account, context, binding, root_fd, state_fd):
-    files = {}
+def route_inputs(account, context, binding, root_fd, state_fd, *, collect=False):
+    files = {} if collect else None
     with bound_directory(root_fd, path_parts(account.root.path, binding.root.path),
                          binding.root, "checkout binding mismatch") as checkout_fd:
-        identity, _ = index_rows(checkout_fd, context.store_id, files)
+        identity, _ = index_rows(checkout_fd, context.store_id, files, MAX_ROUTE_BYTES)
     local = local_inputs(state_fd, context.store_id)
     fingerprint = hashlib.sha256(json.dumps(
         [ROUTE_VERSION, asdict(context), identity], default=os.fspath, sort_keys=True
     ).encode())
     fingerprint.update(local)
-    return fingerprint.hexdigest(), identity["hosts"], list(files.values()), local
+    return fingerprint.hexdigest(), identity["hosts"], list(files.values()) if collect else None, local
 
 
 @contextmanager
 def ssh_view(files, local):
     import tempfile
 
+    require(os.access(SSH, os.X_OK), f"registered SSH routing requires system OpenSSH at {SSH}")
     # OpenSSH passes -F to ProxyJump via the shell, without quoting the path.
     with tempfile.TemporaryDirectory(prefix="hb-route-", dir="/tmp") as folder:
         root = Path(folder)
@@ -109,9 +122,8 @@ def ssh_view(files, local):
             "IdentitiesOnly yes", "IdentityFile none", "ForwardAgent no", "ClearAllForwardings yes",
         ]
         for number, contents in enumerate(files + [local]):
-            validate_config(contents, local=number == len(files))
             copy = root / f"input-{number}.conf"
-            copy.write_bytes(contents)
+            copy.write_bytes(snapshot_config(contents, local=number == len(files)))
             lines.append(f"Include {copy}")
         lines.extend(("Host *", "ConnectTimeout 15"))
         config.write_text("\n".join(lines) + "\n")
@@ -144,7 +156,7 @@ def refresh_routes(load_account, store_id, expected):
         parts = path_parts(account.state.path, context.index.parent)
         with store_state_directory(state_fd, parts) as index_fd:
             acquire_local_lock(index_fd, "store index is already being refreshed")
-            stamp, hosts, files, local = route_inputs(account, context, binding, root_fd, state_fd)
+            stamp, hosts, files, local = route_inputs(account, context, binding, root_fd, state_fd, collect=True)
             with ssh_view(files, local) as config:
                 routes = {host["host_id"]: dict(effective(config, host["name"]), name=host["name"])
                           for host in hosts}
@@ -163,27 +175,35 @@ def refresh_routes(load_account, store_id, expected):
     return "".join(f"{store_id}\t{key}\t{route['name']}\t{stamp}\n" for key, route in routes.items())
 
 
-def selected_route(load_account, store_id, expected, host_id, stamp):
+def selected_route(load_account, store_id, expected, host_id, stamp, *, collect=False):
     require(valid_id(host_id) and STAMP.fullmatch(stamp), "invalid store host selection")
     account = load_account()
     with resolved_store(account, store_id, expected) as (context, binding, root_fd, state_fd):
-        current, hosts, files, local = route_inputs(account, context, binding, root_fd, state_fd)
+        current, hosts, files, local = route_inputs(account, context, binding, root_fd, state_fd, collect=collect)
         require(current == stamp, "SSH selection changed; refresh the store hosts")
         names = {host["host_id"]: host["name"] for host in hosts}
         require(host_id in names, "selected host is unavailable")
-        with open_directory(state_fd, path_parts(account.state.path, context.index.parent)) as index_fd:
-            require_private_directory(index_fd, "store index")
-            routes = json.loads(read_file(index_fd, ROUTES, JSON_LIMIT, require_approval_file))
-        require(routes["stamp"] == stamp and host_id in routes["hosts"]
-                and routes["hosts"][host_id]["name"] == names[host_id],
-                "SSH selection changed; refresh the store hosts")
-        return routes["hosts"][host_id], files, local
+        try:
+            with open_directory(state_fd, path_parts(account.state.path, context.index.parent)) as index_fd:
+                require_private_directory(index_fd, "store index")
+                routes = parse_json(read_file(index_fd, ROUTES, JSON_LIMIT, require_approval_file))
+            require(isinstance(routes, dict) and routes.keys() == {"stamp", "hosts"}
+                    and routes["stamp"] == stamp and isinstance(routes["hosts"], dict), "invalid route index")
+            route = routes["hosts"].get(host_id)
+            require(isinstance(route, dict) and route.keys() == ROUTE_FIELDS
+                    and all(isinstance(value, str) for value in route.values())
+                    and route["name"] == names[host_id] and route["hostname"] and route["user"]
+                    and route["port"].isascii() and route["port"].isdecimal()
+                    and len(route["port"]) <= 5 and 0 < int(route["port"]) <= 65535, "invalid route")
+        except (OSError, ValueError, RecursionError):
+            raise StoreContextError("SSH selection changed; refresh the store hosts") from None
+        return route, files, local
 
 
 def connect_route(load_account, store_id, expected, host_id, stamp):
     import subprocess
 
-    selection = selected_route(load_account, store_id, expected, host_id, stamp)
+    selection = selected_route(load_account, store_id, expected, host_id, stamp, collect=True)
     route, files, local = selection
     require(not any(SECRET_COMMENT.search(contents) for contents in files),
             "store SSH credential binding requires an approved login")
@@ -191,7 +211,7 @@ def connect_route(load_account, store_id, expected, host_id, stamp):
     with ssh_view(files, local) as config:
         require(effective(config, alias) == {key: value for key, value in route.items() if key != "name"},
                 "effective SSH selection changed; refresh the store hosts")
-        require(selected_route(load_account, store_id, expected, host_id, stamp) == selection,
+        require(selected_route(load_account, store_id, expected, host_id, stamp)[0] == route,
                 "SSH selection changed; refresh the store hosts")
         env = {key: value for key, value in os.environ.items() if not key.startswith("SSH_")}
         env.update(SHELL="/bin/sh", LC_ALL="C", PATH="/usr/bin:/bin")
