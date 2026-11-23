@@ -5,10 +5,12 @@ checks those bindings before reading registration data. It does not enroll an
 account, authorize writes, or open a vault or transport.
 """
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import errno
 import json
 import os
 from pathlib import Path
+import pwd
 from typing import Optional
 import re
 import stat
@@ -141,10 +143,13 @@ def bound_directory(parent, parts, binding, reason, ancestors=None):
         raise StoreContextError(reason) from exc
 
 
-def read_file(parent, name, limit):
+def read_file(parent, name, limit, verify=None):
     fd = os.open(name, FILE_FLAGS, dir_fd=parent)
     with os.fdopen(fd, "rb") as stream:
-        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "expected a regular file")
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode), "expected a regular file")
+        if verify is not None:
+            verify(stream.fileno(), info)
         contents = stream.read(limit + 1)
     require(len(contents) <= limit, "record exceeds size limit")
     return contents
@@ -302,10 +307,39 @@ def verify_resource(root_fd, parts, expected_type):
     require(expected_type(entry.st_mode), "invalid store resource path")
 
 
+def require_no_acl_grants(fd):
+    if sys.platform != "darwin":
+        return
+    # Darwin extended ACL grants can add access outside the POSIX mode bits.
+    import ctypes
+
+    lib = ctypes.CDLL(None, use_errno=True)
+    lib.acl_get_fd.argtypes = [ctypes.c_int]
+    lib.acl_get_fd.restype = ctypes.c_void_p
+    lib.acl_get_entry.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+    lib.acl_get_tag_type.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+    lib.acl_free.argtypes = [ctypes.c_void_p]
+    acl = lib.acl_get_fd(fd)
+    if not acl:
+        require(ctypes.get_errno() == errno.ENOENT, "cannot verify approval path ACL")
+        return
+    try:
+        entry, tag = ctypes.c_void_p(), ctypes.c_int()
+        entry_id = 0  # ACL_FIRST_ENTRY
+        while lib.acl_get_entry(acl, entry_id, ctypes.byref(entry)) == 0:
+            require(lib.acl_get_tag_type(entry, ctypes.byref(tag)) == 0, "cannot verify approval path ACL")
+            require(tag.value == 2, "ACL grants on local store approval path")  # ACL_EXTENDED_DENY
+            entry_id = -1  # ACL_NEXT_ENTRY
+        require(ctypes.get_errno() == errno.EINVAL, "cannot verify approval path ACL")
+    finally:
+        lib.acl_free(acl)
+
+
 def require_private_directory(fd, label):
     info = os.fstat(fd)
     require(info.st_uid == os.geteuid() and info.st_mode & 0o077 == 0,
             f"{label} directory must be private and owned by this account")
+    require_no_acl_grants(fd)
 
 
 @contextmanager
@@ -384,54 +418,116 @@ def resolve_store(account, store_id, expected):
     )
 
 
-def fixture_directory(value):
+def parse_directory_binding(value):
     fields(value, "path device inode")
     require(isinstance(value["path"], str) and type(value["device"]) is int
-            and value["device"] >= 0 and positive(value["inode"]), "invalid fixture directory binding")
+            and value["device"] >= 0 and positive(value["inode"]), "invalid directory binding")
     return DirectoryBinding(Path(value["path"]), value["device"], value["inode"])
 
 
-def fixture_account(value):
+def parse_account(value):
     fields(value, "root state recovery device_id recovery_root_id checkouts")
-    root = fixture_directory(value["root"])
-    require(root.path.parent == Path("/tmp").resolve() and root.path.name.startswith("hostbook-context-"),
-            "fixture account must be in a Hostbook scratch directory")
+    root = parse_directory_binding(value["root"])
     checkouts = value["checkouts"]
-    require(isinstance(checkouts, dict), "invalid fixture checkout bindings")
+    require(isinstance(checkouts, dict), "invalid approved checkout bindings")
     bindings = {}
     for binding_id, binding in checkouts.items():
         fields(binding, "store_id checkout_id root git_dir git_common_dir")
         require(valid_id(binding_id) and valid_id(binding["store_id"]) and valid_id(binding["checkout_id"]),
-                "invalid fixture checkout IDs")
+                "invalid approved checkout IDs")
         bindings[binding_id] = CheckoutBinding(
-            binding["store_id"], binding["checkout_id"], fixture_directory(binding["root"]),
-            fixture_directory(binding["git_dir"]), fixture_directory(binding["git_common_dir"]),
+            binding["store_id"], binding["checkout_id"], parse_directory_binding(binding["root"]),
+            parse_directory_binding(binding["git_dir"]), parse_directory_binding(binding["git_common_dir"]),
         )
-    return Account(root, fixture_directory(value["state"]), fixture_directory(value["recovery"]),
+    return Account(root, parse_directory_binding(value["state"]), parse_directory_binding(value["recovery"]),
                    value["device_id"], value["recovery_root_id"], bindings)
 
 
-def fixture_command():
-    """Run one fixture query supplied by the test launcher over a pipe."""
+def require_owned_config_directory(fd):
+    info = os.fstat(fd)
+    require(info.st_uid == os.geteuid() and info.st_mode & 0o022 == 0,
+            "approval directory must be owned by this account and protected from other writers")
+    require_no_acl_grants(fd)
+    return info
+
+
+def require_approval_file(fd, info):
+    require(info.st_uid == os.geteuid() and info.st_nlink == 1 and info.st_mode & 0o077 == 0,
+            "approval file must be private and owned by this account")
+    require_no_acl_grants(fd)
+
+
+def load_approved_account(home):
+    """Read independent approval from the effective account's verified home."""
+    require(home.is_absolute() and home.anchor == "/" and home.parts[1:] and ".." not in home.parts,
+            "invalid approval home path")
+    fs_root = os.open("/", DIRECTORY_FLAGS)
     try:
-        require(len(sys.argv) == 1 and stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode),
-                "a fixture request pipe is required")
-        contents = sys.stdin.buffer.read(JSON_LIMIT + 1)
-        require(len(contents) <= JSON_LIMIT, "fixture request exceeds size limit")
-        request = parse_json(contents)
-        fields(request, "account store_id generations")
-        fields(request["generations"], "registration checkout connection policy")
-        context = resolve_store(fixture_account(request["account"]), request["store_id"],
-                                Generations(**request["generations"]))
+        with open_directory(fs_root, home.parts[1:]) as home_fd:
+            home_info = require_owned_config_directory(home_fd)
+            with open_directory(home_fd, (".config",)) as config_fd:
+                require_owned_config_directory(config_fd)
+                with open_directory(config_fd, ("hostbook",)) as approval_fd:
+                    info = require_owned_config_directory(approval_fd)
+                    approved = parse_json(read_file(approval_fd, "store-account-v1.json",
+                                                    JSON_LIMIT, require_approval_file))
+                    fields(approved, "format version home account")
+                    require(approved["format"] == "hostbook-store-account"
+                            and type(approved["version"]) is int and approved["version"] == 1,
+                            "invalid local store approval version")
+                    require(parse_directory_binding(approved["home"]) ==
+                            DirectoryBinding(home, home_info.st_dev, home_info.st_ino),
+                            "approval home binding mismatch")
+                    account = parse_account(approved["account"])
+                    approval = DirectoryBinding(home / ".config/hostbook", info.st_dev, info.st_ino)
+                    paths = [account.state, account.recovery]
+                    for binding in account.checkouts.values():
+                        paths.extend((binding.root, binding.git_dir, binding.git_common_dir))
+                    for path in paths:
+                        path_parts(account.root.path, path.path)
+                    verify_path_isolation(fs_root, Path("/"), [(approval,), paths])
+                    return account
+    except StoreContextError:
+        raise
+    except (OSError, ValueError, RecursionError) as exc:
+        raise StoreContextError("local store approval unavailable or malformed") from exc
+    finally:
+        os.close(fs_root)
+
+
+def fixture_request():
+    require(stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode), "a fixture request pipe is required")
+    contents = sys.stdin.buffer.read(JSON_LIMIT + 1)
+    require(len(contents) <= JSON_LIMIT, "fixture request exceeds size limit")
+    request = parse_json(contents)
+    fields(request, "account store_id generations")
+    fields(request["generations"], "registration checkout connection policy")
+    account = parse_account(request["account"])
+    root = account.root.path
+    require(root.parent == Path("/tmp").resolve() and root.name.startswith("hostbook-context-"),
+            "fixture account must be in a Hostbook scratch directory")
+    return account, request["store_id"], Generations(**request["generations"])
+
+
+def main(args):
+    try:
+        if args:
+            require(len(args) == 5, "store ID and four generations are required")
+            expected = Generations(*(int(value) for value in args[1:]))
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            account, store_id = load_approved_account(home), args[0]
+        else:
+            account, store_id, expected = fixture_request()
+        context = resolve_store(account, store_id, expected)
         print(json.dumps({"store_id": context.store_id, "checkout": str(context.checkout),
-                          "generations": request["generations"]}))
+                          "generations": asdict(context.generations)}))
         return 0
     except StoreContextError as error:
         print(error, file=sys.stderr)
-    except (OSError, ValueError, RecursionError):
-        print("invalid fixture request", file=sys.stderr)
+    except (OSError, ValueError, KeyError, RecursionError):
+        print("invalid store context request", file=sys.stderr)
     return 65
 
 
 if __name__ == "__main__":
-    sys.exit(fixture_command())
+    sys.exit(main(sys.argv[1:]))

@@ -17,7 +17,7 @@ Core files:
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
 | `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
-| `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. Checks verified account and checkout bindings and the v1 recovery root. The fixture-only `_store_context` callback takes its request over a pipe and runs before legacy state setup. |
+| `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. Checks verified account and checkout bindings and the v1 recovery root. The `_store_context` callback supports an isolated fixture request over a pipe or a pre-approved local account lookup. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and rollback regressions. |
 | `tests/sync.sh`, `tests/discovery.sh` | Isolated sync/locking failures and synthetic VPN discovery/address controls. |
 | `tests/install.sh` | Isolated Unix installation and update using a local Git repository, including the fixture store callback from another directory. |
@@ -36,6 +36,27 @@ Core files:
 | `tests/performance.py`, `tests/pointer-performance.py`, `tests/import-performance.py` | Manual timing tools for the budgets in AGENTS.md; not run in CI. |
 | `docs/wiki/` | Versioned source for this wiki. |
 | `docs/archive/` | Historical design and implementation notes; not current user instructions. |
+
+### Pre-approved store lookup
+
+`_store_context STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` reads an
+existing approval from `~/.config/hostbook/store-account-v1.json`. The home
+comes from the effective OS account. `HOME`, XDG overrides and the working
+directory have no role in approval lookup. Provisioning that file must be
+a separate trusted enrollment step. Expect a read failure when it is absent.
+
+The approval is UTF-8 JSON with exactly `format` (`hostbook-store-account`),
+`version` (integer 1), `home` and `account`. The `home` binding contains
+`path`, `device` and `inode`. `account` holds the approved root, state
+and recovery bindings, device and recovery IDs, and checkout bindings.
+Use a private owner-only approval file outside all checkout, Git, state and
+recovery directories. macOS approval paths with ACL grants are rejected.
+The reader validates the approval and returns context metadata without
+enrollment, vault access, writes or sync.
+
+The test suite's installed account case requires a disposable system
+account whose effective home is an empty `/fixture-home`. Set
+`HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.
 
 ## Run checks
 

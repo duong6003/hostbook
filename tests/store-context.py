@@ -13,6 +13,7 @@ from dataclasses import asdict, replace
 from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import store_context
 from store_context import (Account, CheckoutBinding, DirectoryBinding, Generations,
                            StoreContextError, resolve_store)
 
@@ -98,7 +99,7 @@ class StoreContextTest(unittest.TestCase):
         return resolve_store(account or self.account, self.entries[index]["store_id"],
                              generations or self.generations)
 
-    def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
+    def installed_launcher(self):
         launcher = os.environ.get("HOSTBOOK_TEST_INSTALLED")
         if launcher is None:
             source = Path(__file__).resolve().parents[1]
@@ -109,7 +110,21 @@ class StoreContextTest(unittest.TestCase):
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
             launcher.symlink_to(app / "hostbook")
+        return launcher
 
+    def write_local_approval(self, home, account=None):
+        folder = home / ".config/hostbook"
+        folder.mkdir(parents=True)
+        approval = folder / "store-account-v1.json"
+        approval.write_text(json.dumps({
+            "format": "hostbook-store-account", "version": 1,
+            "home": asdict(directory_binding(home)), "account": asdict(account or self.account),
+        }, default=os.fspath))
+        approval.chmod(0o600)
+        return approval
+
+    def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
+        launcher = self.installed_launcher()
         elsewhere = self.root / "unrelated directory"
         elsewhere.mkdir()
         (elsewhere / "lib").mkdir()
@@ -154,6 +169,93 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(missing_pipe.stdout, "")
         self.assertIn("fixture request pipe is required", missing_pipe.stderr)
         self.assertEqual(snapshot(self.root), before)
+
+    def test_local_approval_rejects_copy_to_other_home_and_insecure_mode(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        approval = self.write_local_approval(home)
+        before = snapshot(self.root)
+        context = resolve_store(store_context.load_approved_account(home),
+                                self.entries[1]["store_id"], self.generations)
+        self.assertEqual(context.checkout, self.root / "shared a")
+        self.assertEqual(snapshot(self.root), before)
+
+        other = self.root / "other home"
+        (other / ".config/hostbook").mkdir(parents=True)
+        other.chmod(0o700)
+        shutil.copy2(approval, other / ".config/hostbook/store-account-v1.json")
+        with self.assertRaisesRegex(StoreContextError, "approval home binding"):
+            store_context.load_approved_account(other)
+
+        approval.chmod(0o644)
+        with self.assertRaisesRegex(StoreContextError, "approval file must be private"):
+            store_context.load_approved_account(home)
+        approval.chmod(0o600)
+        moved = approval.rename(approval.with_suffix(".copy"))
+        approval.symlink_to(moved)
+        with self.assertRaisesRegex(StoreContextError, "local store approval unavailable"):
+            store_context.load_approved_account(home)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS extended ACL")
+    def test_local_approval_rejects_acl_grants(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        approval = self.write_local_approval(home)
+        subprocess.run(["/bin/chmod", "+a", "everyone allow write", str(approval)], check=True)
+        with self.assertRaisesRegex(StoreContextError, "ACL grants"):
+            store_context.load_approved_account(home)
+
+    def test_installed_local_lookup_uses_the_os_account(self):
+        expected_home = os.environ.get("HOSTBOOK_TEST_ACCOUNT_HOME")
+        if expected_home is None:
+            self.skipTest("requires a disposable OS account")
+        import pwd
+        home = Path(expected_home)
+        self.assertEqual(home, Path("/fixture-home"))
+        self.assertEqual(home, Path(pwd.getpwuid(os.geteuid()).pw_dir))
+        self.assertEqual(list(home.iterdir()), [])
+        launcher = self.installed_launcher()
+        elsewhere = self.root / "unrelated directory"
+        elsewhere.mkdir()
+        env = dict(os.environ, HOME=str(elsewhere), XDG_CONFIG_HOME=str(elsewhere))
+        store_id = self.entries[1]["store_id"]
+
+        def lookup():
+            return subprocess.run([launcher, "_store_context", store_id, "1", "2", "3", "4"],
+                                  cwd=elsewhere, env=env, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=10)
+
+        before = snapshot(self.root)
+        missing = lookup()
+        self.assertEqual((missing.returncode, missing.stdout), (65, ""))
+        self.assertIn("local store approval unavailable", missing.stderr)
+        self.assertEqual(list(home.iterdir()), [])
+        self.assertEqual(snapshot(self.root), before)
+
+        approval = self.write_local_approval(home)
+        approval_bytes = approval.read_bytes()
+        positive = lookup()
+        self.assertEqual(positive.returncode, 0, positive.stderr)
+        self.assertEqual(json.loads(positive.stdout)["checkout"], str(self.root / "shared a"))
+        self.assertEqual(approval.read_bytes(), approval_bytes)
+        self.assertEqual(snapshot(self.root), before)
+
+        other = json.loads(self.registry.read_text())
+        other["device_id"] = new_id()
+        original = self.registry.read_bytes()
+        self.registry.write_text(json.dumps(other))
+        copied = lookup()
+        self.assertEqual((copied.returncode, copied.stdout), (65, ""))
+        self.assertIn("registry account binding mismatch", copied.stderr)
+        self.registry.write_bytes(original)
+
+        checkout = self.root / "shared a"
+        parked = checkout.rename(self.root / "parked")
+        shutil.copytree(parked, checkout)
+        swapped = lookup()
+        self.assertEqual((swapped.returncode, swapped.stdout), (65, ""))
+        self.assertIn("directory binding mismatch", swapped.stderr)
+        self.assertEqual(approval.read_bytes(), approval_bytes)
 
     def test_three_contexts_are_independent_and_resolution_does_not_write(self):
         before = snapshot(self.root)
