@@ -23,6 +23,7 @@ from store_context import (
     verify_state_directory,
 )
 from store_checkout import OID, check_index, check_worktree, fast_forward, read_index, read_ref, tree
+from store_journal import require_idle
 from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
 
 GIT = "/usr/bin/git"
@@ -133,13 +134,7 @@ def receive_binding(account, store_id, expected, own_record=None):
                 "receive requires a regular Git checkout")
         with bound_directory(root_fd, path_parts(account.root.path, account.recovery.path), account.recovery,
                              "invalid recovery root") as recovery_fd:
-            for name in ("transactions", "control"):
-                try:
-                    with open_directory(recovery_fd, (name,)) as records:
-                        require_private_directory(records, "recovery records")
-                        require(not os.listdir(records), "existing recovery records require reconciliation")
-                except FileNotFoundError:
-                    pass
+            require_idle(recovery_fd, account, store_id)
         parts = path_parts(account.state.path, context.status.parent)
         with open_directory(state_fd, parts) as settings:
             require_private_directory(settings, "connection settings")

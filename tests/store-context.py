@@ -115,7 +115,7 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -411,6 +411,67 @@ class StoreContextTest(unittest.TestCase):
                 store_receive.receive(lambda: self.account, self.entries[1]["store_id"], self.generations)
         self.assertEqual(snapshot(f.store), before)
         self.assertFalse((f.target.parent.parent.parent / "receive.pending").exists())
+
+    def transition_record(self, store, phases):
+        ident = new_id()
+        root = self.recovery / "control"
+        root.mkdir(mode=0o700, exist_ok=True)
+        folder = root / ident
+        folder.mkdir(mode=0o700)
+        (folder / "records").mkdir(mode=0o700)
+        owner = {"owner_id": new_id(), "process_id": 1, "process_start_id": new_id(), "boot_id": new_id()}
+        detail = {"old_binding_id": new_id(), "proposed_binding_id": new_id()}
+        for sequence, phase in enumerate(phases, 1):
+            current = {"version": 1, "record_id": ident, "sequence": sequence}
+            record = dict(current, format="hostbook-control", device_id=self.account.device_id,
+                          root_id=self.account.recovery_root_id, previous_sequence=sequence-1, store_id=store,
+                          owner=owner, operation="registration-transition", detail=dict(detail, phase=phase))
+            path = folder / "records" / f"{sequence}.json"
+            path.write_text(json.dumps(record))
+            path.chmod(0o600)
+        path = folder / "current.json"
+        path.write_text(json.dumps(current))
+        path.chmod(0o600)
+        return folder
+
+    def test_receive_obeys_only_applicable_unsettled_controls(self):
+        f = self.prepare_receive()
+        self.transition_record(self.entries[2]["store_id"], ["fenced"])
+        self.transition_record(self.entries[1]["store_id"], ["fenced", "applied"])
+        result = f.receive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.transition_record(self.entries[1]["store_id"], ["fenced"])
+        result = f.receive()
+        self.assertEqual(result.returncode, 65, result.stderr)
+
+    def test_receive_preserves_other_stores_transfer_and_blocks_unowned_recovery(self):
+        f = self.prepare_receive()
+        ident = new_id()
+        folder = self.recovery / "transactions" / ident
+        for d in (folder.parent, folder, folder / "records"):
+            d.mkdir(mode=0o700)
+        selector = {"version": 1, "transaction_id": ident, "sequence": 1}
+        stores = [dict(store_id=self.entries[i]["store_id"], role=role, snapshot_id=new_id(),
+                       checkout_generation=1, connection_generation=1, identity_generation=1, vault_generation=1)
+                  for i, role in ((0, "source"), (2, "destination"))]
+        record = dict(selector, format="hostbook-transaction", device_id=self.account.device_id,
+                      root_id=self.account.recovery_root_id, previous_sequence=0, operation="transfer",
+                      checkpoint="prepared", owner=dict(owner_id=new_id(), process_id=1,
+                      process_start_id=new_id(), boot_id=new_id()), stores=stores,
+                      hosts=[dict(store_id=stores[0]["store_id"], host_id=new_id())], payload_id=new_id(),
+                      recovery_generation=1, effects=[], attempts=[], collection=dict(decision_id=None,
+                      payload_state="retained", payload_ids=[], recovery_generations=[]))
+        for path, obj in ((folder / "current.json", selector), (folder / "records/1.json", record)):
+            path.write_text(json.dumps(obj))
+            path.chmod(0o600)
+        result = f.receive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before = snapshot(f.store)
+        record["device_id"] = new_id()
+        (folder / "records/1.json").write_text(json.dumps(record))
+        result = f.receive()
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertEqual(snapshot(f.store), before)
 
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
