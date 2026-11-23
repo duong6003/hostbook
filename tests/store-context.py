@@ -1468,7 +1468,7 @@ class StoreContextTest(unittest.TestCase):
         with patch.object(store_publish, "send", side_effect=lose_ack):
             result = edit()
         self.assertEqual(result["outcome"], "uncertain")
-        with self.assertRaisesRegex(StoreContextError, "unresolved recovery"):
+        with self.assertRaisesRegex(StoreContextError, result["attempt_id"]):
             edit()
         entry = self.entries[1]
         attempt = result["attempt_id"]
@@ -1540,6 +1540,7 @@ class StoreContextTest(unittest.TestCase):
                                              self.generations, attempt)["outcome"], "accepted")
 
     def test_settle_absent_unknown_candidate_preserves_uncertainty_and_bundle(self):
+        import store_mode
         import store_publish
         f, edit, _ = self.prepare_edit()
         before = snapshot(f.store)
@@ -1550,6 +1551,12 @@ class StoreContextTest(unittest.TestCase):
             result = edit()
         args = (lambda: self.account, self.entries[1]["store_id"], self.generations, result["attempt_id"])
         self.assertEqual(store_publish.settle(*args)["outcome"], "uncertain")
+        state = store_mode.change_mode(*args[:3],"two-way")
+        self.assertEqual((state["mode"],state["settle_attempt"]),("two-way",result["attempt_id"]))
+        with self.assertRaisesRegex(StoreContextError,result["attempt_id"]):
+            edit()
+        with self.assertRaises(StoreContextError):
+            store_mode.change_mode(*args[:3],"two-way","discard",[result["attempt_id"]])
         self.assertEqual(snapshot(f.store), before)
         self.assertEqual(f.git(f.remote, "rev-parse", "refs/heads/main"), f.tip)
         self.assertTrue((self.recovery / "edits" / result["attempt_id"] / "proposal.bundle").is_file())

@@ -351,11 +351,14 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
         with recovery_root(account) as recovery:
             recover_sender_links(recovery, account, store_id)
             active, pending, inflight = mode_records(recovery, account, store_id, entry["transition_id"])
-            if active is None and inflight and wanted not in (entry["effective_mode"], "cancel"):
+            if active is None and inflight and wanted != "cancel":
                 require(len(inflight)==1 and action == "clean", "reconcile active publishers before changing mode")
                 sender, _ = read_attempt(recovery,account,store_id,inflight[0])
                 with open_directory(recovery, ("edits",inflight[0])) as edit:
                     attempt_binding(edit,account,sender)
+                if wanted == entry["effective_mode"]:
+                    return {"store_id":store_id, "mode":wanted, "settle_attempt":inflight[0],
+                            "generations":asdict(expected)}
                 preflight_mode(state,entry,wanted)
                 active = prepare_transition(recovery,account,entry,wanted,"drain",[],inflight[0])
             if active is None:

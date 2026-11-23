@@ -289,7 +289,9 @@ def require_available_edit_slot(recovery, account, store_id):
     from store_mode import mode_records, recover_sender_links
     recover_sender_links(recovery,account,store_id)
     active, pending, inflight = mode_records(recovery,account,store_id,None)
-    require(not active and not inflight, "settle the existing publication or transition before saving")
+    if inflight:
+        raise StoreContextError("settle the existing publication before saving: " + ", ".join(inflight))
+    require(not active, "finish the existing transition before saving")
     if pending:
         raise StoreContextError("retry or discard the retained edit before saving: " + ", ".join(pending))
 
