@@ -19,7 +19,7 @@ from store_context import (
 
 SSH = "/usr/bin/ssh"
 ROUTES = "routes.json"
-ROUTE_VERSION = 4
+ROUTE_VERSION = 5
 MAX_ROUTE_BYTES = 16 * 1024 * 1024
 ROUTE_FIELDS = {"hostname", "user", "port", "proxyjump", "name"}
 STAMP = re.compile(r"[0-9a-f]{64}")
@@ -36,8 +36,46 @@ SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_.:\[\]-]|%h)+")
 SECRET_COMMENT = re.compile(r"#[ 	]*secret[ 	]*:[ 	]*(.*)")
 SECRET_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
-JUMP = re.compile(r"(?:ssh://)?(?:([A-Za-z0-9._+-]+)@)?"
-                  r"([A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+\])(?::([0-9]+))?")
+JUMP = re.compile(r"(?:([A-Za-z0-9._@+-]+)@)?"
+                  r"([A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+(?:%+[A-Za-z0-9][A-Za-z0-9_.-]*)?\])"
+                  r"(?::([0-9]+))?")
+
+
+def jump_fields(hop, *, generated=False):
+    uri = hop.startswith("ssh://")
+    if uri:
+        user, at, destination = hop[6:].rpartition("@")
+        hop = user.replace("%40", "@") + at + destination
+    match = JUMP.fullmatch(hop)
+    require(match, "invalid SSH directive: ProxyJump")
+    user, host, port = match.groups()
+    address, zone_mark, zone = host.partition("%")
+    if zone_mark:
+        require(not uri and ":" in address and (generated or not zone.startswith("%")),
+                "invalid SSH directive: ProxyJump")
+        host = address + "%" + zone.lstrip("%")
+    return user, host, port
+
+
+def render_jumps(value, *, logical=False, expansion_budget=None):
+    if expansion_budget is None:
+        expansion_budget = JSON_LIMIT
+    hops = value.split(",")
+    rendered = []
+    for index, part in enumerate(hops):
+        user, host, port = jump_fields(part, generated=logical)
+        if part.startswith("ssh://") and "%" not in part:
+            rendered.append(part)
+            continue
+        if not logical and "%" in host:
+            # Each enclosing native ProxyJump expands the percent escapes once.
+            depth = len(hops) - index
+            require(depth < (expansion_budget + 1).bit_length(), "SSH jump configuration exceeds size limit")
+            copies = 1 << depth
+            expansion_budget -= copies - 1
+            host = host.replace("%", "%" * copies)
+        rendered.append(f"{user + '@' if user else ''}{host}{':' + port if port else ''}")
+    return ",".join(rendered)
 
 
 def snapshot_config(contents, local=False):
@@ -45,6 +83,7 @@ def snapshot_config(contents, local=False):
 
     # Admit data-only directives before OpenSSH sees the view, even in inactive sections.
     output = []
+    remaining = JSON_LIMIT - len(contents)
     for line in contents.decode("utf-8").split("\n"):
         output.append(line)
         line = line.rstrip("\r").strip(" \t")
@@ -74,11 +113,10 @@ def snapshot_config(contents, local=False):
                     require(criterion in ("host", "originalhost", "user", "localuser") and next(terms, None),
                             "unapproved SSH directive: Match condition")
         elif option == "proxyjump":
-            require(len(args) == 1 and all(JUMP.fullmatch(hop) for hop in args[0].split(",")),
-                    "invalid SSH directive: ProxyJump")
-            if quoted:
-                # Some versions retain ProxyJump's original quotes in derived or child arguments.
-                output[-1] = f"ProxyJump {value}"
+            jump = render_jumps(value, expansion_budget=remaining)
+            replacement = f"ProxyJump {jump}"
+            remaining += len(output[-1].encode("utf-8")) - len(replacement)
+            output[-1] = replacement
         elif option in ("hostname", "user"):
             pattern = SSH_HOST if option == "hostname" else SSH_USER
             require(len(args) == 1 and pattern.fullmatch(args[0]) and not args[0].startswith("-"),
@@ -213,7 +251,8 @@ def effective(computed, alias, options=()):
         if name in ("hostname", "user", "port", "proxyjump"):
             fields[name] = value
     require({"hostname", "user", "port"} <= fields.keys(), "incomplete OpenSSH route")
-    fields.setdefault("proxyjump", "")
+    jump = fields.get("proxyjump", "")
+    fields["proxyjump"] = render_jumps(jump, logical=True) if jump else ""
     return fields
 
 
@@ -285,9 +324,7 @@ def credential_targets(config, alias, route, credentials):
         if not hops or hops.lower() == "none":
             return {alias: credentials[alias] for alias, bound in eligible.items() if bound}
         remainder, _, next_hop = hops.rpartition(",")
-        jump = JUMP.fullmatch(next_hop)
-        require(jump, "OpenSSH returned an unrecognized jump route")
-        user, alias, port = jump.groups()
+        user, alias, port = jump_fields(next_hop)
         alias = alias.strip("[]")
         options = []
         if user:
@@ -295,7 +332,7 @@ def credential_targets(config, alias, route, credentials):
         if port:
             options.extend(("-p", port))
         if remainder:
-            options.extend(("-J", remainder))
+            options.extend(("-J", render_jumps(remainder)))
         route = effective(config, alias, options)
     raise StoreContextError("SSH jump route is too long to bind credentials")
 

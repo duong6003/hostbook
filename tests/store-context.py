@@ -1225,6 +1225,77 @@ Host repeated
                 refresh_routes(load, context.store_id, self.generations)
         self.assertEqual((context.index.parent / "routes.json").read_bytes(), original)
 
+    def test_scoped_proxyjump_preserves_realm_and_interface_qualified_hops(self):
+        from store_read import credential_targets, effective, ssh_view
+
+        binary = self.root / "jump-client"
+        binary.mkdir()
+        stub = binary / "ssh"
+        captured = binary / "arguments"
+        stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$HOSTBOOK_JUMP_ARGUMENTS"\nexit 255\n')
+        stub.chmod(0o700)
+        env = {"PATH": f"{binary}:/usr/bin:/bin", "HOME": str(self.root / "fixture-home"),
+               "SHELL": "/bin/sh", "HOSTBOOK_JUMP_ARGUMENTS": str(captured)}
+        for spec, logical, alias, user, forward in (
+            ("operator@example.org@relay", "operator@example.org@relay", "relay", "operator@example.org", None),
+            ("ssh://operator%40example.org@relay", "operator@example.org@relay", "relay",
+             "operator@example.org", None),
+            ("[fe80::1%en0]", "[fe80::1%en0]", "fe80::1%en0", None, None),
+            ("[fe80::1%en0],relay", "[fe80::1%en0],relay", "relay", None, "[fe80::1%%en0]"),
+        ):
+            with self.subTest(spec=spec), socket.socket() as guard:
+                guard.bind(("127.0.0.1", 0))
+                source = f"""Host db
+ HostName 127.0.0.1
+ Port {guard.getsockname()[1]}
+ User target
+ ProxyJump {spec}
+Host relay
+ User operator@example.org
+""".encode()
+                with ssh_view([source], (None, None, None)) as config:
+                    route = effective(config, "db")
+                    self.assertEqual(route["proxyjump"], logical)
+                    with patch("store_read.effective", wraps=effective) as resolve:
+                        expected = {"db": "target-key"}
+                        if alias == "relay":
+                            expected["relay"] = "hop-key"
+                        self.assertEqual(credential_targets(
+                            config, "db", route, {"db": "target-key", "relay": "hop-key"}
+                        ), expected)
+                        if "fe80::1" in spec:
+                            self.assertIn("fe80::1%en0", [call.args[1] for call in resolve.call_args_list])
+                    captured.unlink(missing_ok=True)
+                    result = subprocess.run(["ssh", "-F", config, "db"], executable="/usr/bin/ssh",
+                                            stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=5)
+                    self.assertEqual(result.returncode, 255)
+                    args = captured.read_text().splitlines()
+                    self.assertEqual(args[-1], alias)
+                    if user:
+                        self.assertEqual(args[args.index("-l") + 1], user)
+                    if forward:
+                        self.assertEqual(args[args.index("-J") + 1], forward)
+
+    def test_scoped_proxyjump_limits_generated_config_growth(self):
+        from store_read import ssh_view
+
+        chain = ",".join(["[fe80::1%en0]"] + ["relay"] * 5)
+        source = f"Host db\n ProxyJump {chain}\nHost web\n ProxyJump {chain}\n".encode()
+        with patch("store_read.JSON_LIMIT", 200):
+            with self.assertRaisesRegex(StoreContextError, "SSH jump configuration exceeds size limit"):
+                with ssh_view([source], (None, None, None)):
+                    pass
+
+    def test_scoped_proxyjump_rejects_unapproved_percent_escapes(self):
+        from store_read import ssh_view
+
+        for spec in ("operator%40example.org@relay", "ssh://operator%24example.org@relay",
+                     "[fe80::1%%en0]", "[fe80::1%en0%tail]", "[fe80::1%en/0]",
+                     "ssh://[fe80::1%25en0]"):
+            with self.subTest(spec=spec), self.assertRaisesRegex(StoreContextError, "invalid SSH directive"):
+                with ssh_view([f"Host db\n ProxyJump {spec}\n".encode()], (None, None, None)):
+                    pass
+
     def test_installed_callback_never_derives_unsafe_ssh_inputs(self):
         self.launcher = self.installed_launcher()
         for directive in ("Match exec true", "Match host db#tag exec true", "Include somewhere.conf", "ProxyCommand false",

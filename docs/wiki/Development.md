@@ -105,7 +105,10 @@ fixture pipe used by `_store_context`.
 `store-connect STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`
 opens the selected registered route. It rechecks the current listing
 snapshot and runs native OpenSSH with a private copy of the same configuration
-for the target and its ProxyJump children. The scoped connection disables
+for the target and its ProxyJump children. Jump users can include a realm
+such as `operator@example.org`, and bracketed IPv6 hops can name an interface
+zone such as `[fe80::1%en0]`. Hostbook handles the necessary escaping inside
+the private configuration. The scoped connection disables
 ambient keys, the ambient agent and control-socket reuse. Before connecting,
 provision `known_hosts` in that store's private state `ssh` directory with the
 approved host keys for the destination and any jumps. You can separately stage
