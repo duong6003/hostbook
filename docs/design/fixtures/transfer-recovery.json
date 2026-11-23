@@ -1,0 +1,285 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "note": "Independent conceptual checkpoints, not journal encoding or executable runtime traces. Each case has the common protected recovery and identity below. Accepted means evidenced historical acceptance; observed is the latest separate read.",
+  "transfer_id": "30000000-0000-4000-8000-000000000001",
+  "source_store_id": "10000000-0000-4000-8000-000000000002",
+  "destination_store_id": "10000000-0000-4000-8000-000000000003",
+  "host_id": "20000000-0000-4000-8000-000000000021",
+  "source_role": "shared",
+  "destination_role": "shared",
+  "recovery": "vault-protected-original-retained",
+  "connection_settings": {
+    "alias": "web-east",
+    "address": "192.0.2.21",
+    "port": 22,
+    "login": "example",
+    "ProxyJump": "example-jump"
+  },
+  "cases": [
+    {
+      "case": "encryption-fails-before-destination-save",
+      "checkpoint": "prepared",
+      "signal": "encryption-failed",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": false, "verified": false, "publication": "not-attempted", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "retry-encryption", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "cancel-before-effects",
+      "checkpoint": "prepared",
+      "signal": "cancel",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": false, "verified": false, "publication": "not-attempted", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "cancelled", "next": "none", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "receive-only-at-write-boundary",
+      "checkpoint": "prepared",
+      "signal": "mode-changed",
+      "modes": {"source": "two-way", "destination": "receive-only"},
+      "destination": {"durable": false, "verified": false, "publication": "not-attempted", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "review-mode", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-offline-after-local-save",
+      "checkpoint": "destination-saved",
+      "signal": "offline",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "pending", "observed": "unknown"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "reconcile-destination-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-publication-rejected",
+      "checkpoint": "destination-saved",
+      "signal": "rejected",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "rejected", "observed": "absent"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "reconcile-destination-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-destination-acceptance-lost-response",
+      "checkpoint": "destination-saved",
+      "signal": "response-lost",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "uncertain", "observed": "unknown"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "reconcile-destination-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "restart-proves-destination-acceptance",
+      "checkpoint": "destination-confirmed",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "recoverable", "next": "revalidate-and-remove-source", "may_remove_source": true, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-edited-after-acknowledgement",
+      "checkpoint": "destination-confirmed",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "changed"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "source-edited-after-destination-acknowledgement",
+      "checkpoint": "destination-confirmed",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "changed", "publication": "not-attempted", "observed": "changed"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "same-id-collision-on-restart",
+      "checkpoint": "prepared",
+      "signal": "same-id-conflict",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": false, "publication": "not-attempted", "observed": "changed"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "cancel-after-destination-publication",
+      "checkpoint": "destination-confirmed",
+      "signal": "cancel",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "present", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "recoverable", "next": "review-compensation", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-local-source-removal",
+      "checkpoint": "source-removed-local",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "recoverable", "next": "revalidate-and-publish-source", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "source-removal-publication-rejected",
+      "checkpoint": "source-removed-local",
+      "signal": "rejected",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "rejected", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "retry-or-restore-source", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-source-acceptance-lost-response",
+      "checkpoint": "source-removed-local",
+      "signal": "response-lost",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "uncertain", "observed": "unknown"},
+      "expected": {"outcome": "blocked", "next": "reconcile-source-publication", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "destination-edited-before-source-publication",
+      "checkpoint": "source-removed-local",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "changed"},
+      "source": {"local": "absent", "publication": "not-attempted", "observed": "matching"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "source-reintroduced-before-removal-publication",
+      "checkpoint": "source-removed-local",
+      "signal": "remote-edit",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "not-attempted", "observed": "changed"},
+      "expected": {"outcome": "blocked", "next": "compare-conflict", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "crash-after-source-acceptance-before-completion",
+      "checkpoint": "source-confirmed",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "accepted", "observed": "absent"},
+      "expected": {"outcome": "recoverable", "next": "revalidate-and-complete", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    },
+    {
+      "case": "all-required-steps-and-final-observations-agree",
+      "checkpoint": "completed",
+      "signal": "restart",
+      "modes": {"source": "two-way", "destination": "two-way"},
+      "destination": {"durable": true, "verified": true, "publication": "accepted", "observed": "matching"},
+      "source": {"local": "absent", "publication": "accepted", "observed": "absent"},
+      "expected": {"outcome": "completed", "next": "report-without-replay", "may_remove_source": false, "retry_host_id": "20000000-0000-4000-8000-000000000021", "destination_host_count_max": 1}
+    }
+  ],
+  "existing_destination": [
+    {"case": "matching-version-with-exact-acceptance", "observed": "matching", "attempt": "settled-accepted", "expected": "revalidate-destination-effect"},
+    {"case": "matching-version-without-transfer-evidence", "observed": "matching", "attempt": "none", "expected": "reconcile-evidence"},
+    {"case": "matching-version-after-lost-response", "observed": "matching", "attempt": "unsettled", "expected": "reconcile-attempt"},
+    {"case": "matching-version-with-proposal-reachable-only-through-merge", "observed": "matching", "attempt": "reachable-only", "expected": "reconcile-attempt"},
+    {"case": "changed-version-after-lost-response", "observed": "different-revision", "attempt": "unsettled", "lineage_verified": true, "review": "confirmed-current", "expected": "reconcile-attempt"},
+    {"case": "changed-version-after-acceptance", "observed": "different-revision", "attempt": "settled-accepted", "lineage_verified": true, "expected": "compare-versions"},
+    {"case": "changed-version-with-reviewed-current-bases", "observed": "different-revision", "attempt": "settled-rejected", "lineage_verified": true, "review": "confirmed-current", "expected": "prepare-same-id-replacement"},
+    {"case": "changed-version-with-stale-review-base", "observed": "different-revision", "attempt": "none", "lineage_verified": true, "review": "confirmed-stale", "expected": "compare-versions"},
+    {"case": "changed-version-with-unverified-lineage", "observed": "different-revision", "attempt": "none", "review": "confirmed-current", "expected": "compare-versions"},
+    {"case": "same-revision-with-different-payload", "observed": "inconsistent-revision", "attempt": "settled-accepted", "expected": "reconcile-evidence"},
+    {"case": "alias-owned-by-another-id", "observed": "other-id-alias", "attempt": "none", "expected": "resolve-name-collision"}
+  ],
+  "update_existing": {
+    "destination_before": {"host_id": "20000000-0000-4000-8000-000000000022", "alias": "web-existing", "revision": "destination-7"},
+    "destination_after": {"host_id": "20000000-0000-4000-8000-000000000022", "alias": "web-existing", "revision": "destination-8"},
+    "cases": [
+      {"case": "confirmed-before-first-write", "observed": "before", "attempt": "none", "expected": "prepare-update"},
+      {"case": "confirmed-update-with-safe-source-references", "observed": "after", "attempt": "settled-accepted", "expected": "revalidate-and-remove-source"},
+      {"case": "interrupted-with-unsettled-destination-update", "observed": "after", "attempt": "unsettled", "expected": "reconcile-attempt"},
+      {"case": "restart-after-reconciling-exact-update", "observed": "after", "attempt": "settled-accepted", "expected": "revalidate-and-remove-source"},
+      {"case": "concurrent-destination-edit", "observed": "changed", "attempt": "settled-accepted", "expected": "compare-conflict"},
+      {"case": "source-still-needed-as-jump", "observed": "after", "attempt": "settled-accepted", "source_jump": "missing", "expected": "block-dependent-host"},
+      {"case": "matching-version-without-this-attempt", "observed": "after", "attempt": "none", "expected": "reconcile-evidence"}
+    ]
+  },
+  "source_references": [
+    {"case": "group-removals-reviewed", "jump": "unchanged", "groups": "reviewed", "expected": "revalidate-removal"},
+    {"case": "group-removal-not-reviewed", "jump": "unchanged", "groups": "unreviewed", "expected": "review-groups"},
+    {"case": "legacy-group-alias-unresolved", "jump": "unchanged", "groups": "ambiguous", "expected": "reconcile-group-binding"},
+    {"case": "qualified-hop-disappears", "jump": "missing", "groups": "reviewed", "expected": "block-dependent-host"},
+    {"case": "same-token-now-reaches-another-hop", "jump": "retargeted", "groups": "none", "expected": "block-dependent-host"},
+    {"case": "conditional-hop-cannot-be-verified", "jump": "unverified", "groups": "none", "expected": "block-dependent-host"},
+    {"case": "approved-external-hop-unchanged", "jump": "unchanged", "groups": "none", "expected": "revalidate-removal"},
+    {"case": "source-inputs-change-after-review", "jump": "unchanged", "groups": "reviewed", "inputs": "changed", "expected": "refresh-plan"},
+    {"case": "prepared-group-removal-matches-post-state", "jump": "unchanged", "groups": "reviewed", "inputs": "prepared-removal", "expected": "revalidate-removal"},
+    {"case": "independent-group-edit-after-local-removal", "jump": "unchanged", "groups": "reviewed", "inputs": "changed", "expected": "refresh-plan"}
+  ],
+  "publication_barriers": [
+    {
+      "case": "destination-send-in-flight-when-receive-only-requested",
+      "side": "destination",
+      "effective_mode": "two-way",
+      "requested_mode": "receive-only",
+      "transition": "pending",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "in-flight", "retained": true, "publisher_quiescent": false},
+      "effective_configuration_unchanged": true,
+      "reported_effective": false
+    },
+    {
+      "case": "restart-source-send-uncertain-keeps-transition-pending",
+      "side": "source",
+      "effective_mode": "two-way",
+      "requested_mode": "receive-only",
+      "transition": "pending",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "uncertain", "retained": true, "publisher_quiescent": true},
+      "effective_configuration_unchanged": true,
+      "reported_effective": false
+    },
+    {
+      "case": "source-send-definitively-rejected-mode-stays-unchanged",
+      "side": "source",
+      "effective_mode": "two-way",
+      "requested_mode": "receive-only",
+      "transition": "failed",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "settled-rejected", "retained": true, "publisher_quiescent": true},
+      "effective_configuration_unchanged": true,
+      "reported_effective": false
+    },
+    {
+      "case": "destination-send-accepted-and-drained-before-effective-change",
+      "side": "destination",
+      "effective_mode": "receive-only",
+      "requested_mode": "receive-only",
+      "transition": "effective",
+      "admissions_fenced": true,
+      "new_publication_admitted": false,
+      "reservation": {"persisted_before_send": true, "status": "settled-accepted", "retained": true, "publisher_quiescent": true},
+      "effective_configuration_unchanged": false,
+      "reported_effective": true
+    }
+  ],
+  "invalid_publication_barriers": [
+    {
+      "expected_rejection": "effective-transition-with-unsettled-attempt",
+      "example": {"case": "effective-transition-with-unsettled-attempt", "side": "destination", "effective_mode": "receive-only", "requested_mode": "receive-only", "transition": "effective", "admissions_fenced": true, "new_publication_admitted": false, "reservation": {"persisted_before_send": true, "status": "in-flight", "retained": true, "publisher_quiescent": false}, "effective_configuration_unchanged": true, "reported_effective": true}
+    },
+    {
+      "expected_rejection": "unsettled-reservation-discarded",
+      "example": {"case": "unsettled-reservation-discarded", "side": "source", "effective_mode": "two-way", "requested_mode": "receive-only", "transition": "pending", "admissions_fenced": true, "new_publication_admitted": false, "reservation": {"persisted_before_send": true, "status": "uncertain", "retained": false, "publisher_quiescent": true}, "effective_configuration_unchanged": true, "reported_effective": false}
+    },
+    {
+      "expected_rejection": "new-admission-crosses-transition-fence",
+      "example": {"case": "new-admission-crosses-transition-fence", "side": "destination", "effective_mode": "two-way", "requested_mode": "receive-only", "transition": "pending", "admissions_fenced": true, "new_publication_admitted": true, "reservation": {"persisted_before_send": true, "status": "in-flight", "retained": true, "publisher_quiescent": false}, "effective_configuration_unchanged": true, "reported_effective": false}
+    }
+  ]
+}

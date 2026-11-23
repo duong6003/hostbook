@@ -1,0 +1,31 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "store_id": "10000000-0000-4000-8000-000000000002",
+  "independent_cases": [
+    {
+      "case": "duplicate-name",
+      "hosts": [
+        {"host_id": "20000000-0000-4000-8000-000000000011", "alias": "web"},
+        {"host_id": "20000000-0000-4000-8000-000000000012", "alias": "web"}
+      ],
+      "expected": "reject-ambiguous-name-without-first-match"
+    },
+    {
+      "case": "case-insensitive-duplicate-name",
+      "hosts": [
+        {"host_id": "20000000-0000-4000-8000-000000000011", "alias": "Web"},
+        {"host_id": "20000000-0000-4000-8000-000000000012", "alias": "web"}
+      ],
+      "expected": "reject-ambiguous-name-without-case-renaming"
+    },
+    {
+      "case": "duplicate-id-after-manual-copy",
+      "hosts": [
+        {"host_id": "20000000-0000-4000-8000-000000000011", "alias": "web"},
+        {"host_id": "20000000-0000-4000-8000-000000000011", "alias": "web-copy"}
+      ],
+      "expected": "reject-duplicate-id-without-regeneration-or-merge"
+    }
+  ]
+}

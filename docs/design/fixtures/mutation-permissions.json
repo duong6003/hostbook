@@ -1,0 +1,201 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "stores": [
+    {
+      "store_id": "10000000-0000-4000-8000-000000000001",
+      "role": "private",
+      "mode": "private",
+      "rights": "none",
+      "resources": {
+        "directory": "private/directory",
+        "vault": "private/vault",
+        "unlock_cache": "private/unlock_cache",
+        "index_cache": "private/index_cache",
+        "writer_gate": "private/writer_gate",
+        "sync_status": "private/sync_status",
+        "connection": "private/connection",
+        "mode": "private/mode"
+      }
+    },
+    {
+      "store_id": "10000000-0000-4000-8000-000000000002",
+      "role": "shared",
+      "mode": "receive-only",
+      "rights": "read-write",
+      "resources": {
+        "directory": "shared-a/directory",
+        "vault": "shared-a/vault",
+        "unlock_cache": "shared-a/unlock_cache",
+        "index_cache": "shared-a/index_cache",
+        "writer_gate": "shared-a/writer_gate",
+        "sync_status": "shared-a/sync_status",
+        "connection": "shared-a/connection",
+        "mode": "shared-a/mode"
+      },
+      "default_mode": "receive-only"
+    },
+    {
+      "store_id": "10000000-0000-4000-8000-000000000003",
+      "role": "shared",
+      "mode": "two-way",
+      "rights": "read-write",
+      "resources": {
+        "directory": "shared-b/directory",
+        "vault": "shared-b/vault",
+        "unlock_cache": "shared-b/unlock_cache",
+        "index_cache": "shared-b/index_cache",
+        "writer_gate": "shared-b/writer_gate",
+        "sync_status": "shared-b/sync_status",
+        "connection": "shared-b/connection",
+        "mode": "shared-b/mode"
+      },
+      "default_mode": "receive-only"
+    }
+  ],
+  "cases": [
+    {
+      "case": "new-default-private",
+      "operation": "new",
+      "expected": "allow",
+      "destination": null
+    },
+    {
+      "case": "import-default-private",
+      "operation": "import",
+      "expected": "allow",
+      "destination": null
+    },
+    {
+      "case": "receive-only-undo",
+      "operation": "undo",
+      "expected": "reject-mode",
+      "store": 1,
+      "explicit_destination": true
+    },
+    {
+      "case": "receive-only-import",
+      "operation": "import",
+      "expected": "reject-mode",
+      "store": 1,
+      "explicit_destination": true
+    },
+    {
+      "case": "receive-only-vault-recovery",
+      "operation": "vault-recovery",
+      "expected": "reject-mode",
+      "store": 1,
+      "explicit_destination": true
+    },
+    {
+      "case": "receive-only-internal-callback",
+      "operation": "internal-callback",
+      "expected": "reject-mode",
+      "store": 1,
+      "explicit_destination": true
+    },
+    {
+      "case": "receive-only-receive",
+      "operation": "receive",
+      "expected": "allow",
+      "store": 1
+    },
+    {
+      "case": "receive-only-derived",
+      "operation": "derived",
+      "expected": "allow",
+      "store": 1
+    },
+    {
+      "case": "two-way-explicit-write",
+      "operation": "internal-callback",
+      "expected": "allow",
+      "store": 2,
+      "explicit_destination": true
+    },
+    {
+      "case": "two-way-no-write-rights",
+      "operation": "vault-recovery",
+      "expected": "reject-rights",
+      "store": 2,
+      "explicit_destination": true,
+      "rights": "read"
+    },
+    {
+      "case": "two-way-ordinary-fenced",
+      "operation": "ordinary-publish",
+      "expected": "reject-fence",
+      "store": 2,
+      "explicit_destination": true,
+      "reservation": true,
+      "fenced": true
+    },
+    {
+      "case": "sourced-callback-stale-vault",
+      "operation": "internal-callback",
+      "expected": "reject-snapshot",
+      "store": 2,
+      "explicit_destination": true,
+      "snapshot": "stale-vault"
+    },
+    {
+      "case": "ordinary-shared-offline-rejected-despite-earlier-rights",
+      "operation": "ordinary-edit",
+      "store": 2,
+      "explicit_destination": true,
+      "rights": "read-write",
+      "preflight": "attempted-unavailable",
+      "expected": "reject-offline"
+    },
+    {
+      "case": "ordinary-shared-online-authorized",
+      "operation": "ordinary-edit",
+      "store": 2,
+      "explicit_destination": true,
+      "expected": "allow"
+    },
+    {
+      "case": "ordinary-git-reserves-only-the-conditional-request",
+      "operation": "ordinary-git-attempt",
+      "store": 2,
+      "explicit_destination": true,
+      "rights": "unknown",
+      "live_read": true,
+      "exact_ref": true,
+      "reservation": true,
+      "local_shared_write": false,
+      "reported_published": false,
+      "expected": "reserve-conditional-request"
+    },
+    {
+      "case": "ordinary-private-offline-allowed",
+      "operation": "ordinary-edit",
+      "store": 0,
+      "preflight": "attempted-unavailable",
+      "expected": "allow"
+    },
+    {
+      "case": "publish-offline-blocked-preserves-pending",
+      "operation": "ordinary-publish",
+      "store": 2,
+      "explicit_destination": true,
+      "rights": "unknown",
+      "preflight": "attempted-unavailable",
+      "pending_before": true,
+      "pending_retained": true,
+      "reported_published": false,
+      "expected": "reject-offline"
+    },
+    {
+      "case": "permission-denial-preserves-pending",
+      "operation": "ordinary-edit",
+      "store": 2,
+      "explicit_destination": true,
+      "rights": "read",
+      "pending_before": true,
+      "pending_retained": true,
+      "reported_published": false,
+      "expected": "reject-rights"
+    }
+  ]
+}

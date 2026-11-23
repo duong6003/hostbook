@@ -1,0 +1,23 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "store_id": "10000000-0000-4000-8000-000000000001",
+  "before": [
+    {"host_id": "20000000-0000-4000-8000-000000000001", "alias": "web"}
+  ],
+  "after": [
+    {"host_id": "20000000-0000-4000-8000-000000000001", "alias": "web-east"},
+    {"host_id": "20000000-0000-4000-8000-000000000004", "alias": "web"}
+  ],
+  "previous_selection": {
+    "store_id": "10000000-0000-4000-8000-000000000001",
+    "host_id": "20000000-0000-4000-8000-000000000001",
+    "displayed_alias": "web"
+  },
+  "expected": {
+    "resolved_alias": "web-east",
+    "identity_preserved": true,
+    "must_not_resolve_to_host_id": "20000000-0000-4000-8000-000000000004",
+    "if_selected_id_is_later_deleted": "report-stale-selection-without-alias-fallback"
+  }
+}

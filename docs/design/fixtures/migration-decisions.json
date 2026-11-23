@@ -1,0 +1,84 @@
+{
+  "fixture_kind": "documentation-only",
+  "contract_version": 1,
+  "classification": [
+    {"case": "no-remote-new-private", "remote": "none", "vault": "absent", "pending": false, "identity": "unresolved-unambiguous", "expected": "private-candidate"},
+    {"case": "remote-shared-vault-found-first", "remote": "verified", "vault": "shared-existing", "pending": false, "identity": "unresolved-unambiguous", "expected": "unlock-existing-shared", "private_vault": "separate", "may_create_shared_vault": false},
+    {"case": "offline-is-still-shared", "remote": "unreachable", "vault": "absent", "pending": false, "identity": "unresolved-unambiguous", "expected": "stop-remote-discovery", "ordinary_pending_exception": false},
+    {"case": "ambiguous-upstream", "remote": "ambiguous", "vault": "absent", "pending": false, "identity": "unresolved-unambiguous", "expected": "stop-target-choice"},
+    {"case": "independently-created-vaults", "remote": "verified", "vault": "independent", "pending": false, "identity": "unresolved-unambiguous", "expected": "stop-vault-reconciliation", "both_originals_retained": true},
+    {"case": "required-vault-locked", "remote": "verified", "vault": "locked", "pending": false, "identity": "unresolved-unambiguous", "expected": "stop-unlock", "reencryption_allowed": false},
+    {"case": "partial-envelopes", "remote": "none", "vault": "partial", "pending": false, "identity": "unresolved-unambiguous", "expected": "stop-vault-recovery", "may_create_vault": false},
+    {"case": "staged-and-untracked-pending", "remote": "verified", "vault": "complete", "pending": true, "identity": "unresolved-unambiguous", "expected": "stop-work-reconciliation", "pending_retained": true},
+    {"case": "same-id-divergent-history", "remote": "verified", "vault": "complete", "pending": false, "identity": "history-mismatch", "expected": "stop-identity-reconciliation", "automatic_merge": false}
+  ],
+  "interruptions": [
+    {"case": "reencryption-fails-in-staging", "checkpoint": "staged", "event": "encryption-failed", "original_retained": true, "backup_verified": true, "promoted": false, "expected": "retain-original-and-stage-evidence"},
+    {"case": "accepted-send-response-lost", "checkpoint": "publication-pending", "event": "lost-acknowledgement", "original_retained": true, "backup_verified": true, "reservation_retained": true, "publisher_quiescent": true, "remote_outcome": "uncertain", "reported_complete": false, "expected": "reconcile-exact-remote-attempt"},
+    {"case": "rollback-finds-newer-work", "checkpoint": "rollback-pending", "event": "newer-work", "original_retained": true, "backup_verified": true, "overwrite_allowed": false, "reported_rolled_back": false, "expected": "stop-compare-and-reconcile"}
+  ],
+  "migration_handoff": {
+    "intent": "synthetic-migration-A", "target": "synthetic-shared-A/ref", "new_generation": 2,
+    "authority": {
+      "owner": "verified-local-owner",
+      "checkout": "isolated-candidate",
+      "base": "verified-old-tip",
+      "git_identity": "approved-migrator",
+      "effects": ["write-identity", "publish-candidate"]
+    },
+    "sequence": [
+      {"step": "drain", "guard": "transition-fence", "old_quiescent": true, "old_reconciled": true, "new_admission": false},
+      {"step": "cutover", "guard": "migration-owned", "handoff_durable": true, "generation": 2, "regular_mode": "receive-only"},
+      {"step": "reserve", "guard": "migration-owned", "actor": "migration", "owner": "verified-local-owner", "intent": "synthetic-migration-A", "target": "synthetic-shared-A/ref", "generation": 2, "checkout": "isolated-candidate", "base": "verified-old-tip", "git_identity": "approved-migrator", "effect": "publish-candidate", "authority_current": true, "rights": "verified", "snapshot_fresh": true, "reservation_durable": true},
+      {"step": "lost-ack", "guard": "migration-owned", "reservation_retained": true, "ownership_retained": true, "outcome": "uncertain", "reported_complete": false}
+    ],
+    "rejected": ["premature-handoff", "ordinary-publisher"]
+  },
+  "resource_claims": {
+    "unresolved": {"store": "planned-A", "checkout": "checkout-A", "target": "repo-A/ref"},
+    "later_registrations": [
+      {"store": "other-ID", "checkout": "checkout-A", "target": "repo-B/ref", "expected": "reject-overlap"},
+      {"store": "other-ID", "checkout": "checkout-B", "target": "repo-A/ref", "expected": "reject-overlap"},
+      {"store": "other-ID", "checkout": "checkout-B", "target": "repo-B/ref", "expected": "allow-review"}
+    ]
+  },
+  "upgrade": [
+    {"case": "fresh-isolated-shared", "kind": "fresh", "disjoint_checkout": true, "binding_current": true, "legacy_local": "never-exposed", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "not-applicable", "prior_sends": "none", "legacy_quiescent": true, "expected": "connect-receive-only"},
+    {"case": "legacy-with-verified-exclusion-and-restore", "kind": "legacy", "disjoint_checkout": true, "binding_current": true, "legacy_local": "kernel-denied", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "restored-in-staging", "prior_sends": "settled", "legacy_quiescent": true, "expected": "eligible-for-handoff"},
+    {"case": "legacy-job-still-can-write", "kind": "legacy", "disjoint_checkout": true, "binding_current": true, "legacy_local": "writable", "legacy_remote": "verified-excluded", "identity_ready": true, "backup": "restored-in-staging", "prior_sends": "settled", "legacy_quiescent": true, "expected": "stop-writer-access"}
+  ],
+  "legacy_remote_policy": {
+    "binding": {
+      "server": "synthetic-git.example.test",
+      "repository": "project-42",
+      "ref": "refs/heads/migration",
+      "connection_generation": 2,
+      "migration_identity": "approved-migrator",
+      "legacy_identities": ["old-automation", "old-device-key"],
+      "policy_revision": "policy-7"
+    },
+    "evidence": {
+      "source": "authenticated-server-policy",
+      "binding": {
+        "server": "synthetic-git.example.test",
+        "repository": "project-42",
+        "ref": "refs/heads/migration",
+        "connection_generation": 2,
+        "migration_identity": "approved-migrator",
+        "legacy_identities": ["old-automation", "old-device-key"],
+        "policy_revision": "policy-7"
+      },
+      "legacy_rights": {"old-device-key": "denied", "old-automation": "denied"}
+    }
+  },
+  "mutation_preflight": {
+    "backup_verified": true,
+    "snapshot_fresh": true,
+    "writers_isolated": true,
+    "publications_drained": true,
+    "required_vaults_unlocked": true,
+    "explicit_shared_destination": true,
+    "effective_two_way": true,
+    "actual_write_rights": true
+  }
+}
