@@ -276,10 +276,7 @@ The [migration contract](store-migration.md) defines classification, verified
 backup/restore, rollback boundaries and honest old/new writer compatibility gates.
 The [format/admission proposal](store-format.md) selects durable identity encoding
 and legacy SSH/share-package mapping; [journal/retention](store-journal.md) selects
-local authority and protected payloads. Remaining #35 work includes concrete
-upgrade verification and restore mechanisms and implementation-level
-lock/cache/vault contracts. The [acceptance map](store-acceptance.md) records the
-parent #33 fixture plan.
-The managed writer inventory is mapped at the cited main revision. Final #35
-review and runtime enforcement remain separate steps. Downstream
-#36–#46 own runtime enforcement, migration and isolated regression coverage.
+local authority and protected payloads. The [acceptance map](store-acceptance.md)
+records the parent fixture plan. Downstream #36–#46 own upgrade verification,
+restoration, store-resource implementation and enforcement of the writer
+boundaries mapped at the cited main revision.

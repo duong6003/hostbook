@@ -191,6 +191,9 @@ Run this documentation fixture with `python3`. It models only the revision
 decision after authorization, with no file, checkout or network access.
 
 ```python
+if not __debug__:
+    raise SystemExit("This check requires Python assertions. Remove -O and PYTHONOPTIMIZE.")
+
 current = {('shared-a', 'db-id'): (7, 'original'),
            ('shared-a', 'web-id'): (3, 'original'),
            ('shared-b', 'db-id'): (4, 'original')}
@@ -267,9 +270,6 @@ The [format and admission slice](store-format.md) selects durable v1 identity
 encoding and legacy SSH/package admission, including multi-alias mapping.
 The [journal/retention slice](store-journal.md) selects device-local transaction
 authority, protected recovery payloads and explicit collection policy.
-Within #35, durable cache/vault/lock/status mechanisms still need specification.
-The [acceptance map](store-acceptance.md) tracks these gates and the parent fixtures.
-The migration contract leaves concrete backup/restore and writer-exclusion verification open.
-Runtime implementation and regression suites belong to downstream #36–#46,
-not this design slice or #35. No fixture asserts that these behaviors exist at
-the baseline.
+The [acceptance map](store-acceptance.md) tracks the design gates and the
+parent fixtures. Downstream #36–#46 own the runtime store resources, migration
+verification and regression suites.

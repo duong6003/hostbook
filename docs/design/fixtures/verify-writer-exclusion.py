@@ -156,6 +156,8 @@ class WriterExclusionTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if not __debug__:
+        raise SystemExit("This fixture requires Python assertions. Remove -O and PYTHONOPTIMIZE.")
     if os.geteuid() != 0:
         print("SKIP: this fixture needs an isolated root runner to drop to two kernel identities",
               file=sys.stderr)

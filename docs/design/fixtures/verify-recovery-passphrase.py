@@ -91,6 +91,8 @@ def run():
 
 
 if __name__ == "__main__":
+    if not __debug__:
+        raise SystemExit("This fixture requires Python assertions. Remove -O and PYTHONOPTIMIZE.")
     if sys.argv[1:2] == ["--exec"]:
         guarded_exec(sys.argv[2], sys.argv[3:])
     else:

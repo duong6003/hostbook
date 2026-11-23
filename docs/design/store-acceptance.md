@@ -7,34 +7,30 @@ The runtime fixture column describes evidence still to collect.
 
 ## #35 design gates
 
-| Gate | Evidence in the draft | Remaining work before #35 can close |
+| Gate | Evidence in the draft | Design decision or evidence |
 | --- | --- | --- |
 | Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | Update-existing decisions and identity retention are recorded below. |
-| Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Managed writers are mapped at [current main](store-mutations.md#file-level-write-boundaries-on-current-main). Carry the map into final design review and downstream enforcement. |
-| Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | Validate complete transaction durability and restoration. The [local replacement sequence](store-journal.md#local-selector-and-registry-replacement) and the [recovery passphrase pipe](store-journal.md#recovery-passphrase-transport) have isolated tool evidence. |
-| Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md), [staged restore checkpoint](store-migration.md#staged-restore-checkpoint), [restore metadata checkpoint](store-migration.md#restore-permissions-and-ownership-checkpoint) and [local cutover interruption checkpoint](store-migration.md#local-cutover-interruption-checkpoint). | Verify native macOS exclusion, and choose ACL, remote-policy and restoration evidence for the supported migration path. |
-| Parent acceptance mapped with independent review | Runtime plan below and independent review on exact draft commits. | Complete the remaining design decisions and review the assembled final SHA. |
+| Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Managed writers are mapped at [current main](store-mutations.md#file-level-write-boundaries-on-current-main). Use the map for downstream enforcement. |
+| Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | The [local replacement sequence](store-journal.md#local-selector-and-registry-replacement) and the [recovery passphrase pipe](store-journal.md#recovery-passphrase-transport) have isolated tool evidence. |
+| Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md), [staged restore checkpoint](store-migration.md#staged-restore-checkpoint), [restore metadata checkpoint](store-migration.md#restore-permissions-and-ownership-checkpoint) and [local cutover interruption checkpoint](store-migration.md#local-cutover-interruption-checkpoint). | The contract specifies local path and ACL evidence, exact remote policy evidence and protected staging before cutover. |
+| Parent acceptance mapped with independent review | Runtime plan below and independent review on exact draft commits. | Require independent review of the assembled PR head before integration. |
 
 ## Readiness review
 
-Reviewed the assembled design at `89ba62a7cf151f46e920ac4c49d1665406f67ec8`
-against main `6310dcd`. Identity, the managed writer inventory and the parent
-acceptance mapping have design coverage. The subsequent
-[legacy shared admission](store-migration.md#legacy-shared-admission)
-defines migration-only write authority before an admitted v1 registration.
-The following design decisions and evidence
-remain open before final review.
+The five gates above cover the design contract and its synthetic fixtures.
+Integration of the independently reviewed [PR #47](https://github.com/duong6003/hostbook/pull/47)
+is the handoff to #36. The [#33 scope clarification](https://github.com/duong6003/hostbook/issues/33#issuecomment-7041503475)
+places product and platform verification in the downstream work.
 
-| Remaining item | Evidence needed |
+| Downstream evidence | Work items |
 | --- | --- |
-| Protected recovery and durability | The local selector and registry replacement sequence is selected and exercised on APFS and ext4. Isolated restoration covers native mode, ACL and owner metadata and [one required external SSH Include](store-migration.md#staged-restore-checkpoint). Hostbook archive integration, macOS cross-account ownership, broader external dependency coverage, and system crash and power-loss durability remain open. |
-| Old-writer exclusion | The [Linux writer fixture](store-writer-validation.md) covers supplementary group and direct POSIX ACL grants. Run the distinct-UID fixture on a privileged macOS test runner. [Local writer evidence](store-migration.md#evidence-of-local-writer-exclusion) defines checks for target and ancestor rights. Runtime collection remains open. [Remote writer evidence](store-migration.md#evidence-of-remote-writer-exclusion) defines and exercises policy scope and invalidation synthetically. Provider integration and real policy verification remain open. |
+| Hostbook archive integration, broader external dependencies, cross-account ownership, distinct-UID writer exclusion on macOS, and actual local ACL/ancestor and remote-provider policy collection. | [#43](https://github.com/duong6003/hostbook/issues/43), [#46](https://github.com/duong6003/hostbook/issues/46) |
+| Runtime transfer recovery, integrated crash tests, and system crash or power-loss durability. | [#42](https://github.com/duong6003/hostbook/issues/42), [#43](https://github.com/duong6003/hostbook/issues/43), [#46](https://github.com/duong6003/hostbook/issues/46) |
 
-On native macOS, the three static decision validators and the cutover, OpenSSH
-and encrypted restore fixtures passed at the reviewed revision. The native
-two-UID run skipped and the remote retry was blocked before a runner started.
-Keep #35 open and #36 waiting. Runtime transfer, restoration and integration
-suites are mapped below.
+The Linux writer fixture covers ordinary permissions, supplementary groups,
+direct ACL grants and a writable parent. The native macOS two-UID run skipped
+and the remote runner was blocked before allocation. See
+[writer validation](store-writer-validation.md) for scope and results.
 
 ## First transfer scope
 
@@ -49,10 +45,8 @@ owns implementation, with restart coverage in [#42](https://github.com/duong6003
 
 ## First #36 slice after #35
 
-[#36](https://github.com/duong6003/hostbook/issues/36) depends on #35. The
-remaining #35 work is tracked above. Native macOS two-UID writer exclusion
-still lacks evidence. Durability and migration requirements remain open, along
-with independent review of the assembled draft.
+[#36](https://github.com/duong6003/hostbook/issues/36) starts after the
+reviewed #35 design is integrated.
 
 Start #36 with one read-only [v1 context resolver](store-registration.md#registration-authority)
 against an explicitly isolated, verified fixture account root. Resolve an

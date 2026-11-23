@@ -140,6 +140,8 @@ def run_case(case):
 
 
 if __name__ == "__main__":
+    if not __debug__:
+        raise SystemExit("This fixture requires Python assertions. Remove -O and PYTHONOPTIMIZE.")
     print(f"Platform: {platform.system()} {platform.release()} ({platform.machine()})", flush=True)
     for case in ("complete", "missing-acl", "wrong-owner", "wrong-group", "unavailable"):
         run_case(case)

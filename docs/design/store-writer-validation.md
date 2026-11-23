@@ -9,7 +9,7 @@ migrates a store or installs a write policy on an existing remote.
 | Local resources | In a Linux container, a process with the legacy UID was denied when it tried to edit, create files in, or rename the checkout, Git common directory and local state. The upgrade UID could write each resource. The original fixture data stayed unchanged. |
 | Local counterexamples | A process using the upgrade UID could write through mode `0700`. A distinct legacy UID could rename a `0700` checkout when its parent was writable. The fixture blocked handoff and identified the parent. Removing that access cleared the check and preserved the original contents. |
 | Linux group and ACL routes | The fixture blocked the local handoff check and named the file when a supplementary group could open the destination checkout sentinel for writing or a named POSIX ACL could open the state sentinel for writing. Removing each grant cleared the check. Both sentinels and the original file kept their contents. |
-| Remote branch | The legacy Git identity could publish to the original fixture ref. An authenticated attempt by that identity to update the exact upgrade ref was rejected by the server hook. Both refs and the accepted checkout stayed unchanged. The upgrade identity could then update the upgrade ref without changing the original. |
+| Remote branch (historical) | The legacy Git identity could publish to the original fixture ref. An authenticated attempt by that identity to update the exact upgrade ref was rejected by the server hook. Both refs and the accepted checkout stayed unchanged. The upgrade identity could then update the upgrade ref without changing the original. |
 | No evidence | The [migration decision fixtures](fixtures/migration-decisions.json) reject unknown local or remote exclusion, a stale binding and unsettled publication. These are design checks. |
 
 ## Run evidence
@@ -44,10 +44,11 @@ target mode, restores the fixture name, seals its parent and repeats the
 attempt. The second attempt is denied and the original fixture is intact.
 Production evidence collection is a read-only check.
 
-The Git Smart HTTP fixture passed all four tests with Git 2.42.1 on macOS arm64. It used an ephemeral loopback server,
-synthetic identities and a bare repository. Its source is retained in the
-local experimental branch `codex/shared-write-fixture` at `30c4381`. Run
-`PYTHONDONTWRITEBYTECODE=1 python3 tests/shared-write-authority.py` there.
+A historical Git Smart HTTP experiment passed four tests with Git 2.42.1 on
+macOS arm64. It used an ephemeral loopback server, synthetic identities and a
+bare repository. Its script is available only in the local experimental
+checkout at `30c4381`. The [migration decision validator](fixtures/validate-migration.py)
+is the reproducible check for remote policy decisions in this draft.
 
 ## Remaining verification
 

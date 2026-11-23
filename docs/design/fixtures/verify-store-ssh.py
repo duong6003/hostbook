@@ -124,4 +124,6 @@ def run():
 
 
 if __name__ == "__main__":
+    if not __debug__:
+        raise SystemExit("This fixture requires Python assertions. Remove -O and PYTHONOPTIMIZE.")
     run()

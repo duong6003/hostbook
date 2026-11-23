@@ -187,6 +187,9 @@ Validate from repository root (local documentation only):
 ```bash
 git diff --check -- docs/design/store-*.md
 python3 - <<'PY'
+if not __debug__:
+    raise SystemExit("This check requires Python assertions. Remove -O and PYTHONOPTIMIZE.")
+
 import json, pathlib, re
 root = pathlib.Path('docs/design')
 for p in root.glob('store-*.md'):
