@@ -285,6 +285,15 @@ def send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, executab
     return "uncertain"
 
 
+def require_available_edit_slot(recovery, account, store_id):
+    from store_mode import mode_records, recover_sender_links
+    recover_sender_links(recovery,account,store_id)
+    active, pending, inflight = mode_records(recovery,account,store_id,None)
+    require(not active and not inflight, "settle the existing publication or transition before saving")
+    if pending:
+        raise StoreContextError("retry or discard the retained edit before saving: " + ", ".join(pending))
+
+
 def publish_address(load_account, store_id, expected, host_id, stamp, text):
     require("%" not in text, "provide one unscoped IP address")
     try:
@@ -294,6 +303,8 @@ def publish_address(load_account, store_id, expected, host_id, stamp, text):
     selected_route(load_account, store_id, expected, host_id, stamp)
     with store_writer(load_account, store_id, expected) as (account, start, state_fd, _):
         require(start.kind == "shared" and start.effective_mode == "two-way", "shared edit requires effective two-way mode")
+        with recovery_root(account) as recovery:
+            require_available_edit_slot(recovery,account,store_id)
         with receive_binding(account, store_id, expected) as (ctx, target, _, _, binding):
             local = local_inputs(state_fd, store_id)
             with absolute_directory(ctx.checkout) as work:
@@ -338,6 +349,7 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
     with recovery_root(account) as recovery, ExitStack() as opened:
         with store_writer(load_account, store_id, expected) as (actual, locked, _, _lock):
             require((actual, locked) == (account, ctx), "registered publication binding changed")
+            require_available_edit_slot(recovery,account,store_id)
             with receive_binding(actual, store_id, expected) as (active, live, _, _, checked):
                 require((active, live, checked) == (ctx, target, binding), "registered publication binding changed")
                 selected_route(load_account, store_id, expected, host_id, stamp)

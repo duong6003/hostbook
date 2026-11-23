@@ -926,6 +926,76 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(f.store), before)
         self.assertEqual(snapshot(f.remote), remote)
 
+    def test_one_retained_edit_per_store_can_retry_without_switching_mode(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted") as sends:
+            candidate = edit()["attempt_id"]
+            with self.assertRaisesRegex(StoreContextError,candidate):
+                edit()
+            self.assertEqual(sends.call_count,1)
+        self.assertEqual(len(list((self.recovery/"edits").iterdir())),1)
+        review = store_mode.change_mode(load,store,self.generations,"two-way")
+        self.assertEqual((review["pending"],review["choices"]),([candidate],["retry","discard","cancel"]))
+        packet = dict(account=asdict(self.account),store_id=store,generations=asdict(self.generations))
+        run = subprocess.run([f.app,"_store_mode","two-way","retry",candidate],cwd=self.root,env=f.env,
+                             input=json.dumps(packet,default=os.fspath),text=True,capture_output=True)
+        self.assertEqual(run.returncode,0,run.stderr)
+        done = json.loads(run.stdout)
+        self.assertEqual((done["outcome"],done["mode"],done["local"]),("accepted","two-way","received"))
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),"Host db\n  HostName 192.0.2.88")
+        with patch.object(store_publish,"send",side_effect=AssertionError("retired candidate replayed")):
+            self.assertNotIn("pending",store_mode.change_mode(load,store,Generations(**done["generations"]),"two-way"))
+
+    def test_edit_rechecks_the_slot_after_staging_and_preserves_other_store(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        reserve = store_publish.publish_reserved
+        first, nested = [], False
+        def before_reservation(*args):
+            nonlocal nested
+            if not nested:
+                nested = True
+                first.append(edit()["attempt_id"])
+            return reserve(*args)
+        with patch.object(store_publish,"publish_reserved",side_effect=before_reservation):
+            with patch.object(store_publish,"send",return_value="not-accepted") as sends:
+                with self.assertRaisesRegex(StoreContextError,"retry or discard"):
+                    edit()
+                self.assertEqual(sends.call_count,1)
+        self.assertEqual([p.name for p in (self.recovery/"edits").iterdir()],first)
+        original = snapshot(f.store)
+        other = self.prepare_receive(index=2,installed=f.app)
+        self.assertEqual(other.receive().returncode,0)
+        self.assertEqual(other.git(other.store,"rev-parse","HEAD"),other.tip)
+        self.assertEqual(snapshot(f.store),original)
+
+    def test_discard_retained_edit_allows_fresh_save_without_switching_mode(self):
+        import store_mode
+        import store_publish
+        import store_read
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            first = edit()["attempt_id"]
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        offline = self.root/"offline-remote"
+        f.remote.rename(offline)
+        try:
+            with patch.object(store_publish,"send",side_effect=AssertionError("discard sent an edit")):
+                done = store_mode.change_mode(load,store,self.generations,"two-way","discard",[first])
+        finally:
+            offline.rename(f.remote)
+        self.assertEqual((done["mode"],snapshot(f.store),snapshot(f.remote)),("two-way",before,remote))
+        expected = Generations(**done["generations"])
+        row = store_read.refresh_routes(load,store,expected).strip().split("\t")
+        result = store_publish.publish_address(load,store,expected,row[1],row[3],"192.0.2.44")
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertNotEqual(result["attempt_id"],first)
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),"Host db\n  HostName 192.0.2.44")
+
     def test_mode_cancel_preserves_and_confirmed_discard_retires_exact_edit(self):
         import store_mode
         import store_publish

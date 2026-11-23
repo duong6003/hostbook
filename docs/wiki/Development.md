@@ -193,8 +193,15 @@ On save, Hostbook reads the exact configured branch, compares the selected
 host through intervening first-parent revisions, and builds a direct child
 with a private index. A confirmed store/ref binding, exact base and proposal,
 private incremental Git bundle and sender lease precede the conditional push.
-A rejected or uncertain operation reports its attempt ID and leaves the
-checkout and its index intact. Accepted publication attempts a clean receive;
+Each shared store retains at most one unresolved edit. A rejected or uncertain
+operation reports its attempt ID and preserves the checkout and its index.
+A definitively rejected edit must be retried or discarded before saving
+another edit in that store. Run
+`store-mode STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY two-way` to see
+the retained ID. Append `retry ATTEMPT_ID` to conditionally send that exact
+proposal or `discard ATTEMPT_ID` to retire it. Both decisions leave two-way
+mode effective. Use the returned policy generation for subsequent operations.
+An uncertain sender must settle first. Other stores retain independent slots. Accepted publication attempts a clean receive;
 `local: reconciliation-required` preserves an independently dirty checkout.
 The current local receiver supports ordinary POSIX-accessible repositories
 without executable server hooks. Git checks the exact direct branch under its
