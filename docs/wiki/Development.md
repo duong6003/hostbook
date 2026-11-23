@@ -17,6 +17,7 @@ Core files:
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
 | `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
+| `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. The resolver accepts independently verified account and checkout bindings. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and rollback regressions. |
 | `tests/sync.sh`, `tests/discovery.sh` | Isolated sync/locking failures and synthetic VPN discovery/address controls. |
 | `tests/install.sh` | Isolated Unix installation and update using a local Git repository. |
