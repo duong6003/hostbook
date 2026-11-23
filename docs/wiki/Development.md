@@ -42,8 +42,25 @@ Core files:
 `_store_context STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` reads an
 existing approval from `~/.config/hostbook/store-account-v1.json`. The home
 comes from the effective OS account. `HOME`, XDG overrides and the working
-directory have no role in approval lookup. Provisioning that file must be
-a separate trusted enrollment step. Expect a read failure when it is absent.
+directory have no role in approval lookup. Expect a read failure when the
+approval is absent.
+
+For first local approval of a prepared v1 account, run
+`_approve_store_account ACCOUNT_ROOT` and review the stores and checkout paths
+in the returned JSON. Run the same command with the returned confirmation as a
+second argument to save the approval. The absolute prepared root must contain
+the existing private `state/stores/v1/registry.json` and `recovery/root.json`
+directories and the registered checkouts and Git directories. The approved
+OS home must already contain an owned `.config/hostbook` directory. Connected
+shared entries must already be receive-only.
+
+The command rechecks the plan and refuses a changed checkout or overlapping Git
+directory. It publishes a private file without replacing an existing approval,
+then resolves each approved checkout. A file or directory sync failure blocks
+completion. If publication is uncertain, retain the observed approval and
+reconcile before retrying. This operation creates local approval for prepared
+metadata. Registry creation, replacement approval, vault changes and sync
+have their own flows.
 
 The approval is UTF-8 JSON with exactly `format` (`hostbook-store-account`),
 `version` (integer 1), `home` and `account`. The `home` binding contains
@@ -52,7 +69,7 @@ and recovery bindings, device and recovery IDs, and checkout bindings.
 Use a private owner-only approval file outside all checkout, Git, state and
 recovery directories. macOS approval paths with ACL grants are rejected.
 The reader validates the approval and returns context metadata without
-enrollment, vault access, writes or sync.
+opening a vault or starting sync.
 
 The test suite's installed account case requires a disposable system
 account whose effective home is an empty `/fixture-home`. Set

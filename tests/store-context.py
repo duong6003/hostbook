@@ -232,7 +232,19 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(list(home.iterdir()), [])
         self.assertEqual(snapshot(self.root), before)
 
-        approval = self.write_local_approval(home)
+        config = home / ".config/hostbook"
+        config.mkdir(parents=True)
+        approval = config / "store-account-v1.json"
+        command = [launcher, "_approve_store_account", str(self.root)]
+        planned = subprocess.run(command, cwd=elsewhere, env=env, stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=10)
+        self.assertEqual(planned.returncode, 0, planned.stderr)
+        self.assertFalse(approval.exists())
+        confirmation = json.loads(planned.stdout)["confirmation"]
+        applied = subprocess.run(command + [confirmation], cwd=elsewhere, env=env,
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertEqual(len(json.loads(applied.stdout)["stores"]), 3)
         approval_bytes = approval.read_bytes()
         positive = lookup()
         self.assertEqual(positive.returncode, 0, positive.stderr)
@@ -256,6 +268,88 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual((swapped.returncode, swapped.stdout), (65, ""))
         self.assertIn("directory binding mismatch", swapped.stderr)
         self.assertEqual(approval.read_bytes(), approval_bytes)
+
+    def test_first_approval_validates_and_saves_only_after_matching_confirmation(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        config = home / ".config/hostbook"
+        config.mkdir(parents=True)
+        approval = config / "store-account-v1.json"
+        before = snapshot(self.root)
+        plan = store_context.plan_account_approval(home, self.root)
+        self.assertEqual({row["store_id"] for row in plan["stores"]},
+                         {entry["store_id"] for entry in self.entries})
+        self.assertEqual(snapshot(self.root), before)
+        with self.assertRaisesRegex(StoreContextError, "confirmation"):
+            store_context.approve_account(home, self.root, "wrong confirmation")
+        self.assertEqual(snapshot(self.root), before)
+
+        result = store_context.approve_account(home, self.root, plan["confirmation"])
+        self.assertEqual(len(result["stores"]), 3)
+        self.assertEqual(approval.stat().st_mode & 0o777, 0o600)
+        saved = store_context.load_approved_account(home)
+        self.assertEqual(resolve_store(saved, self.entries[1]["store_id"], self.generations).checkout,
+                         self.root / "shared a")
+        self.assertEqual({path: value for path, value in snapshot(self.root).items()
+                          if path != approval.relative_to(self.root)}, before)
+        approved = approval.read_bytes()
+        with self.assertRaisesRegex(StoreContextError, "approval already exists"):
+            store_context.approve_account(home, self.root, plan["confirmation"])
+        self.assertEqual(approval.read_bytes(), approved)
+
+    def test_approval_sync_failure_is_distinguished_from_prepublication_failure(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        config = home / ".config/hostbook"
+        config.mkdir(parents=True)
+        approval = config / "store-account-v1.json"
+        plan = store_context.plan_account_approval(home, self.root)
+        before = snapshot(self.root)
+        with patch("store_context.sync_local", side_effect=(None, OSError("file sync failed"))):
+            with self.assertRaises(OSError):
+                store_context.approve_account(home, self.root, plan["confirmation"])
+        self.assertEqual(snapshot(self.root), before)
+
+        with patch("store_context.sync_local", side_effect=(None, None, OSError("directory sync failed"))):
+            with self.assertRaisesRegex(StoreContextError, "outcome uncertain"):
+                store_context.approve_account(home, self.root, plan["confirmation"])
+        self.assertEqual(list(config.iterdir()), [approval])
+        saved = approval.read_bytes()
+        with self.assertRaisesRegex(StoreContextError, "approval already exists"):
+            store_context.approve_account(home, self.root, plan["confirmation"])
+        self.assertEqual(approval.read_bytes(), saved)
+
+    def test_approval_refuses_replaced_checkout_before_writing(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        (home / ".config/hostbook").mkdir(parents=True)
+        plan = store_context.plan_account_approval(home, self.root)
+        checkout = self.root / "shared a"
+        parked = checkout.rename(self.root / "parked")
+        shutil.copytree(parked, checkout)
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "confirmation"):
+            store_context.approve_account(home, self.root, plan["confirmation"])
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_approval_refuses_shared_git_and_two_way_mode(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        (home / ".config/hostbook").mkdir(parents=True)
+        self.entries[1]["effective_mode"] = "two-way"
+        self.save_registry()
+        with self.assertRaisesRegex(StoreContextError, "receive-only"):
+            store_context.plan_account_approval(home, self.root)
+
+        self.entries[1]["effective_mode"] = "receive-only"
+        self.save_registry()
+        git = self.root / "shared b/.git"
+        shutil.rmtree(git)
+        git.write_text(f"gitdir: {self.root / 'shared a/.git'}\n")
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "overlapping"):
+            store_context.plan_account_approval(home, self.root)
+        self.assertEqual(snapshot(self.root), before)
 
     def test_three_contexts_are_independent_and_resolution_does_not_write(self):
         before = snapshot(self.root)
