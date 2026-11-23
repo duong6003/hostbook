@@ -151,6 +151,11 @@ system account's existing filesystem access. It does not ask for a store
 password or publish. It refuses dirty or divergent checkouts, pending
 recovery, unsupported Git configuration, and changes to vault or other tracked
 files. Network transports and vault updates require separate admission.
+A verified terminal publication/control or cancellation before any transaction
+effect can release its fence. Transfer or migration completion/compensation
+after effects requires protected recovery evidence. Receive preserves those
+fences while that reconciliation is unavailable. A provisional migration with
+unknown resource overlap blocks admission across the account.
 
 Prepare `state/stores/v1/STORE_ID/connection/CONNECTION/target.json` in the
 approved account. The generation directory is owner-only and the binding is

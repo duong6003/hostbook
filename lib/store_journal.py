@@ -145,7 +145,12 @@ def transaction(record, prior):
                         "transaction evidence changed identity")
                 if category == "attempts" and attempt_outcome(old):
                     require(old == new, "settled transaction attempt changed")
-    complete = state in TERMINAL and drained and collected != "collection-intended"
+    # This reader can prove cancellation before any data effect. Completion and compensation
+    # of performed effects need the protected outcome evidence of their recovery worker.
+    complete = (state == "cancelled" and prior is not None and prior["checkpoint"] in ("prepared", "cancelled")
+                and drained and not record["effects"] and not record["attempts"] and collected == "retained"
+                and not collection["payload_ids"] and not collection["recovery_generations"]
+                and collection["decision_id"] is None)
     # Provisional migration claims may overlap a checkout before it has a registry row.
     return (None if op == "migration" and not complete else stores), complete
 
@@ -162,6 +167,8 @@ def classify(folder, account, ident, kind):
         require(all(re.fullmatch(r"[1-9][0-9]*\.json", name) for name in names)
                 and selector["sequence"] <= len(names), "incomplete recovery history")
         prior = None
+        unsettled_terminal = False
+        affected = set()
         for seq in range(1, len(names) + 1):
             record = private_json(history, f"{seq}.json")
             require(record[key] == ident and type(record["version"]) is int and record["version"] == 1
@@ -171,9 +178,16 @@ def classify(folder, account, ident, kind):
                     "invalid recovery revision")
             check_owner(record["owner"])
             scope, terminal = (control if kind == "control" else transaction)(record, prior)
+            if kind == "transactions" and record["checkpoint"] in TERMINAL and not terminal:
+                unsettled_terminal = True
+            if seq >= selector["sequence"]:
+                if scope is None:
+                    affected = None
+                elif affected is not None:
+                    affected.update(scope)
             prior = record
-        # A later unselected revision cannot authorize further work.
-        return scope, terminal and selector["sequence"] == len(names)
+        # A later unselected revision cannot narrow the scope of the selected authority.
+        return affected, terminal and not unsettled_terminal and selector["sequence"] == len(names)
 
 
 def require_idle(recovery_fd, account, store_id):

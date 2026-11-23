@@ -531,6 +531,59 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(f.store), before)
         self.assertFalse((f.target.parent.parent.parent / "receive.pending").exists())
 
+    def test_recovery_labels_cannot_settle_earlier_effects_or_unselected_migration(self):
+        import store_journal
+        def history(operation, states, selected, effects, collection):
+            parent = self.recovery / "transactions"
+            parent.mkdir(mode=0o700, exist_ok=True)
+            ident = new_id()
+            folder = parent / ident
+            folder.mkdir(mode=0o700)
+            (folder / "records").mkdir(mode=0o700)
+            source, destination = self.entries[1]["store_id"], self.entries[2]["store_id"]
+            scope = [dict(store_id=s, role=r, snapshot_id=new_id(), checkout_generation=1,
+                     connection_generation=1, identity_generation=1, vault_generation=1)
+                     for s, r in ((source, "source"), (destination, "destination"))]
+            owner = dict(owner_id=new_id(), process_id=1, boot_id=new_id(), process_start_id=new_id())
+            rec = dict(format="hostbook-transaction", version=1, transaction_id=ident,
+                       device_id=self.account.device_id, root_id=self.account.recovery_root_id, operation=operation,
+                       owner=owner, stores=scope, hosts=[dict(store_id=source, host_id=new_id())], attempts=[],
+                       payload_id=new_id(), recovery_generation=1)
+            for seq, state in enumerate(states, 1):
+                file = folder / "records" / f"{seq}.json"
+                file.write_text(json.dumps(dict(rec, checkpoint=state, sequence=seq, previous_sequence=seq-1,
+                                               effects=effects if seq > 1 else [], collection=collection)))
+                file.chmod(0o600)
+            selector = folder / "current.json"
+            selector.write_text(json.dumps(dict(version=1, transaction_id=ident, sequence=selected)))
+            selector.chmod(0o600)
+            return folder
+        fd = os.open(self.recovery, store_context.DIRECTORY_FLAGS)
+        self.addCleanup(os.close, fd)
+        def idle(index):
+            store_journal.require_idle(fd, self.account, self.entries[index]["store_id"])
+        retained = dict(decision_id=None, payload_state="retained", payload_ids=[], recovery_generations=[])
+        folder = history("migration", ["prepared", "cancelled"], 1, [], retained)
+        with self.assertRaises(StoreContextError):
+            idle(0)
+        shutil.rmtree(folder)
+        effect = dict(effect_id=new_id(), store_id=self.entries[1]["store_id"], intent_id=new_id(),
+                      evidence_id=None, outcome="intended")
+        for terminal in ("cancelled", "rolled-back"):
+            folder = history("transfer", ["prepared", "destination-saved", terminal], 3, [effect], retained)
+            with self.assertRaises(StoreContextError):
+                idle(1)
+            idle(0)
+            shutil.rmtree(folder)
+        invalid_collection = dict(retained, payload_ids=[new_id()])
+        folder = history("transfer", ["prepared", "cancelled"], 2, [], invalid_collection)
+        with self.assertRaises(StoreContextError):
+            idle(1)
+        idle(0)
+        shutil.rmtree(folder)
+        history("transfer", ["prepared", "cancelled"], 2, [], retained)
+        idle(1)
+
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
         os.link(f.store / "secrets/vault.pub", self.root / "other-public-key")
