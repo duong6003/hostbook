@@ -115,7 +115,7 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py", "store_mode.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -179,9 +179,10 @@ class StoreContextTest(unittest.TestCase):
         app.write_text(body)
         app.chmod(0o700)
         shutil.copytree(source/"lib",installed/"lib")
-        context = installed/"lib/store_context.py"
         if not disposable_account:
-            context.write_text(context.read_text().replace("Path(pwd.getpwuid(os.geteuid()).pw_dir)", "Path("+repr(str(approved_home))+")"))
+            for name in ("store_context.py", "store_private.py"):
+                context = installed/"lib"/name
+                context.write_text(context.read_text().replace("Path(pwd.getpwuid(os.geteuid()).pw_dir)", "Path("+repr(str(approved_home))+")"))
         shutil.copytree(source/"lang",installed/"lang")
         library = installed/"copied-helpers"
         library.write_text(body.split("# ---------- entry point ----------")[0])
@@ -219,6 +220,18 @@ class StoreContextTest(unittest.TestCase):
         allowed = subprocess.run([app,"_write","unregistered",block],cwd=outside,env=env,capture_output=True)
         self.assertEqual(allowed.returncode,0,allowed.stderr)
         self.assertEqual((outside/"unregistered.conf").read_bytes(),block.read_bytes())
+        private = self.root/"private"
+        git_env = dict(env,GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_GLOBAL=os.devnull,GIT_AUTHOR_NAME="Synthetic",
+                       GIT_COMMITTER_NAME="Synthetic",GIT_AUTHOR_EMAIL="test@example.test",GIT_COMMITTER_EMAIL="test@example.test")
+        for args in (["init","-q","--template="],["symbolic-ref","HEAD","refs/heads/main"],["add","."],["commit","-qm","Private"]):
+            subprocess.run(["/usr/bin/git","-C",private,*args],env=git_env,capture_output=True,check=True)
+        env["HOSTBOOK_DIR"] = str(alias)
+        for args in (["add","192.0.2.11","public-add"],["import",str(block)]):
+            result = subprocess.run([app,*args],cwd=outside,env=env,capture_output=True,timeout=15)
+            self.assertEqual(result.returncode,0,(args,result.stderr))
+            self.assertEqual(json.loads(result.stdout)["store_id"],self.entries[0]["store_id"])
+        self.assertEqual(snapshot(shared),prior)
+
 
     def test_legacy_refusal_does_not_load_translations_from_caller(self):
         app = Path(__file__).resolve().parents[1] / "hostbook"
@@ -253,9 +266,10 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual((legacy / "project.conf").read_bytes(), input_file.read_bytes())
         self.assertEqual(snapshot(marked), before)
 
-    def prepare_receive(self):
-        store = self.root / "shared a"
-        remote, author = self.root / "team.git", self.root / "author"
+    def prepare_receive(self, index=1, installed=None):
+        entry = self.entries[index]
+        store = Path(entry["checkout"]["root"])
+        remote, author = self.root / f"team-{index}.git", self.root / f"author-{index}"
         env = dict(PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin", HOME=str(self.root), HOSTBOOK_STATE=str(self.state),
                    XDG_CONFIG_HOME=str(self.root / "config"), HOSTBOOK_SSH_CONFIG=str(self.root / "ssh.conf"),
                    GIT_CONFIG_NOSYSTEM="1",
@@ -288,7 +302,6 @@ class StoreContextTest(unittest.TestCase):
         git(author, "commit", "-qam", "Edit db")
         git(author, "push", "-q", str(remote), "HEAD:refs/heads/main")
         tip = git(author, "rev-parse", "HEAD")
-        entry = self.entries[1]
         target = self.state / "stores/v1" / entry["store_id"] / "connection/3/target.json"
         target.parent.mkdir(parents=True, mode=0o700)
         for parent in (target.parent, target.parent.parent, target.parent.parent.parent):
@@ -299,7 +312,7 @@ class StoreContextTest(unittest.TestCase):
                                     "uid": os.geteuid(), "bare_repository": asdict(directory_binding(remote))},
                                    default=os.fspath))
         target.chmod(0o600)
-        app = self.installed_launcher()
+        app = installed or self.installed_launcher()
         request = {"account": asdict(self.account), "store_id": entry["store_id"],
                    "generations": asdict(self.generations)}
         def receive():
@@ -680,6 +693,60 @@ class StoreContextTest(unittest.TestCase):
             f.git(f.store, "fsck", "--full", "--strict")
             known.update(objects)
             previous.update(fresh)
+
+    def test_two_registered_remotes_keep_independent_publication_and_receive_modes(self):
+        import store_mode
+        import store_publish
+        import store_read
+        a = self.prepare_receive()
+        b = self.prepare_receive(2,a.app)
+        self.assertEqual(a.receive().returncode,0)
+        load = lambda:self.account
+        aid,bid = [row["store_id"] for row in self.entries[1:]]
+        enabled = store_mode.change_mode(load,aid,self.generations,"two-way")
+        ag = Generations(**enabled["generations"])
+        row = store_read.refresh_routes(load,aid,ag).strip().split("\t")
+        before_b = snapshot(b.remote)
+        native_send = store_publish.send
+        def receive_b(*args):
+            self.assertEqual(b.receive().returncode,0)
+            brow = store_read.refresh_routes(load,bid,self.generations).strip().split("\t")
+            with self.assertRaisesRegex(StoreContextError,"two-way"):
+                store_publish.publish_address(load,bid,self.generations,brow[1],brow[3],"192.0.2.99")
+            return native_send(*args)
+        with patch.object(store_publish,"send",side_effect=receive_b):
+            accepted = store_publish.publish_address(load,aid,ag,row[1],row[3],"192.0.2.88")
+        self.assertEqual(accepted["outcome"],"accepted")
+        self.assertEqual(b.git(b.store,"rev-parse","HEAD"),b.tip)
+        self.assertEqual(snapshot(b.remote),before_b)
+
+    def test_registered_add_and_plain_import_default_to_private_from_shared_selection(self):
+        f = self.prepare_receive()
+        private = self.root/"private"
+        f.git(private,"init","-q","--template=")
+        f.git(private,"symbolic-ref","HEAD","refs/heads/main")
+        f.git(private,"add",".")
+        f.git(private,"commit","-qm","Received private content")
+        before = [snapshot(path) for path in (f.store,self.root/"shared b",f.remote)]
+        request = dict(account=asdict(self.account), store_id=self.entries[1]["store_id"],
+                       generations=asdict(self.generations))
+        def run(action,*args,document=None):
+            packet = request if document is None else dict(request,document=document)
+            return subprocess.run([f.app,action,*args],cwd=f.store,env=f.env,input=json.dumps(packet,default=os.fspath),
+                                  text=True,capture_output=True,timeout=30)
+        added = run("_store_add","new-private","192.0.2.66")
+        self.assertEqual(added.returncode,0,added.stderr)
+        self.assertEqual(json.loads(added.stdout)["store_id"],self.entries[0]["store_id"])
+        imported = run("_store_import",document="Host jump-private\n  HostName 192.0.2.77\n  Port 2200\n")
+        self.assertEqual(imported.returncode,0,imported.stderr)
+        manifest = json.loads((private/".hostbook/identity.json").read_bytes())
+        self.assertEqual([h["name"] for h in manifest["hosts"]],["new-private","jump-private"])
+        self.assertEqual(f.git(private,"status","--porcelain"),"")
+        self.assertEqual(f.git(private,"rev-list","--count","HEAD"),"3")
+        saved = snapshot(private)
+        self.assertNotEqual(run("_store_import",document="Host jump-private\n  HostName 192.0.2.1\n").returncode,0)
+        self.assertEqual(snapshot(private),saved)
+        self.assertEqual([snapshot(path) for path in (f.store,self.root/"shared b",f.remote)],before)
 
     def test_mode_switch_changes_only_selected_registration_and_fences_stale_callbacks(self):
         f = self.prepare_receive()

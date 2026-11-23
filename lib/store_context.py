@@ -945,6 +945,15 @@ def legacy_write_host(account, directory, project, block):
 
 def main(args):
     try:
+        if args and args[0] == "_registered_selection":
+            require(len(args) == 2, "one checkout directory is required")
+            account = load_approved_account(Path(pwd.getpwuid(os.geteuid()).pw_dir))
+            selection = Path(args[1]).resolve(strict=True)
+            info = selection.stat()
+            require(any(binding.root.path == selection and
+                        (binding.root.device,binding.root.inode) == (info.st_dev,info.st_ino)
+                        for binding in account.checkouts.values()), "selection is not the approved checkout")
+            return 0
         if args and args[0] == "_legacy_write_host":
             require(len(args) == 4, "legacy directory, project and input are required")
             home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
@@ -964,6 +973,9 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
+        if action in ("_store_add", "store-add", "_store_import", "store-import"):
+            from store_private import private_command
+            return private_command(action, args[1:])
         if action in ("_store_mode", "store-mode"):
             from store_mode import mode_command
             return mode_command(action, args[1:])

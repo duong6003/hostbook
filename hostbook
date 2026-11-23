@@ -53,7 +53,7 @@ resolve_self "${BASH_SOURCE[0]}"
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  _store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive|_store_context|_approve_store_account|_refresh_store_index|_refresh_store_status|_store_hosts|_store_preview|_store_connect|store-hosts|store-preview|store-connect)
+  _store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive|_store_context|_approve_store_account|_refresh_store_index|_refresh_store_status|_store_hosts|_store_preview|_store_connect|store-hosts|store-preview|store-connect)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       command -v python3 >/dev/null 2>&1 || exit 64
       exec python3 -I -B -S "${SELF%/*}/lib/store_context.py" "$@"
@@ -77,6 +77,16 @@ LIBDIR=${HOSTBOOK_LIB_DIR:-${SELF%/*}/lib}
 IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; esac
 private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
+case ${1:-} in
+  add|import)
+    if [ "${BASH_SOURCE[0]}" = "$0" ] && legacy_authority_present &&
+       command python3 -I -B -S "$LEGACY_GUARD_LIB" _registered_selection "$DIR" >/dev/null 2>&1; then
+      case $1:$# in
+        add:3) exec python3 -I -B -S "$LEGACY_GUARD_LIB" store-add "$3" "$2";;
+        import:2) [ -f "$2" ] || exit 65; exec python3 -I -B -S "$LEGACY_GUARD_LIB" store-import < "$2";;
+      esac
+    fi;;
+esac
 # A v1 checkout requires explicit registration and scoped store operations.
 if [ -e "$DIR/.hostbook" ] || [ -L "$DIR/.hostbook" ]; then
   [ "${BASH_SOURCE:-}" = "$0" ] || return 65

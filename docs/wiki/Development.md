@@ -150,6 +150,17 @@ The guard reads the operating system account's approval independently of
 `HOME` and `HOSTBOOK_DIR`. Warm legacy preview, header, footer and list calls
 do not run this Python check.
 
+### Add or import private hosts
+
+`store-add NAME ADDRESS` adds one literal IPv4 or IPv6 address to the approved
+private store. `store-import` reads plain OpenSSH host stanzas from standard
+input. Each stanza needs one new concrete Host and literal HostName; User and
+Port are optional. From a registered checkout, `hostbook add ADDRESS NAME`
+and `hostbook import FILE` use that same private destination. Each accepted
+input creates one source and one local private commit on a clean attached
+branch. Duplicate names, credential annotations and richer import formats
+require separate handling. These commands do not acquire credentials or publish.
+
 ### Change a connected shared store's sync mode
 
 Use `store-mode STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY MODE` with

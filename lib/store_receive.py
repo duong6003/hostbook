@@ -118,6 +118,8 @@ def require_no_receive_pending(store_fd, own_record):
         actual = read_file(store_fd, "receive.pending", 4096, require_approval_file)
         require(actual == json.dumps(own_record).encode(), "receive evidence changed")
     # Early versions recorded local receives under their original connection generation.
+    if "connection" not in os.listdir(store_fd):
+        return
     with open_directory(store_fd, ("connection",)) as connections:
         for name in os.listdir(connections):
             require(name.isascii() and name.isdigit(), "invalid connection history")
@@ -228,6 +230,45 @@ def fetch_from_fd(stage, directory_fd, ref, destination):
     return oid(stage, destination + "^{commit}")
 
 
+def prepare_adoption(stage, original_index, before, base, tip):
+    check_index(stage, original_index, before, git)
+    (stage / "index").unlink()
+    git(stage, "read-tree", tip)
+    if tip != base:
+        packs = stage / "receive-pack"
+        packs.mkdir()
+        git(stage, "pack-objects", "--revs", str(packs / "pack"), data=f"{tip}\n^{base}\n".encode())
+
+
+
+def install_adoption(account, context, binding, store_fd, record, stage, original_index, before, after, changed, verify_binding):
+    base, tip = record["base"], record["incoming"]
+    with absolute_directory(context.checkout) as checkout_fd:
+        with bound_directory(checkout_fd, (".git",), binding.git_dir, "Git directory changed") as git_fd:
+            info = os.fstat(checkout_fd)
+            require((info.st_dev, info.st_ino) == (binding.root.device, binding.root.inode),
+                    "registered checkout changed")
+            filemode, log_updates = plain_git(git_fd, bare=False)
+            require(read_ref(git_fd, record["ref"]) == base and read_index(git_fd) == original_index,
+                    "Git branch or index changed during receive")
+            check_worktree(checkout_fd, before, filemode)
+            verify_binding()
+            if base != tip:
+                with absolute_directory(account.recovery.path) as recovery:
+                    info = os.fstat(recovery)
+                    require((info.st_dev, info.st_ino) == (account.recovery.device, account.recovery.inode),
+                            "receive recovery directory changed")
+                    with prepare_receive_files(recovery, checkout_fd, stage, changed, before, record) as capture:
+                        verify_binding()
+                        publish_receive_marker(store_fd, record)
+                        verify_binding(record)
+                        fast_forward(checkout_fd, git_fd, record["ref"], base, tip, original_index,
+                                     stage, before, after, lambda: verify_binding(record),
+                                     filemode, log_updates, *capture)
+                        os.unlink("receive.pending", dir_fd=store_fd)
+                        sync_local(store_fd)
+
+
 def receive(load_account, store_id, expected):
     with store_writer(load_account, store_id, expected) as (account, start, state, _lock):
         with receive_binding(account, store_id, expected) as (context, target, _, _store, binding):
@@ -254,13 +295,7 @@ def receive(load_account, store_id, expected):
             tip = fetch_from_fd(stage, target_fd, context.ref, "refs/hostbook/incoming")
             after, changed = verify_incoming(stage, tip, base, store_id, local)
             before = tree(stage, base, git)
-            check_index(stage, original_index, before, git)
-            (stage / "index").unlink()
-            git(stage, "read-tree", tip)
-            if tip != base:
-                packs = stage / "receive-pack"
-                packs.mkdir()
-                git(stage, "pack-objects", "--revs", str(packs / "pack"), data=f"{tip}\n^{base}\n".encode())
+            prepare_adoption(stage, original_index, before, base, tip)
             with store_writer(load_account, store_id, expected) as (current, gated, state_fd, lock_fd):
                 require(local_inputs(state_fd, store_id) == local, "registered SSH inputs changed")
                 require(current == account and gated == context, "registered checkout changed")
@@ -280,30 +315,8 @@ def receive(load_account, store_id, expected):
                         verify_state_directory(state_fd, path_parts(account.state.path, context.writer_lock),
                                                lock_fd, "store writer directory changed")
 
-                    with absolute_directory(context.checkout) as checkout_fd:
-                        with bound_directory(checkout_fd, (".git",), binding.git_dir, "Git directory changed") as git_fd:
-                            info = os.fstat(checkout_fd)
-                            require((info.st_dev, info.st_ino) == (binding.root.device, binding.root.inode),
-                                    "registered checkout changed")
-                            filemode, log_updates = plain_git(git_fd, bare=False)
-                            require(read_ref(git_fd, context.ref) == base and read_index(git_fd) == original_index,
-                                    "Git branch or index changed during receive")
-                            check_worktree(checkout_fd, before, filemode)
-                            verify_binding()
-                            if base != tip:
-                                with absolute_directory(account.recovery.path) as recovery:
-                                    info = os.fstat(recovery)
-                                    require((info.st_dev, info.st_ino) == (account.recovery.device, account.recovery.inode),
-                                            "receive recovery directory changed")
-                                    with prepare_receive_files(recovery, checkout_fd, stage, changed, before, record) as capture:
-                                        verify_binding()
-                                        publish_receive_marker(store_fd, record)
-                                        verify_binding(record)
-                                        fast_forward(checkout_fd, git_fd, context.ref, base, tip, original_index,
-                                                     stage, before, after, lambda: verify_binding(record),
-                                                     filemode, log_updates, *capture)
-                                        os.unlink("receive.pending", dir_fd=store_fd)
-                                        sync_local(store_fd)
+                    install_adoption(account, context, binding, store_fd, record, stage, original_index, before, after,
+                                     changed, verify_binding)
     return {"store_id": store_id, "received": tip}
 
 
