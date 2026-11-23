@@ -8,15 +8,33 @@ import pwd
 from uuid import uuid4
 
 from store_checkout import durable_file, make_parents, rename_guarded
-from store_context import (Generations, acquire_local_lock, entry_generations, fields, fixture_request, load_approved_account,
-                           open_directory, read_registry, registry_entries, require, require_approval_file, require_private_directory,
-                           staged_local_file, store_writer, sync_local, valid_id, validate_entry)
+from store_context import (JSON_LIMIT, Generations, acquire_local_lock, entry_generations, fields, fixture_request, load_approved_account,
+                           open_directory, path_parts, read_registry, registry_entries, require, resolved_store, require_approval_file, require_private_directory,
+                           staged_local_file, store_writer, sync_local, valid_id, validate_entry, verify_state_directory)
 from store_journal import classify, private_json, require_idle
 from store_publish import attempt_binding, boot_id, read_attempt, json_bytes, recovery_root, reserve, select_record, sync_named
 from store_receive import receive_binding
 
 
-def replace_entry(state, account, old, new):
+def verify_live(load, account, state, writer, entry):
+    require(load() == account, "registered account approval changed")
+    with resolved_store(account, entry["store_id"], entry_generations(entry)) as (ctx, _, _, live_state):
+        require(os.path.samestat(os.fstat(live_state), os.fstat(state))
+                and registry_entries(live_state, account)[0].get(entry["store_id"]) == entry,
+                "mode registry binding changed")
+        verify_state_directory(live_state, path_parts(account.state.path, ctx.writer_lock), writer,
+                               "mode writer binding changed")
+
+
+def registry_update(header, entry, advance=1):
+    replacement = dict(header, revision=header["revision"]+advance,
+                       stores=[entry if row["store_id"] == entry["store_id"] else row for row in header["stores"]])
+    contents = json.dumps(replacement, ensure_ascii=False, separators=(",",":")).encode()
+    require(len(contents) <= JSON_LIMIT, "mode registry exceeds size limit")
+    return contents
+
+
+def replace_entry(state, account, old, new, verify):
     with open_directory(state, ("stores", "v1")) as device:
         acquire_local_lock(device, "device registry is busy")
         header, _ = read_registry(state)
@@ -24,15 +42,15 @@ def replace_entry(state, account, old, new):
         require(entries.get(old["store_id"]) == old and new["store_id"] == old["store_id"],
                 "store registration changed during transition")
         validate_entry(new)
-        replacement = dict(header, revision=header["revision"]+1,
-                           stores=[new if row["store_id"] == old["store_id"] else row for row in header["stores"]])
-        with staged_local_file(device, "registry.json", json_bytes(replacement)) as staged:
+        with staged_local_file(device, "registry.json", registry_update(header, new)) as staged:
             sync_named(device, staged)
             with open_directory(state, ("stores", "v1")) as current:
                 require(os.path.samestat(os.fstat(current), os.fstat(device)) and read_registry(state)[0] == header,
                         "registry changed during transition")
+            verify(old)
             os.replace(staged, "registry.json", src_dir_fd=device, dst_dir_fd=device)
             sync_local(device)
+            verify(new)
 
 
 def mode_records(recovery, account, store_id, pointer):
@@ -143,7 +161,7 @@ def finish_record(recovery, first, tail, phase):
         select_record(control, tail)
 
 
-def apply_transition(state, recovery, account, entry, active, requested):
+def apply_transition(state, recovery, account, entry, active, requested, verify):
     first, tail = active
     ident, detail = first["record_id"], first["detail"]
     with open_directory(recovery, ("modes", ident)) as evidence:
@@ -161,19 +179,23 @@ def apply_transition(state, recovery, account, entry, active, requested):
     cancelled = dict(old, policy_generation=fenced["policy_generation"]+1)
     require(requested in (wanted, "cancel") and entry in (old, fenced, changed), "mode plan and registration disagree")
     require_idle(recovery, account, entry["store_id"], transition=first)
+    verify(entry)
     if entry == old:
-        replace_entry(state, account, old, fenced)
+        header, _ = read_registry(state)
+        for steps, future in ((1, fenced), (2, changed), (2, cancelled), (3, proposed)):
+            registry_update(header, future, steps)
+        replace_entry(state, account, old, fenced, verify)
         entry = fenced
     if tail["detail"]["phase"] == "cancelled" or (requested == "cancel" and entry == fenced):
         require(entry == fenced, "cancelled transition changed its effective mode")
         finish_record(recovery, first, tail, "cancelled")
-        replace_entry(state, account, fenced, cancelled)
+        replace_entry(state, account, fenced, cancelled, verify)
         return cancelled
     if entry == fenced:
         require(tail["detail"]["phase"] == "fenced", "effective transition update missing")
-        replace_entry(state, account, fenced, changed)
+        replace_entry(state, account, fenced, changed, verify)
     finish_record(recovery, first, tail, "applied")
-    replace_entry(state, account, changed, proposed)
+    replace_entry(state, account, changed, proposed, verify)
     return proposed
 
 
@@ -181,7 +203,7 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
     require(wanted in ("two-way", "receive-only", "cancel"), "unknown sync mode")
     require(action in ("clean", "discard-confirmed") and all(valid_id(ident) for ident in confirmed),
             "invalid mode decision")
-    with store_writer(load_account, store_id, expected) as (account, context, state, _):
+    with store_writer(load_account, store_id, expected) as (account, context, state, writer):
         entries, _ = registry_entries(state, account)
         entry = entries[store_id]
         require(context.kind == "shared" and entry["connection"] and entry_generations(entry) == expected,
@@ -202,7 +224,10 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
                                 "confirm the exact pending publication candidates")
                         active = prepare_transition(recovery, account, entry, wanted, action, candidates)
             if active is not None:
-                entry = apply_transition(state, recovery, account, entry, active, wanted)
+                def verify(current):
+                    verify_live(load_account, account, state, writer, current)
+                entry = apply_transition(state, recovery, account, entry, active, wanted, verify)
+                verify(entry)
             return {"store_id":store_id, "mode":entry["effective_mode"], "generations":asdict(entry_generations(entry))}
 
 

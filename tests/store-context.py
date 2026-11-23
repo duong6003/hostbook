@@ -670,6 +670,35 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(f.store),before)
         self.assertEqual(snapshot(f.remote),remote)
 
+    def test_mode_refuses_replaced_state_at_the_registry_effect(self):
+        import store_mode
+        f = self.prepare_receive()
+        store = self.entries[1]["store_id"]
+        displaced = self.root / "displaced-state"
+        original = store_mode.prepare_transition
+        def replace(*args):
+            result = original(*args)
+            self.state.rename(displaced)
+            shutil.copytree(displaced,self.state)
+            return result
+        with patch.object(store_mode,"prepare_transition",side_effect=replace):
+            with self.assertRaises(StoreContextError):
+                store_mode.change_mode(lambda:self.account, store, self.generations, "two-way")
+        for root in (self.state,displaced):
+            self.assertIsNone(json.loads((root/"stores/v1/registry.json").read_bytes())["stores"][1]["transition_id"])
+        self.assertEqual(len(list((self.recovery/"control").iterdir())),1)
+
+    def test_mode_refuses_oversized_intermediate_before_changing_registry(self):
+        import store_mode
+        f = self.prepare_receive()
+        old = json.loads(self.registry.read_bytes())
+        compact = json.dumps(old,separators=(",",":")).encode()
+        self.registry.write_bytes(compact)
+        with patch.object(store_mode,"JSON_LIMIT",len(compact)+4):
+            with self.assertRaisesRegex(StoreContextError,"registry.*size"):
+                store_mode.change_mode(lambda:self.account, self.entries[1]["store_id"], self.generations, "two-way")
+        self.assertEqual(self.registry.read_bytes(),compact)
+
     def test_mode_recovers_unpointed_fence_and_releases_terminal_pointer(self):
         import store_mode
         f = self.prepare_receive()
