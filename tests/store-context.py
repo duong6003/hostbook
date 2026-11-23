@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import time
 from threading import Thread
 import unittest
@@ -114,7 +115,7 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -189,6 +190,153 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(rc.returncode, 0, rc.stderr)
         self.assertEqual((legacy / "project.conf").read_bytes(), input_file.read_bytes())
         self.assertEqual(snapshot(marked), before)
+
+    def prepare_receive(self):
+        store = self.root / "shared a"
+        remote, author = self.root / "team.git", self.root / "author"
+        env = dict(PATH="/usr/bin:/bin", HOME=str(self.root), HOSTBOOK_STATE=str(self.state),
+                   XDG_CONFIG_HOME=str(self.root / "config"), HOSTBOOK_SSH_CONFIG=str(self.root / "ssh.conf"),
+                   GIT_CONFIG_NOSYSTEM="1",
+                   GIT_CONFIG_GLOBAL=os.devnull, GIT_ALLOW_PROTOCOL="file", GIT_AUTHOR_NAME="fixture",
+                   GIT_COMMITTER_NAME="fixture", GIT_AUTHOR_EMAIL="fixture@example.test",
+                   GIT_COMMITTER_EMAIL="fixture@example.test")
+        def git(repo, *args):
+            return subprocess.run(["/usr/bin/git", "-C", repo, *args], env=env, capture_output=True,
+                                  check=True, timeout=10).stdout.strip().decode()
+        git(store, "init", "-q", "--template=")
+        git(store, "symbolic-ref", "HEAD", "refs/heads/main")
+        source = store / "team.conf"
+        source.write_text("Host db\n  HostName 192.0.2.1\n")
+        identity_path = store / ".hostbook/identity.json"
+        identity = json.loads(identity_path.read_bytes())
+        identity["sources"] = [{"path": "team.conf", "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}]
+        identity["hosts"] = [{"host_id": new_id(), "name": "db", "bindings": [
+            {"path":"team.conf", "host_ordinal":1, "token_ordinal":1}]}]
+        identity_path.write_text(json.dumps(identity))
+        git(store, "add", ".")
+        git(store, "commit", "-qm", "Accepted")
+        base = git(store, "rev-parse", "HEAD")
+        git(self.root, "init", "-q", "--bare", "--template=", remote)
+        git(store, "push", "-q", str(remote), "HEAD:refs/heads/main")
+        git(self.root, "clone", "-qb", "main", "--no-local", str(remote), author)
+        (author / "team.conf").write_text("Host db\n  HostName 192.0.2.2\n")
+        identity["generation"] += 1
+        identity["sources"][0]["sha256"] = hashlib.sha256((author / "team.conf").read_bytes()).hexdigest()
+        (author / ".hostbook/identity.json").write_text(json.dumps(identity))
+        git(author, "commit", "-qam", "Edit db")
+        git(author, "push", "-q", str(remote), "HEAD:refs/heads/main")
+        tip = git(author, "rev-parse", "HEAD")
+        entry = self.entries[1]
+        target = self.state / "stores/v1" / entry["store_id"] / "connection/3/target.json"
+        target.parent.mkdir(parents=True, mode=0o700)
+        for parent in (target.parent, target.parent.parent, target.parent.parent.parent):
+            parent.chmod(0o700)
+        target.write_text(json.dumps({"version": 1, "store_id": entry["store_id"],
+                                    "target_id": entry["connection"]["target_id"],
+                                    "connection_generation": 3, "ref": "refs/heads/main",
+                                    "uid": os.geteuid(), "bare_repository": asdict(directory_binding(remote))},
+                                   default=os.fspath))
+        target.chmod(0o600)
+        app = self.installed_launcher()
+        request = {"account": asdict(self.account), "store_id": entry["store_id"],
+                   "generations": asdict(self.generations)}
+        def receive():
+            return subprocess.run([app, "_store_receive"], cwd=self.root, env=dict(env,
+                                  HOSTBOOK_DIR=str(store)), input=json.dumps(request, default=os.fspath).encode(),
+                                  capture_output=True, timeout=15)
+        return SimpleNamespace(store=store, remote=remote, author=author, base=base, tip=tip,
+                               target=target, git=git, receive=receive)
+
+    def test_installed_callback_receives_exact_branch_into_clean_shared_store(self):
+        f = self.prepare_receive()
+        before_remote = snapshot(f.remote)
+        before_b = snapshot(self.root / "shared b")
+        result = f.receive()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["received"], f.tip)
+        self.assertNotEqual(f.base, f.tip)
+        self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), f.tip)
+        self.assertEqual((f.store / "team.conf").read_bytes(), (f.author / "team.conf").read_bytes())
+        self.assertEqual(f.git(f.store, "status", "--porcelain"), "")
+        self.assertEqual(snapshot(f.remote), before_remote)
+        self.assertEqual(snapshot(self.root / "shared b"), before_b)
+
+    def test_receive_blocks_dirty_checkout_and_unverified_binding(self):
+        f = self.prepare_receive()
+        def refused():
+            before = snapshot(f.store)
+            result = f.receive()
+            self.assertEqual(result.returncode, 65, result.stderr)
+            self.assertEqual(snapshot(f.store), before)
+            self.assertEqual(f.git(f.remote, "rev-parse", "refs/heads/main"), f.tip)
+        unrelated = f.store / "notes"
+        unrelated.write_text("untracked")
+        refused()
+        f.git(f.store, "add", "notes")
+        unrelated.write_text("unstaged over staged")
+        refused()
+        f.git(f.store, "reset", "--", "notes")
+        unrelated.unlink()
+        binding = json.loads(f.target.read_bytes())
+        for key, value in (("target_id", new_id()), ("ref", "refs/heads/other"), ("connection_generation", 4)):
+            f.target.write_text(json.dumps(dict(binding, **{key: value})))
+            refused()
+        f.target.unlink()
+        refused()
+
+    def test_receive_preserves_accepted_snapshot_on_invalid_incoming(self):
+        f = self.prepare_receive()
+        path = f.author / "team.conf"
+        path.write_text("Host db\n  HostName 192.0.2.33\n")
+        f.git(f.author, "commit", "-qam", "Stale sidecar")
+        f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+        before = snapshot(f.store)
+        result = f.receive()
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertEqual(snapshot(f.store), before)
+
+    def test_receive_preserves_data_when_fenced_interrupted_or_diverged(self):
+        f = self.prepare_receive()
+        before = snapshot(f.store)
+        control = self.recovery / "control"
+        control.mkdir(mode=0o700)
+        intent = control / new_id()
+        intent.mkdir(mode=0o700)
+        self.assertEqual(f.receive().returncode, 65)
+        self.assertEqual(snapshot(f.store), before)
+        intent.rmdir()
+        pending = f.target.parent / "receive.pending"
+        pending.write_text("prior local receive requires reconciliation")
+        self.assertEqual(f.receive().returncode, 65)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertEqual(pending.read_text(), "prior local receive requires reconciliation")
+        pending.unlink()
+        f.git(f.store, "commit", "--allow-empty", "-qm", "Independent local commit")
+        diverged = snapshot(f.store)
+        self.assertEqual(f.receive().returncode, 65)
+        self.assertEqual(snapshot(f.store), diverged)
+
+    def test_receive_rejects_a_linked_tracked_file(self):
+        f = self.prepare_receive()
+        os.link(f.store / "secrets/vault.pub", self.root / "other-public-key")
+        before = snapshot(f.store)
+        result = f.receive()
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertEqual(snapshot(f.store), before)
+
+    def test_receive_rejects_an_unbound_source_retained_by_sidecar_edit(self):
+        f = self.prepare_receive()
+        self.assertEqual(f.receive().returncode, 0)
+        manifest = f.author / ".hostbook/identity.json"
+        meta = json.loads(manifest.read_bytes())
+        meta.update(generation=3, hosts=[], sources=[])
+        manifest.write_text(json.dumps(meta))
+        f.git(f.author, "commit", "-qam", "Drop live source from identity")
+        f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+        before = snapshot(f.store)
+        result = f.receive()
+        self.assertEqual(result.returncode, 65, result.stderr)
+        self.assertEqual(snapshot(f.store), before)
 
     def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
         launcher = self.installed_launcher()

@@ -138,6 +138,35 @@ Registered list, preview and connect neither read nor rewrite those references.
 A registered selection cannot be used as a legacy group target or undo action.
 Changes to registered mutation and group workflows have their own admission path.
 
+### Receive a registered Git update
+
+`store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` receives an
+existing full branch from a prepared local bare Git repository. A clean,
+regular attached checkout can fast-forward its validated host sources and v1
+identity in receive-only or two-way mode. The command accepts the operating
+system account's existing filesystem access. It does not ask for a store
+password or publish. It refuses dirty or divergent checkouts, pending
+recovery, unsupported Git configuration, and changes to vault or other tracked
+files. Network transports and vault updates require separate admission.
+
+Prepare `state/stores/v1/STORE_ID/connection/CONNECTION/target.json` in the
+approved account. The generation directory is owner-only and the binding is
+an owner-only regular file. Its exact fields are integer `version` (1),
+`store_id`, `target_id`, integer `connection_generation`, full `ref`, numeric
+`uid`, and `bare_repository` with canonical absolute `path`, `device` and
+`inode`. The binding must match this entry in the registry. Keep the bare
+repository beneath the verified account root, outside registered checkouts,
+Git directories, state and recovery. The sender reads from an open descriptor
+for that repository. An unknown binding fails before applying changes.
+
+A receive interrupted at local fast-forward retains `receive.pending` under
+the verified connection directory. It contains the two Git revisions and
+their original store and target binding. Preserve it and compare the branch,
+index and worktree against both revisions before any repair. Pending state
+blocks subsequent receives. The original revision remains accessible in Git.
+This command currently handles host sources whose resulting paths and sidecar
+can all be validated. It requires a conventional non-shallow Git directory.
+
 `_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
 records local connection status as `unchecked`. It writes only the
 selected store and connection generation's local status file after

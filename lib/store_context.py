@@ -851,6 +851,9 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
+        if action in ("_store_receive", "store-receive"):
+            from store_receive import receive_command
+            return receive_command(action, args[1:])
         if action in ("_store_hosts", "_store_preview", "_store_connect", "store-hosts", "store-preview", "store-connect"):
             from store_read import route_command
             return route_command(action, args[1:])
