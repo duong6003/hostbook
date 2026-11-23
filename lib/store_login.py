@@ -42,21 +42,26 @@ def tool_ancestry(directory, target):
 
 
 def verified_age_tools(account):
+    return verified_programs(account, age_installations(), AGE_PROGRAMS,
+                             "registered login requires age, age-keygen and batchpass in an approved tool directory")
+
+
+def verified_programs(account, installations, programs, unavailable, *, cellar_only=False):
     protected = {(item.device, item.inode) for item in (account.root, account.state, account.recovery)}
     for checkout in account.checkouts.values():
         protected.update((item.device, item.inode) for item in (checkout.root, checkout.git_dir, checkout.git_common_dir))
     owners = (0, os.geteuid())
-    for directory, cellar in age_installations():
+    for directory, cellar in installations:
         try:
             if directory.resolve(strict=True) != directory:
                 continue
-            paths = [(directory / name).resolve(strict=True) for name in AGE_PROGRAMS]
+            paths = [(directory / name).resolve(strict=True) for name in programs]
             target = paths[0].parent
-            if target != directory and not (cellar and target.is_relative_to(cellar)
+            if (cellar_only or target != directory) and not (cellar and target.is_relative_to(cellar)
                                               and len(target.relative_to(cellar).parts) == 2
                                               and target.name == "bin"):
                 continue
-            if paths != [target / name for name in AGE_PROGRAMS]:
+            if paths != [target / name for name in programs]:
                 continue
             admin_group = None
             brew = cellar and target.is_relative_to(cellar)
@@ -91,7 +96,7 @@ def verified_age_tools(account):
             return target, tuple(evidence)
         except (OSError, KeyError, RuntimeError, StoreContextError):
             continue
-    raise StoreContextError("registered login requires age, age-keygen and batchpass in an approved tool directory")
+    raise StoreContextError(unavailable)
 
 
 @dataclass(frozen=True, repr=False)

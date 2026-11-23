@@ -861,6 +861,20 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(f.remote), remote)
         self.assertFalse((self.recovery / "control").exists())
 
+    def test_receiver_selects_only_verified_git_with_explicit_hook_commands(self):
+        import store_publish
+        with tempfile.TemporaryDirectory(prefix="hb-receiver-") as root:
+            trusted = Path(root)
+            for name in ("git",):
+                (trusted / name).write_text("#!/bin/sh\nprintf '%s\\n' 'hook.<friendly-name>.command' 'hook.<friendly-name>.event'\n")
+                (trusted/name).chmod(0o700)
+            with patch.object(sys, "platform", "darwin"), patch.object(store_publish, "configured_hooks", side_effect=lambda exe:exe == str(trusted/"git")), \
+                    patch("store_login.verified_programs", return_value=(trusted, ())) as verify:
+                self.assertEqual(store_publish.configured_receiver(self.account), str(trusted/"git"))
+                self.assertEqual(verify.call_args.args[2], ("git",))
+                for _, cellar in verify.call_args.args[1]:
+                    self.assertIn(str(cellar), ("/opt/homebrew/Cellar/git","/usr/local/Cellar/git"))
+
     def test_before_send_repository_lock_records_definitive_no_send(self):
         import store_publish
         f, edit, _ = self.prepare_edit()
@@ -921,7 +935,7 @@ class StoreContextTest(unittest.TestCase):
     def test_settle_requires_exact_tip_instead_of_private_proposal_reachable_by_merge(self):
         import store_publish
         f, edit, _ = self.prepare_edit()
-        def ambiguous(stage, _target, _lease, ref, base, proposed, _edit, start):
+        def ambiguous(stage, _target, _lease, ref, base, proposed, _edit, _account, start):
             start()
             f.git(stage, "push", str(f.remote), proposed + ":refs/heads/unrelated")
             merge = f.git(f.remote, "commit-tree", base + "^{tree}", "-p", base, "-p", proposed, "-m", "Other merge")

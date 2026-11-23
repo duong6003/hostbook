@@ -199,7 +199,27 @@ def sync_named(parent, name):
         os.close(fd)
 
 
-def send(stage, target_fd, lease_fd, ref, tip, proposed, edit, start):
+def configured_hooks(executable):
+    probe = subprocess.run([executable, "help", "--config"], cwd="/", env=SAFE_ENV,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+    keys = set(probe.stdout.splitlines())
+    return probe.returncode == 0 and {b"hook.<friendly-name>.command", b"hook.<friendly-name>.event"} <= keys
+
+
+def configured_receiver(account):
+    if configured_hooks(GIT):
+        return GIT
+    require(sys.platform == "darwin", "Git cannot enforce the direct-ref transaction")
+    from store_login import verified_programs
+    installs = tuple((Path(root)/"bin", Path(root)/"Cellar/git") for root in ("/opt/homebrew", "/usr/local"))
+    directory, _ = verified_programs(account, installs, ("git",), "an approved Git with configured hooks is required",
+                                     cellar_only=True)
+    binary = str(directory / "git")
+    require(configured_hooks(binary), "approved Git lacks configured transaction hooks")
+    return binary
+
+
+def send(stage, target_fd, lease_fd, ref, tip, proposed, edit, account, start):
     require_plain_receiver(target_fd)
     if direct_ref(target_fd, ref) != tip:
         return "not-accepted"
@@ -213,27 +233,29 @@ def send(stage, target_fd, lease_fd, ref, tip, proposed, edit, start):
         sync_named(hooks, "reference-transaction")
         sync_local(hooks)
         hook_path = f"/dev/fd/{hooks}"
+        executable = GIT
         if os.access(hook_path + "/reference-transaction", os.X_OK):
             config = ["-c", "core.hooksPath=" + hook_path]
         else:
             # Darwin does not traverse directory children through /dev/fd. An explicit command
             # (unlike lookup-by-filename) aborts the prepared transaction when exec fails.
-            options = git(stage, "help", "--config").splitlines()
-            require(b"hook.<friendly-name>.command" in options and b"hook.<friendly-name>.event" in options,
-                    "Git cannot enforce an exact direct-ref transaction on this platform")
+            executable = configured_receiver(account)
             config = ["-c", "hook.hostbook-guard.event=reference-transaction",
                       "-c", "hook.hostbook-guard.command=" + command]
-        return send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, config, start)
+        return send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, executable, config, start)
 
 
-def send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, config, start):
+def send_guarded(stage, target_fd, lease_fd, ref, tip, proposed, hooks, executable, config, start):
     client, remote = socket.socketpair()
     with client, remote:
         # Only the admitted parent opens receive-pack. Its cwd is the verified directory inode.
         start()
-        server = subprocess.Popen([GIT, *config, "receive-pack", "."], env=SAFE_ENV,
-                                  stdin=remote, stdout=remote, stderr=subprocess.DEVNULL,
-                                  preexec_fn=lambda: os.fchdir(target_fd), pass_fds=(target_fd, lease_fd, hooks))
+        try:
+            server = subprocess.Popen([executable, *config, "receive-pack", "."], env=SAFE_ENV,
+                                      stdin=remote, stdout=remote, stderr=subprocess.DEVNULL,
+                                      preexec_fn=lambda: os.fchdir(target_fd), pass_fds=(target_fd, lease_fd, hooks))
+        except OSError:
+            return "not-accepted"
         remote.close()
         relay = shlex.join([sys.executable, "-I", "-B", "-S", str(Path(__file__).with_name("store_receive.py")),
                             "relay", str(client.fileno())])
@@ -354,16 +376,17 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
                 sync_local(edit)
                 reserve(edit, recovery, record)
         # The admitted client and receive-pack both inherit this lease through transport completion.
-        started = False
+        started, reason = False, None
         def start():
             nonlocal started
             durable_file(edit, "send-started", attempt.encode())
             sync_local(edit)
             started = True
         try:
-            outcome = send(stage, target_fd, fd, ctx.ref, tip, proposed, edit, start)
-        except (OSError, StoreContextError, subprocess.TimeoutExpired):
+            outcome = send(stage, target_fd, fd, ctx.ref, tip, proposed, edit, account, start)
+        except (OSError, StoreContextError, subprocess.TimeoutExpired) as exc:
             outcome = "uncertain" if started else "not-accepted"
+            reason = str(exc) if isinstance(exc, StoreContextError) else "registered Git transport unavailable"
         finally:
             lease.close()
         try:
@@ -373,7 +396,10 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
                     advance(recovery, actual, record, outcome)
         except (OSError, StoreContextError):
             outcome = "uncertain"
-    return {"store_id":store_id, "attempt_id":attempt, "outcome":outcome}
+    result = {"store_id":store_id, "attempt_id":attempt, "outcome":outcome}
+    if reason:
+        result["reason"] = reason
+    return result
 
 
 @contextmanager

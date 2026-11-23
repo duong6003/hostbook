@@ -175,7 +175,8 @@ The current local receiver supports ordinary POSIX-accessible repositories
 without executable server hooks. Git checks the exact direct branch under its
 native ref transaction lock. This requires Git 2.29 or later on systems that
 support directory traversal through inherited `/dev/fd` handles. On macOS,
-Git must advertise configured hook commands (`git help --config`). A user can retry pre-admission errors
+Git must advertise configured hook commands (`git help --config`). The receiver
+checks the system Git first and then verified default Homebrew Git installations. A user can retry pre-admission errors
 with their original editor input. Use the original attempt for reconciliation
 once a publication has been admitted.
 
