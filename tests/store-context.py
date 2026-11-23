@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Resolve verified, disposable store registrations without opening live state."""
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -252,6 +254,18 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(approval.read_bytes(), approval_bytes)
         self.assertEqual(snapshot(self.root), before)
 
+        host_id = new_id()
+        self.write_index_host(1, "db", host_id)
+        indexed = subprocess.run([launcher, "_refresh_store_index", store_id, "1", "2", "3", "4"],
+                                 cwd=elsewhere, env=env, stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=10)
+        self.assertEqual(indexed.returncode, 0, indexed.stderr)
+        rows = f"{store_id}\t{host_id}\tdb\n"
+        self.assertEqual(indexed.stdout, rows)
+        self.assertEqual(self.resolve(1).index.read_text(), rows)
+        self.assertFalse(self.resolve(0).index.exists())
+        self.assertFalse(self.resolve(2).index.exists())
+
         other = json.loads(self.registry.read_text())
         other["device_id"] = new_id()
         original = self.registry.read_bytes()
@@ -350,6 +364,89 @@ class StoreContextTest(unittest.TestCase):
         with self.assertRaisesRegex(StoreContextError, "overlapping"):
             store_context.plan_account_approval(home, self.root)
         self.assertEqual(snapshot(self.root), before)
+
+    def write_index_host(self, index, name, host_id):
+        entry = self.entries[index]
+        root = Path(entry["checkout"]["root"])
+        source = root / "team.conf"
+        contents = f"Host {name}\n  HostName 192.0.2.90\n".encode()
+        source.write_bytes(contents)
+        sidecar = root / ".hostbook/identity.json"
+        data = json.loads(sidecar.read_text())
+        data["generation"] += 1
+        data["sources"] = [{"path": "team.conf", "sha256": hashlib.sha256(contents).hexdigest()}]
+        data["hosts"] = [{"host_id": host_id, "name": name, "bindings": [
+            {"path": "team.conf", "host_ordinal": 1, "token_ordinal": 1},
+        ]}]
+        sidecar.write_text(json.dumps(data))
+
+    def test_refreshing_one_index_does_not_change_other_stores(self):
+        ids = [new_id() for _ in self.entries]
+        contexts = [self.resolve(index) for index in range(3)]
+
+        def refresh(index):
+            return store_context.refresh_store_index(lambda: self.account,
+                self.entries[index]["store_id"], self.generations)
+
+        for index, context in enumerate(contexts):
+            self.write_index_host(index, "db", ids[index])
+            refresh(index)
+            self.assertEqual(context.index.read_text(), f"{context.store_id}\t{ids[index]}\tdb\n")
+
+        self.write_index_host(1, "db-renamed", ids[1])
+        before = snapshot(self.root)
+        refresh(1)
+        scope = contexts[1].index.relative_to(self.root)
+        after = snapshot(self.root)
+        self.assertEqual({path: value for path, value in after.items() if path != scope},
+                         {path: value for path, value in before.items() if path != scope})
+        self.assertEqual(contexts[1].index.read_text(), f"{contexts[1].store_id}\t{ids[1]}\tdb-renamed\n")
+
+        identity = contexts[1].checkout / ".hostbook/identity.json"
+        saved_identity = identity.read_text()
+        changed = json.loads(saved_identity)
+        changed["hosts"][0]["name"] = "does-not-exist"
+        identity.write_text(json.dumps(changed))
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "invalid or duplicate index host binding"):
+            refresh(1)
+        self.assertEqual(snapshot(self.root), before)
+        identity.write_text(saved_identity)
+
+        source = contexts[1].checkout / "team.conf"
+        source.write_text("Host unreviewed\n")
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "source bytes changed"):
+            refresh(1)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_index_refresh_rejects_busy_and_changed_inputs(self):
+        host_id = new_id()
+        self.write_index_host(1, "db", host_id)
+        context = self.resolve(1)
+        refresh = store_context.refresh_store_index
+        refresh(lambda: self.account, context.store_id, self.generations)
+        before = snapshot(self.root)
+        fd = os.open(context.index.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(StoreContextError, "already being refreshed"):
+                refresh(lambda: self.account, context.store_id, self.generations)
+        finally:
+            os.close(fd)
+        self.assertEqual(snapshot(self.root), before)
+
+        self.write_index_host(1, "db-second", host_id)
+        with patch("store_context.index_rows", wraps=store_context.index_rows) as read_rows:
+            def load():
+                if read_rows.called:
+                    self.write_index_host(1, "db-third", host_id)
+                return self.account
+
+            with self.assertRaisesRegex(StoreContextError, "inputs changed"):
+                refresh(load, context.store_id, self.generations)
+        self.assertEqual(context.index.read_bytes(), before[context.index.relative_to(self.root)][1])
+        self.assertEqual(list(context.index.parent.iterdir()), [context.index])
 
     def test_three_contexts_are_independent_and_resolution_does_not_write(self):
         before = snapshot(self.root)

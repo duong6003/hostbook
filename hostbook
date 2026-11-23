@@ -34,7 +34,7 @@ resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this she
 resolve_self "$0"
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  _store_context|_approve_store_account)
+  _store_context|_approve_store_account|_refresh_store_index)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       command -v python3 >/dev/null 2>&1 || exit 64
       exec python3 -I -B "${SELF%/*}/lib/store_context.py" "$@"

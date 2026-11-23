@@ -71,6 +71,17 @@ recovery directories. macOS approval paths with ACL grants are rejected.
 The reader validates the approval and returns context metadata without
 opening a vault or starting sync.
 
+`_refresh_store_index STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
+explicitly rebuilds that store's local alias inventory. The index lives
+under the registered state, keyed by store ID and checkout generation.
+Rows contain tab-separated store ID, host ID and alias from the v1 sidecar.
+Each explicit refresh checks the declared managed `.conf` source bytes and
+their simple `Host` alias bindings. It rechecks the current approval,
+binding, generations and sidecar before publishing via atomic replacement.
+Quoted or escaped `Host` lists require the scoped SSH resolver. A stale association leaves the previous
+index intact and the command reports failure. Effective SSH settings and
+integration with the search UI are later work.
+
 The test suite's installed account case requires a disposable system
 account whose effective home is an empty `/fixture-home`. Set
 `HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.

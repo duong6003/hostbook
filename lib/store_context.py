@@ -4,7 +4,7 @@ The caller supplies approved bindings from outside the registry. The resolver
 checks those bindings before reading registration data. It does not enroll an
 account, authorize writes, or open a vault or transport.
 """
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, dataclass
 import errno
 import fcntl
@@ -320,6 +320,7 @@ def verify_sidecar(checkout_fd, expected_store_id):
             and identity["version"] == 1 and positive(identity["generation"]) and
             isinstance(identity["sources"], list) and isinstance(identity["hosts"], list), "invalid sidecar header")
     require(identity["store_id"] == expected_store_id, "sidecar store ID mismatch")
+    return identity
 
 
 def verify_resource(root_fd, parts, expected_type):
@@ -401,8 +402,9 @@ def verified_account(account):
         os.close(fs_root)
 
 
-def resolve_store(account, store_id, expected):
-    """Return metadata and scoped resource names, without writing to any paths."""
+@contextmanager
+def resolved_store(account, store_id, expected):
+    """Hold the verified directory descriptors while a scoped operation uses them."""""
     require(valid_id(store_id), "invalid store ID")
     require(isinstance(expected, Generations) and all(positive(value) for value in vars(expected).values()),
             "invalid expected generations")
@@ -431,19 +433,147 @@ def resolve_store(account, store_id, expected):
             )
             for parts, expected_type in resources:
                 verify_resource(state_fd, prefix + parts, expected_type)
+            namespace = account.state.path / "stores" / "v1" / store_id
+            connection = entry["connection"] or {}
+            context = StoreContext(
+                store_id, entry["kind"], generations, binding.root.path, binding.git_dir.path, binding.git_common_dir.path,
+                entry["effective_mode"], entry["transition_id"], connection.get("target_id"), connection.get("ref"),
+                binding.root.path / "secrets", namespace / "vault-cache" / account.device_id,
+                namespace / "index" / str(generations.checkout) / "index.tsv",
+                namespace / "sync.lock", namespace / "connection" / str(generations.connection) / "status",
+            )
+
+            yield context, binding, root_fd, state_fd
     except StoreContextError:
         raise
     except (OSError, ValueError, RecursionError) as exc:
         raise StoreContextError("store metadata unavailable or malformed") from exc
-    namespace = account.state.path / "stores" / "v1" / store_id
-    connection = entry["connection"] or {}
-    return StoreContext(
-        store_id, entry["kind"], generations, binding.root.path, binding.git_dir.path, binding.git_common_dir.path,
-        entry["effective_mode"], entry["transition_id"], connection.get("target_id"), connection.get("ref"),
-        binding.root.path / "secrets", namespace / "vault-cache" / account.device_id,
-        namespace / "index" / str(generations.checkout) / "index.tsv",
-        namespace / "sync.lock", namespace / "connection" / str(generations.connection) / "status",
-    )
+
+
+def resolve_store(account, store_id, expected):
+    """Return metadata and scoped resource names, without writing to any paths."""
+    with resolved_store(account, store_id, expected) as (context, _, _, _):
+        return context
+
+
+def require_unlinked_index_source(_fd, info):
+    require(info.st_nlink == 1, "linked index source is not allowed")
+
+
+INDEX_NAME = re.compile(r"[A-Za-z0-9._-]+")
+INDEX_HOST_LINE = re.compile(r"^[ \t]*host(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)$", re.IGNORECASE | re.ASCII)
+
+
+def index_host_tokens(contents, path):
+    ordinal = 0
+    # shortcut: reject quoted or escaped Host lists until the scoped SSH resolver supports them.
+    for line in contents.decode("utf-8").split("\n"):
+        match = INDEX_HOST_LINE.match(line.rstrip("\r"))
+        if not match:
+            continue
+        ordinal += 1
+        for index, token in enumerate(re.split(r"[ \t]+", match[1].strip(" \t")), 1):
+            if token.startswith("#"):
+                break
+            require(not any(char in token for char in ("'", '"', "\\")), "unsupported index Host token")
+            if INDEX_NAME.fullmatch(token):
+                yield (path, ordinal, index), token.lower()
+
+
+def index_rows(checkout_fd, store_id):
+    identity = verify_sidecar(checkout_fd, store_id)
+    paths, occurrences = set(), {}
+    for source in identity["sources"]:
+        fields(source, "path sha256")
+        source_path, digest = source["path"], source["sha256"]
+        require(isinstance(source_path, str) and isinstance(digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", digest), "invalid index source")
+        parts = tuple(source_path.split("/"))
+        require(all(part and not part.startswith(".") for part in parts)
+                and parts[0].casefold() != "secrets" and parts[-1].endswith(".conf")
+                and not re.search(r"[\x00-\x1f\x7f\\]", source_path)
+                and source_path.casefold() not in paths, "invalid or duplicate index source path")
+        paths.add(source_path.casefold())
+        with open_directory(checkout_fd, parts[:-1]) as source_fd:
+            contents = read_file(source_fd, parts[-1], JSON_LIMIT, require_unlinked_index_source)
+        require(hashlib.sha256(contents).hexdigest() == digest, "index source bytes changed since identity review")
+        occurrences.update(index_host_tokens(contents, source_path))
+
+    ids, names = set(), set()
+    rows = []
+    for host in identity["hosts"]:
+        fields(host, "host_id name bindings")
+        key, name, bindings = host["host_id"], host["name"], host["bindings"]
+        require(valid_id(key) and key not in ids and isinstance(name, str)
+                and INDEX_NAME.fullmatch(name) and name.lower() not in names,
+                "invalid or duplicate index host")
+        require(isinstance(bindings, list) and bindings, "missing index host bindings")
+        for binding in bindings:
+            fields(binding, "path host_ordinal token_ordinal")
+            path, header, token = (binding[field] for field in ("path", "host_ordinal", "token_ordinal"))
+            require(isinstance(path, str) and positive(header) and positive(token)
+                    and occurrences.pop((path, header, token), None) == name.lower(),
+                    "invalid or duplicate index host binding")
+        ids.add(key)
+        names.add(name.lower())
+        rows.append(f"{store_id}\t{key}\t{name}\n")
+    require(not occurrences, "index sources contain unbound host names")
+    return identity, "".join(rows)
+
+
+@contextmanager
+def index_directory(state_fd, parts):
+    # stores/v1 already belongs to the verified registry. Create only derived directories.
+    with ExitStack() as directories:
+        fd = state_fd
+        for part in parts[:2]:
+            fd = directories.enter_context(open_directory(fd, (part,)))
+            require_owned_config_directory(fd)
+        for part in parts[2:]:
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            fd = directories.enter_context(open_directory(fd, (part,)))
+            require_private_directory(fd, "index")
+        yield fd
+
+
+def refresh_store_index(load_account, store_id, expected):
+    """Rebuild this store's alias inventory on explicit request."""
+    account = load_account()
+    with resolved_store(account, store_id, expected) as (context, binding, root_fd, state_fd):
+        parts = path_parts(account.state.path, context.index.parent)
+        checkout_parts = path_parts(account.root.path, binding.root.path)
+        with index_directory(state_fd, parts) as index_fd:
+            try:
+                fcntl.flock(index_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise StoreContextError("store index is already being refreshed") from exc
+            with bound_directory(root_fd, checkout_parts, binding.root, "checkout binding mismatch") as checkout_fd:
+                snapshot, rows = index_rows(checkout_fd, store_id)
+            pending = f".index.{uuid4()}.tmp"
+            fd = os.open(pending, os.O_WRONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=index_fd)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    stream.write(rows)
+                require(load_account() == account, "store approval changed during index refresh")
+                with resolved_store(account, store_id, expected) as (current, actual, current_root, current_state):
+                    require(current == context and actual == binding, "store binding changed during index refresh")
+                    with bound_directory(current_root, checkout_parts, binding.root,
+                                         "checkout binding mismatch") as checkout_fd:
+                        require(index_rows(checkout_fd, store_id)[0] == snapshot, "index inputs changed during refresh")
+                    with open_directory(current_state, parts) as current_fd:
+                        require_private_directory(current_fd, "index")
+                        require(directory_binding(context.index.parent, current_fd) ==
+                                directory_binding(context.index.parent, index_fd), "index directory changed")
+                    os.replace(pending, context.index.name, src_dir_fd=index_fd, dst_dir_fd=index_fd)
+            finally:
+                try:
+                    os.unlink(pending, dir_fd=index_fd)
+                except FileNotFoundError:
+                    pass
+    return rows
 
 
 def parse_directory_binding(value):
@@ -668,12 +798,16 @@ def main(args):
                       else approve_account(home, root, args[2]))
             print(json.dumps(result))
             return 0
-        if args and args[0] == "_store_context":
+        refresh_index = bool(args and args[0] == "_refresh_store_index")
+        if args and args[0] in ("_store_context", "_refresh_store_index"):
             args = args[1:]
-        if args:
+        if refresh_index or args:
             require(len(args) == 5, "store ID and four generations are required")
             expected = Generations(*(int(value) for value in args[1:]))
             home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            if refresh_index:
+                sys.stdout.write(refresh_store_index(lambda: load_approved_account(home), args[0], expected))
+                return 0
             account, store_id = load_approved_account(home), args[0]
         else:
             account, store_id, expected = fixture_request()
