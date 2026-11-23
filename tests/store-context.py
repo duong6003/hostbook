@@ -846,6 +846,34 @@ Host relay
                                           read_passphrase=lambda: passphrase)
                         transport.assert_not_called()
 
+                    (context.vault / "login.age").write_bytes(ciphertext)
+                    (context.vault / "relay.meta").write_bytes(b"type=password\n")
+                    (context.vault / "relay.age").unlink()
+
+                    def identity_files(config, alias):
+                        output = subprocess.run(["/usr/bin/ssh", "-F", config, "-G", alias], env=fixture_env,
+                                                capture_output=True, check=True, timeout=5).stdout
+                        return [line.split(b" ", 1)[1] for line in output.splitlines()
+                                if line.startswith(b"identityfile ")]
+
+                    def mixed_launch(config, alias):
+                        self.assertEqual(len(identity_files(config, alias)), 2)
+                        self.assertEqual(identity_files(config, "relay"), [b"none"])
+                        return 0
+
+                    with patch("store_read.launch_ssh", side_effect=mixed_launch) as transport:
+                        self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                                       read_passphrase=lambda: passphrase), 0)
+                        transport.assert_called_once()
+
+                    (context.vault / "login.meta").write_bytes(b"type=password\n")
+                    with patch("store_read.launch_ssh", return_value=0) as transport:
+                        self.assertEqual(connect_route(
+                            load, context.store_id, self.generations, host_id, stamp,
+                            read_passphrase=lambda: self.fail("interactive login must not unlock the vault"),
+                        ), 0)
+                        transport.assert_called_once()
+
     def test_registered_key_marker_requires_a_concrete_active_host_block(self):
         from store_read import refresh_routes
 

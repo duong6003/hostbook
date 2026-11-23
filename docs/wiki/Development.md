@@ -125,8 +125,9 @@ The vault tools must come from the OS package, the OS account's local
 installer directory or a canonical Homebrew package. The connection's
 private agent closes with its owner even if the launcher is terminated.
 An unbound route uses interactive authentication without ambient keys.
-Stored password markers currently stop connection before SSH because this
-path has no approved askpass attribution for them.
+A password marker uses OpenSSH's native terminal prompt. Registered
+connections never read or supply the stored password or use an external
+askpass program.
 
 Legacy history, groups and undo still use checkout-local aliases and paths.
 Registered list, preview and connect neither read nor rewrite those references.

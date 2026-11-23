@@ -304,7 +304,7 @@ def launch_ssh(config, alias):
     import subprocess
 
     env = {key: value for key, value in os.environ.items() if not key.startswith("SSH_")}
-    env.update(SHELL="/bin/sh", LC_ALL="C", PATH="/usr/bin:/bin")
+    env.update(SHELL="/bin/sh", LC_ALL="C", PATH="/usr/bin:/bin", SSH_ASKPASS_REQUIRE="never")
     result = subprocess.run([SSH, "-F", str(config), "--", alias], env=env)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
 

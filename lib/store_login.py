@@ -80,11 +80,10 @@ class KeyCredential:
     ciphertext: bytes
 
 
-def current_keys(load_account, store_id, expected, names):
+def current_credentials(load_account, store_id, expected, names):
     account = load_account()
-    keys = {}
+    keys, interactive = {}, {}
     with resolved_store(account, store_id, expected) as (_, binding, root_fd, _):
-        material = read_vault(root_fd, account, binding)
         parts = path_parts(account.root.path, binding.root.path)
         with bound_directory(root_fd, parts, binding.root, "checkout binding mismatch") as checkout_fd:
             with open_directory(checkout_fd, ("secrets",)) as vault_fd:
@@ -97,13 +96,17 @@ def current_keys(load_account, store_id, expected, names):
 
                     meta = read_file(vault_fd, f"{name}.meta", 4096, verify)
                     types = [line for line in meta.splitlines() if line.startswith(b"type=")]
-                    require(types == [b"type=key"], "registered login requires a supported store key credential")
+                    if types == [b"type=password"]:
+                        interactive[name] = tuple(evidence)
+                        continue
+                    require(types == [b"type=key"], "registered login requires a supported credential type")
                     pub = read_file(vault_fd, f"{name}.pub", 4096, verify)
                     encrypted = read_file(vault_fd, f"{name}.age", JSON_LIMIT, verify)
                     require(len(pub.splitlines()) == 1 and len(pub.split()) >= 2 and encrypted,
                             "incomplete store key credential")
                     keys[name] = KeyCredential(tuple(evidence), pub, encrypted)
-    return account, material, keys
+        material = read_vault(root_fd, account, binding) if keys else None
+    return account, material, keys, interactive
 
 
 def prompt_passphrase():
@@ -148,30 +151,34 @@ def agent_keys(env, data=None):
 @contextmanager
 def scoped_login(load_account, store_id, expected, config, targets, read_passphrase):
     names = sorted(set(targets.values()))
-    selection = current_keys(load_account, store_id, expected, names)
-    cache = VaultUnlockCache(verified_age_dir(selection[0]))
-    cache.unlock(load_account, store_id, expected, (read_passphrase or prompt_passphrase)())
+    selection = current_credentials(load_account, store_id, expected, names)
+    keys = selection[2]
+    cache = None
 
     def verify():
-        require(current_keys(load_account, store_id, expected, names) == selection
-                and cache.get(load_account, store_id, expected) is not None,
+        require(current_credentials(load_account, store_id, expected, names) == selection
+                and (cache is None or cache.get(load_account, store_id, expected) is not None),
                 "store credential changed during unlock")
 
+    if not keys:
+        yield verify
+        return
+    cache = VaultUnlockCache(verified_age_dir(selection[0]))
+    cache.unlock(load_account, store_id, expected, (read_passphrase or prompt_passphrase)())
     verify()
-    material = selection[2]
     socket = config.parent / "agent"
     with ssh_agent(socket) as env:
         public_files, offers = {}, set()
         identity = cache.get(load_account, store_id, expected)
-        for number, name in enumerate(names):
-            key = material[name]
+        for number, (name, key) in enumerate(keys.items()):
             offers.add(tuple(key.public_key.split()[:2]))
             agent_keys(env, cache.open_secret(identity, key.ciphertext))
             actual = {tuple(line.split()[:2]) for line in agent_keys(env).splitlines()}
             require(actual == offers, "store public and private key do not match")
             public_files[name] = config.parent / f"key-{number}.pub"
             public_files[name].write_bytes(key.public_key)
-        entries = "".join(f"Host {alias}\n  IdentityFile {public_files[name]}\n" for alias, name in targets.items())
+        entries = "".join(f"Host {alias}\n  IdentityFile {public_files[name]}\n"
+                          for alias, name in targets.items() if name in public_files)
         configuration = config.read_text().replace("IdentityAgent none\n", f"IdentityAgent {socket}\n", 1)
         config.write_text(configuration + entries)
         yield verify
