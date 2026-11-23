@@ -72,7 +72,7 @@ def plain_git(directory_fd, *, bare):
         b"user.name": None, b"user.email": None,
     }
     bare_setting = False
-    filemode = True
+    filemode, log_updates = True, not bare
     for item in config.rstrip(b"\0").split(b"\0"):
         key, _, value = item.partition(b"\n")
         if re.fullmatch(rb"(?:remote\.[a-zA-Z0-9_-]+\.(?:url|fetch)|branch\.[^\x00-\x20]+\.(?:remote|merge))", key):
@@ -82,6 +82,8 @@ def plain_git(directory_fd, *, bare):
         bare_setting |= key == b"core.bare"
         if key == b"core.filemode":
             filemode = value == b"true"
+        if key == b"core.logallrefupdates":
+            log_updates = value == b"true"
     require(bare_setting, "missing registered Git configuration")
     for name in ("commondir", "shallow", "objects/info/alternates", "objects/info/http-alternates",
                  "info/grafts", "info/attributes", "info/sparse-checkout", "MERGE_HEAD", "REVERT_HEAD",
@@ -97,7 +99,7 @@ def plain_git(directory_fd, *, bare):
             require(stat.S_ISDIR(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1),
                     "unsupported linked Git resource")
             require(not name.endswith(".lock"), "registered Git repository is busy")
-    return filemode
+    return filemode, log_updates
 
 
 def raise_walk_error(exc):
@@ -213,6 +215,14 @@ def verify_incoming(stage, tip, base, store_id, local):
     return incoming_files, [name.decode() for name in changed]
 
 
+def fetch_from_fd(stage, directory_fd, ref, destination):
+    uploader = shlex.join([sys.executable, "-I", "-B", "-S", str(Path(__file__).resolve()),
+                           "upload", str(directory_fd)])
+    git(stage, "fetch", "--no-tags", "--no-recurse-submodules", "--upload-pack=" + uploader,
+        "--", "file:///unused", ref + ":" + destination, pass_fds=(directory_fd,))
+    return oid(stage, destination + "^{commit}")
+
+
 def receive(load_account, store_id, expected):
     with store_writer(load_account, store_id, expected) as (account, start, state, _lock):
         with receive_binding(account, store_id, expected) as (context, target, _, _store, binding):
@@ -229,18 +239,23 @@ def receive(load_account, store_id, expected):
         with tempfile.TemporaryDirectory(prefix="receive-", dir=account.state.path) as temp:
             stage = Path(temp)
             git(stage, "init", "--quiet", "--bare", "--template=")
-            uploader = shlex.join([sys.executable, "-I", "-B", "-S", str(Path(__file__).resolve()),
-                                   "upload", str(target_fd)])
-            git(stage, "fetch", "--no-tags", "--no-recurse-submodules", "--upload-pack=" + uploader,
-                "--", "file:///unused", context.ref + ":refs/hostbook/incoming", pass_fds=(target_fd,))
-            tip = oid(stage, "refs/hostbook/incoming^{commit}")
+            with absolute_directory(context.git_dir) as local_git:
+                info = os.fstat(local_git)
+                require((info.st_dev, info.st_ino) == (binding.git_dir.device, binding.git_dir.inode),
+                        "Git directory changed")
+                plain_git(local_git, bare=False)
+                accepted = fetch_from_fd(stage, local_git, context.ref, "refs/hostbook/accepted")
+                require(accepted == base, "local branch changed during receive")
+            tip = fetch_from_fd(stage, target_fd, context.ref, "refs/hostbook/incoming")
             after, changed = verify_incoming(stage, tip, base, store_id, local)
             before = tree(stage, base, git)
             check_index(stage, original_index, before, git)
             (stage / "index").unlink()
             git(stage, "read-tree", tip)
             if tip != base:
-                git(stage, "repack", "-adq")
+                packs = stage / "receive-pack"
+                packs.mkdir()
+                git(stage, "pack-objects", "--revs", str(packs / "pack"), data=f"{tip}\n^{base}\n".encode())
             with store_writer(load_account, store_id, expected) as (current, gated, state_fd, lock_fd):
                 require(local_inputs(state_fd, store_id) == local, "registered SSH inputs changed")
                 require(current == account and gated == context, "registered checkout changed")
@@ -265,7 +280,7 @@ def receive(load_account, store_id, expected):
                             info = os.fstat(checkout_fd)
                             require((info.st_dev, info.st_ino) == (binding.root.device, binding.root.inode),
                                     "registered checkout changed")
-                            filemode = plain_git(git_fd, bare=False)
+                            filemode, log_updates = plain_git(git_fd, bare=False)
                             require(read_ref(git_fd, context.ref) == base and read_index(git_fd) == original_index,
                                     "Git branch or index changed during receive")
                             check_worktree(checkout_fd, before, filemode)
@@ -281,7 +296,7 @@ def receive(load_account, store_id, expected):
                                         verify_binding(record)
                                         fast_forward(checkout_fd, git_fd, context.ref, base, tip, original_index,
                                                      stage, before, after, lambda: verify_binding(record),
-                                                     filemode, *capture)
+                                                     filemode, log_updates, *capture)
                                         os.unlink("receive.pending", dir_fd=store_fd)
                                         sync_local(store_fd)
     return {"store_id": store_id, "received": tip}

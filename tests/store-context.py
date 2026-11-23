@@ -584,6 +584,37 @@ class StoreContextTest(unittest.TestCase):
         history("transfer", ["prepared", "cancelled"], 2, [], retained)
         idle(1)
 
+    def test_receive_installs_only_new_objects_and_preserves_native_reflogs(self):
+        f = self.prepare_receive()
+        known = {line.split()[0] for line in f.git(f.store, "rev-list", "--objects", f.base).splitlines()}
+        packs = f.store / ".git/objects/pack"
+        previous = set(packs.glob("*.idx")) if packs.is_dir() else set()
+        for change in range(2):
+            if change:
+                source = f.author / "team.conf"
+                source.write_text("Host db\n  HostName 192.0.2.8\n")
+                path = f.author / ".hostbook/identity.json"
+                meta = json.loads(path.read_bytes())
+                meta["generation"] += 1
+                meta["sources"][0]["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+                path.write_text(json.dumps(meta))
+                f.git(f.author, "commit", "-qam", "Second host-only edit")
+                f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+            tip = f.git(f.author, "rev-parse", "HEAD")
+            result = f.receive()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            fresh = set(packs.glob("*.idx")) - previous
+            self.assertEqual(len(fresh), 1)
+            listing = f.git(f.store, "verify-pack", "-v", str(next(iter(fresh))))
+            objects = {line.split()[0] for line in listing.splitlines() if len(line.split()[0]) == 40}
+            self.assertIn(tip, objects)
+            self.assertFalse(known & objects)
+            for ref in ("HEAD", "refs/heads/main"):
+                self.assertEqual(f.git(f.store, "reflog", "show", "-1", "--format=%H", ref), tip)
+            f.git(f.store, "fsck", "--full", "--strict")
+            known.update(objects)
+            previous.update(fresh)
+
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
         os.link(f.store / "secrets/vault.pub", self.root / "other-public-key")

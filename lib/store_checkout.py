@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 import sys
+import time
 from uuid import uuid4
 
 from store_context import (JSON_LIMIT, StoreContextError, open_directory, read_file, require,
@@ -121,7 +122,7 @@ def make_parents(root_fd, parts):
 
 def install_git_pack(git_fd, stage):
     # Publish each complete immutable pack before its index, including across devices.
-    packs = stage / "objects/pack"
+    packs = stage / "receive-pack"
     with make_parents(git_fd, ("objects", "pack")) as dest:
         for pack in sorted(packs.glob("pack-*.pack")):
             require(re.fullmatch(r"pack-[a-f0-9]{40,64}\.pack", pack.name), "invalid Git pack")
@@ -279,8 +280,36 @@ def install_sources(checkout_fd, capture, paths, before, filemode):
                 sync_local(parent)
 
 
+def append_reflog(git_fd, ref, base, tip, enabled):
+    parts = ("logs", *ref.split("/"))
+    with ExitStack() as stack:
+        if enabled:
+            parent = stack.enter_context(make_parents(git_fd, parts[:-1]))
+        else:
+            try:
+                parent = stack.enter_context(open_directory(git_fd, parts[:-1]))
+            except FileNotFoundError:
+                return
+        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(parts[-1], flags | (os.O_CREAT if enabled else 0), 0o600, dir_fd=parent)
+        except FileNotFoundError:
+            if enabled:
+                raise
+            return
+        try:
+            info = os.fstat(fd)
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "invalid Git reflog")
+            entry = f"{base} {tip} Hostbook <hostbook@localhost> {int(time.time())} +0000\treceive: fast-forward\n".encode()
+            require(os.write(fd, entry) == len(entry), "Git reflog write was incomplete")
+            sync_local(fd)
+        finally:
+            os.close(fd)
+        sync_local(parent)
+
+
 def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage,
-                 before, after, verify_binding, filemode, capture, paths):
+                 before, after, verify_binding, filemode, log_updates, capture, paths):
     candidate = (stage / "index").read_bytes()
     parts = ref.split("/")
     with make_parents(git_fd, parts[:-1]) as refs:
@@ -295,6 +324,8 @@ def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage,
                 install_sources(checkout_fd, capture, paths, before, filemode)
                 verify_binding()
                 set_index()
+                append_reflog(git_fd, ref, base, tip, log_updates)
+                append_reflog(git_fd, "HEAD", base, tip, log_updates)
                 set_ref()
     require(read_ref(git_fd, ref) == tip and read_index(git_fd) == candidate, "received Git state differs")
     check_worktree(checkout_fd, after, filemode)
