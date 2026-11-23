@@ -272,6 +272,36 @@ class StoreContextTest(unittest.TestCase):
             subprocess.run([app,*args],env=routed,capture_output=True,timeout=15)
             self.assertEqual(snapshot(shared),prior,args)
         self.assertFalse((outside/"fake-python-ran").exists())
+        checkout = self.root/"unrelated-index-checkout"
+        checkout.mkdir()
+        state = self.root/"unrelated-index-state"
+        source_file = checkout/"team.conf"
+        source_file.write_text("Host old-local\n  HostName 192.0.2.3\n")
+        ssh_input = self.root/"legacy-ssh-config"
+        ssh_input.write_text(f'Include "{source_file}"\n')
+        disjoint = dict(env,HOSTBOOK_DIR=str(checkout),HOSTBOOK_STATE=str(state),
+                        HOSTBOOK_SSH_CONFIG=str(ssh_input),XDG_CONFIG_HOME=str(self.root/"legacy-xdg"))
+        initial = subprocess.run([app,"_index"],env=disjoint,capture_output=True)
+        self.assertEqual(initial.returncode,0,initial.stderr)
+        source_file.write_text("Host new-local\n  HostName 192.0.2.4\n")
+        updated = subprocess.run([app,"_list"],env=disjoint,capture_output=True)
+        self.assertEqual(updated.returncode,0,updated.stderr)
+        self.assertIn(b"h:new-local",updated.stdout)
+        self.assertNotIn(b"h:old-local",updated.stdout)
+        ssh_input.write_text(f'Host new-local\n  User updated-account\nInclude "{source_file}"\n')
+        external = subprocess.run([app,"_list"],env=disjoint,capture_output=True)
+        self.assertEqual(external.returncode,0,external.stderr)
+        self.assertIn(b"updated-account",(state/"index.tsv").read_bytes())
+        context = installed/"lib/store_context.py"
+        hidden = installed/"lib/context.paused"
+        context.rename(hidden)
+        try:
+            warm = subprocess.run([app,"_list"],env=disjoint,capture_output=True)
+            self.assertEqual(warm.returncode,0,warm.stderr)
+            self.assertIn(b"h:new-local",warm.stdout)
+        finally:
+            hidden.rename(context)
+        self.assertEqual(snapshot(shared),prior)
         for name in ("base","ours","theirs"):
             (outside/name).write_text("Host legacy\n")
         (outside/"ours.hbmerge").symlink_to(shared/"unexpected.conf")

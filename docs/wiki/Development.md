@@ -148,7 +148,9 @@ destination again when it writes. The raw host-block writer uses the opened
 directory for its file update, including in an unrelated legacy repository.
 The guard reads the operating system account's approval independently of
 `HOME` and `HOSTBOOK_DIR`. Warm legacy preview, header, footer and list calls
-do not run this Python check.
+use cached rows without running Python. A stale index for a disjoint legacy
+checkout is rebuilt after the cold builder checks the input and output paths.
+Changes to the active SSH configuration invalidate the index.
 
 ### Add or import private hosts
 

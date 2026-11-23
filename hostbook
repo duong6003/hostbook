@@ -430,15 +430,17 @@ index_file(){ # file → print index rows; run "ssh -G" in parallel, 16 servers 
   rm -rf "$tmp"
 }
 # Detect changes with checksums (cksum), not modification times: Bash "-nt" has only second precision.
-conf_sums(){ cksum "$DIR"/*.conf "$HOME/.ssh/config" 2>/dev/null; }
+conf_sums(){ cksum "$DIR"/*.conf "${SSHCFG:-$HOME/.ssh/config}" 2>/dev/null; }
 build_index(){ # [full]
-  local f base full=${1:-} now old
+  local f base full=${1:-} now old config=${SSHCFG:-$HOME/.ssh/config}
   if legacy_authority_present; then
-    legacy_destinations "$IDXD" "$IDXD"/* "$IDX.tmp" "$STATE/skipped" || return 65
+    legacy_destinations "$DIR"/*.conf "$IDXD" "$IDXD"/* "$IDX.tmp" "$STATE/skipped" || return 65
+    local TMPDIR=$IDXD
+    export TMPDIR
   fi
   mkdir -p "$IDXD"; now=$(conf_sums); old=$(cat "$IDXD/sums" 2>/dev/null)
   sum_of(){ printf '%s\n' "$2" | awk -v f="$1" '{path=$0; sub(/^[^ \t]+[ \t]+[^ \t]+[ \t]+/,"",path); if(path==f) print $1 " " $2}'; }
-  [ "$(sum_of "$HOME/.ssh/config" "$now")" != "$(sum_of "$HOME/.ssh/config" "$old")" ] && [ -n "$old" ] && full=1
+  [ "$(sum_of "$config" "$now")" != "$(sum_of "$config" "$old")" ] && [ -n "$old" ] && full=1
   for base in "$IDXD"/*.tsv; do [ -f "$base" ] || continue; f=$DIR/$(basename "$base" .tsv).conf
     [ -f "$f" ] && continue; [ -f "$base.wild" ] && full=1; rm -f "$base" "$base.wild"; done   # the file was deleted
   for f in "$DIR"/*.conf; do [ -f "$f" ] || continue; base=$IDXD/$(basename "$f" .conf).tsv
@@ -458,7 +460,7 @@ ensure_index(){
   [ -d "$DIR" ] || { [ -z "$LEGACY_READONLY" ] || return 65; : > "$IDX"; return; }
   local old=; IFS= read -r -d '' old 2>/dev/null < "$IDXD/sums" || :
   [ -f "$IDX" ] && [ "$(conf_sums)" = "${old%$'\n'}" ] && return 0
-  [ -z "$LEGACY_READONLY" ] || return 65
+  # Only a cache miss reaches the cold builder, which validates every destination on an approved device.
   build_index
 }
 host_field(){ awk -F'\t' -v n="$1" -v c="$2" '{sub(/\r$/,"")} $1==n{print $c; exit}' "$IDX"; }   # 2 project 3 ip 4 user 5 port 6 jump 7 key 8 tags 9 desc 10 file 11 line 12 secret
@@ -493,7 +495,8 @@ list_width(){ # [var]
 list_data(){ # key, name, project, IP, user, tags, description, secret, last use / secondary line
   local s alive line only=${HOSTBOOK_ONLY:-} IDX=$IDX GRP=$GRP f_sess f_sess_h f_grp
   tv f_sess list_session; tv f_sess_h list_session_hint; tv f_grp list_group   # once, not per row (hot path)
-  local filter=
+  local filter= history=$HIST
+  [ -f "$history" ] || history=/dev/null
   if [ -n "$only" ] && [ -f "$only" ]; then filter=$only; GRP=/dev/null; fi
   if have tmux && [ -z "$only" ]; then
     while IFS="$TAB" read -r s alive; do
@@ -510,7 +513,7 @@ list_data(){ # key, name, project, IP, user, tags, description, secret, last use
     FILENAME==ARGV[1] {d=now-$1; score[$2]+=(d<3600?4:d<86400?2:d<604800?1:0.5); if($1>last[$2])last[$2]=$1; next}
     filter!="" && !($1 in allowed) {next}
     {printf "%010.2f\th:%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",score[$1],$1,$1,$2,$3,$4,$8,$9,$12,ago(last[$1])}
-  ' "$HIST" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
+  ' "$history" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
 }
 esc_bg(){ # color [var]
   local fg; esc_fg "$1" fg
@@ -3153,7 +3156,8 @@ fi
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
-  _footer_data) cmd_footer_data;; _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
+  _footer_data) cmd_footer_data;;
+  _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
              printf '\n%s%s%s ' "$CD" "$L_pane_retry" "$C0"; read -r a </dev/tty; [ "$a" = q ] && exit 255; done;;
   _explain) ensure_index; explain "$2" "$3" pane;;
@@ -3180,7 +3184,7 @@ case ${1:-} in
   _check) ensure_index; shift; HB_PLAIN=1 check_run "$@"; cat "$STATE/check/run.tsv";;
   share) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then share_flow $(search_hosts "$*"); else share_flow $(cut -f1 "$IDX"); fi;;
   check) check_deps || exit 1; ensure_index; shift; if [ $# -gt 0 ]; then check_hosts $(search_hosts "$*"); else check_hosts $(cut -f1 "$IDX"); fi; exit $?;;
-  _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) sync_quiet 10;; _discover) discover;; _index) build_index full; cat "$IDX";;
+  _merge) merge_driver "$2" "$3" "$4" "${5:-}"; exit $?;; _bg_sync) cmd_bg_sync;; _sync_now) sync_quiet 10;; _discover) discover;; _index) build_index full && cat "$IDX";;
   _suggest_host) suggest "$2" "${3:-}" "${4:-}" "${5:-}" "${6:-}";; _suggest) shift; suggest_group_name "$@";; _parse) parse_addr "$2";;
   _write) write_host "$2" "$3";; _delete) ensure_index; apply_change "xoá $2" delete_host_raw "$2";;
   _rename) ensure_index; apply_change "đổi tên" rename_host_raw "$2" "$3";; _move) ensure_index; apply_change "chuyển" move_host_raw "$2" "$3";;
