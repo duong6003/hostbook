@@ -337,12 +337,6 @@ def publish_address(load_account, store_id, expected, host_id, stamp, text):
 def publish_reserved(load_account, account, ctx, target, target_fd, binding, host_id, stamp,
                      base, tip, proposed, attempt, binding_id, stage, bundle):
     expected, store_id = ctx.generations, ctx.store_id
-    record = {"format":"hostbook-control", "version":1, "record_id":attempt, "device_id":account.device_id,
-              "root_id":account.recovery_root_id, "sequence":1, "previous_sequence":0, "store_id":store_id,
-              "owner":{"owner_id":str(uuid4()), "process_id":os.getpid(), "process_start_id":str(uuid4()), "boot_id":boot_id()},
-              "operation":"publish", "detail":{"attempt_id":attempt, "connection_generation":expected.connection,
-              "connection_binding_id":binding_id, "base_oid":tip, "proposed_oid":proposed,
-              "sender_state":"active", "outcome":"reserved"}}
     with recovery_root(account) as recovery, ExitStack() as opened:
         with store_writer(load_account, store_id, expected) as (actual, locked, _, _lock):
             require((actual, locked) == (account, ctx), "registered publication binding changed")
@@ -353,49 +347,75 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
                     info = os.fstat(local_git)
                     require((info.st_dev, info.st_ino) == (binding.git_dir.device, binding.git_dir.inode)
                             and read_ref(local_git, ctx.ref) == base, "registered host base changed")
-                with make_parents(recovery, ("edits",)) as edits:
-                    require_private_directory(edits, "publication evidence")
-                    os.mkdir(attempt, 0o700, dir_fd=edits)
-                    sync_local(edits)
-                    edit = opened.enter_context(open_directory(edits, (attempt,)))
-                fd = os.open("lease", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=edit)
-                lease = opened.enter_context(os.fdopen(fd, "r+b"))
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                lease_info = os.fstat(fd)
-                out = os.open("proposal.bundle", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=edit)
-                with os.fdopen(out, "wb") as dest, bundle.open("rb") as src:
-                    shutil.copyfileobj(src, dest)
-                    dest.flush()
-                    sync_local(out)
-                evidence = {"version":1, "binding_id":binding_id, "store_id":store_id, "device_id":account.device_id,
-                            "target_id":ctx.target_id, "uid":os.geteuid(), "ref":ctx.ref,
-                            "generations":asdict(expected), "bare_repository":dict(asdict(target),path=str(target.path)),
-                            "lease_device":lease_info.st_dev, "lease_inode":lease_info.st_ino, "host_id":host_id}
-                durable_file(edit, "binding.json", json_bytes(evidence))
-                sync_local(fd)
-                sync_local(edit)
-                reserve(edit, recovery, record)
-        # The admitted client and receive-pack both inherit this lease through transport completion.
-        started, reason = False, None
-        def start():
-            nonlocal started
-            durable_file(edit, "send-started", attempt.encode())
-            sync_local(edit)
-            started = True
-        try:
-            outcome = send(stage, target_fd, fd, ctx.ref, tip, proposed, edit, account, start)
-        except (OSError, StoreContextError, subprocess.TimeoutExpired) as exc:
-            outcome = "uncertain" if started else "not-accepted"
-            reason = str(exc) if isinstance(exc, StoreContextError) else "registered Git transport unavailable"
-        finally:
-            lease.close()
-        try:
-            with open_lease(edit, evidence):
-                with store_writer(load_account, store_id, expected) as (actual, _, _, _lock):
-                    require(actual == account, "publication account changed")
-                    advance(recovery, actual, record, outcome)
-        except (OSError, StoreContextError):
-            outcome = "uncertain"
+                reservation = reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed,
+                                           bundle, attempt, binding_id)
+        return launch_reserved(load_account, account, recovery, ctx, expected, stage, target_fd, reservation)
+
+
+def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed, bundle, attempt, binding_id, retry_of=None):
+    expected, store_id = ctx.generations, ctx.store_id
+    record = {"format":"hostbook-control", "version":1, "record_id":attempt, "device_id":account.device_id,
+              "root_id":account.recovery_root_id, "sequence":1, "previous_sequence":0, "store_id":store_id,
+              "owner":{"owner_id":str(uuid4()), "process_id":os.getpid(), "process_start_id":str(uuid4()), "boot_id":boot_id()},
+              "operation":"publish", "detail":{"attempt_id":attempt, "connection_generation":expected.connection,
+              "connection_binding_id":binding_id, "base_oid":tip, "proposed_oid":proposed,
+              "sender_state":"active", "outcome":"reserved"}}
+    with make_parents(recovery, ("edits",)) as edits:
+        require_private_directory(edits, "publication evidence")
+        os.mkdir(attempt, 0o700, dir_fd=edits)
+        sync_local(edits)
+        edit = opened.enter_context(open_directory(edits, (attempt,)))
+    fd = os.open("lease", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=edit)
+    lease = opened.enter_context(os.fdopen(fd, "r+b"))
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lease_info = os.fstat(fd)
+    out = os.open("proposal.bundle", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=edit)
+    digest = hashlib.sha256()
+    with os.fdopen(out, "wb") as dest, bundle.open("rb") as src:
+        while chunk := src.read(65536):
+            dest.write(chunk)
+            digest.update(chunk)
+        dest.flush()
+        sync_local(out)
+    evidence = {"version":1, "binding_id":binding_id, "store_id":store_id, "device_id":account.device_id,
+                "target_id":ctx.target_id, "uid":os.geteuid(), "ref":ctx.ref,
+                "generations":asdict(expected), "bare_repository":dict(asdict(target),path=str(target.path)),
+                "lease_device":lease_info.st_dev, "lease_inode":lease_info.st_ino, "host_id":host_id,
+                "bundle_sha256":digest.hexdigest()}
+    if retry_of is not None:
+        durable_file(edit, "retry.json", json_bytes({"original_attempt":retry_of}))
+    durable_file(edit, "binding.json", json_bytes(evidence))
+    sync_local(fd)
+    sync_local(edit)
+    reserve(edit, recovery, record)
+    return record, edit, lease, evidence
+
+
+def launch_reserved(load_account, account, recovery, ctx, expected, stage, target_fd, reservation):
+    record, edit, lease, evidence = reservation
+    fd, store_id, attempt = lease.fileno(), ctx.store_id, record["record_id"]
+    tip, proposed = record["detail"]["base_oid"], record["detail"]["proposed_oid"]
+    # The admitted client and receive-pack both inherit this lease through transport completion.
+    started, reason = False, None
+    def start():
+        nonlocal started
+        durable_file(edit, "send-started", attempt.encode())
+        sync_local(edit)
+        started = True
+    try:
+        outcome = send(stage, target_fd, fd, ctx.ref, tip, proposed, edit, account, start)
+    except (OSError, StoreContextError, subprocess.TimeoutExpired) as exc:
+        outcome = "uncertain" if started else "not-accepted"
+        reason = str(exc) if isinstance(exc, StoreContextError) else "registered Git transport unavailable"
+    finally:
+        lease.close()
+    try:
+        with open_lease(edit, evidence):
+            with store_writer(load_account, store_id, expected) as (actual, _, _, _lock):
+                require(actual == account, "publication account changed")
+                advance(recovery, actual, record, outcome)
+    except (OSError, StoreContextError):
+        outcome = "uncertain"
     result = {"store_id":store_id, "attempt_id":attempt, "outcome":outcome}
     if reason:
         result["reason"] = reason
@@ -440,13 +460,14 @@ def attempt_binding(edit, account, original):
     require_private_directory(edit, "publication evidence")
     record = private_json(edit, "binding.json")
     fields(record, "version binding_id store_id device_id target_id uid ref generations bare_repository "
-                   "lease_device lease_inode host_id")
+                   "lease_device lease_inode host_id bundle_sha256")
     fields(record["generations"], "registration checkout connection policy")
     detail = original["detail"]
     require(type(record["version"]) is int and record["version"] == 1 and record["device_id"] == account.device_id
             and record["binding_id"] == detail["connection_binding_id"] and record["store_id"] == original["store_id"]
             and type(record["uid"]) is int and record["uid"] == os.geteuid() and valid_ref(record["ref"])
             and valid_id(record["host_id"]) and valid_id(record["target_id"])
+            and isinstance(record["bundle_sha256"],str) and re.fullmatch(r"[0-9a-f]{64}",record["bundle_sha256"])
             and all(positive(k) for k in record["generations"].values())
             and record["generations"]["connection"] == detail["connection_generation"]
             and type(record["lease_device"]) is int and record["lease_device"] >= 0 and positive(record["lease_inode"]),

@@ -657,7 +657,7 @@ class StoreContextTest(unittest.TestCase):
         before, remote = snapshot(f.store), snapshot(f.remote)
         review = store_mode.change_mode(load,store,self.generations,"receive-only")
         self.assertEqual(review["pending"],[candidate])
-        self.assertEqual(review["choices"],["discard-then-switch","cancel"])
+        self.assertEqual(review["choices"],["send-then-switch","discard-then-switch","cancel"])
         cancel = store_mode.change_mode(load,store,self.generations,"cancel")
         self.assertEqual(cancel["mode"],"two-way")
         with self.assertRaises(StoreContextError):
@@ -715,6 +715,115 @@ class StoreContextTest(unittest.TestCase):
                 evidence.chmod(0o600)
             with self.assertRaises((StoreContextError,FileNotFoundError)):
                 store_mode.change_mode(load,store,Generations(**done["generations"]),"two-way")
+
+    def test_mode_sends_only_the_confirmed_reserved_candidate_before_switch(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store = self.entries[1]["store_id"]
+        load = lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        actual = store_publish.send
+        def check_fence(*args):
+            entry = json.loads(self.registry.read_bytes())["stores"][1]
+            self.assertEqual(entry["effective_mode"],"two-way")
+            self.assertIsNotNone(entry["transition_id"])
+            recs = [json.loads(p.read_bytes()) for p in (self.recovery/"control").glob("*/records/1.json")]
+            self.assertEqual(sum(r["operation"] == "publish" for r in recs),2)
+            # Network activity happens after the store gate has been released.
+            with store_context.store_writer(load,store,store_context.entry_generations(entry)):
+                pass
+            return actual(*args)
+        with patch.object(store_publish,"send",side_effect=check_fence):
+            result = store_mode.change_mode(load,store,self.generations,"receive-only","send-confirmed",[candidate])
+        self.assertEqual(result["mode"],"receive-only")
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),"Host db\n  HostName 192.0.2.88")
+        with patch.object(store_publish,"send",side_effect=AssertionError("must never replay")):
+            enabled = store_mode.change_mode(load,store,Generations(**result["generations"]),"two-way")
+            switched = store_mode.change_mode(load,store,Generations(**enabled["generations"]),"receive-only")
+            self.assertNotIn("pending",switched)
+
+    def test_mode_checks_the_original_bundle_digest_before_offering_or_discarding(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        bundle = self.recovery/"edits"/candidate/"proposal.bundle"
+        header,_ = bundle.read_bytes().split(b"\n\n",1)
+        empty_pack = b"PACK"+(2).to_bytes(4,"big")+bytes(4)
+        bundle.write_bytes(header+b"\n\n"+empty_pack+hashlib.sha1(empty_pack).digest())
+        for action, confirmed in (("clean",[]),("discard-confirmed",[candidate]),("send-confirmed",[candidate])):
+            with self.assertRaisesRegex(StoreContextError,"bundle"):
+                store_mode.change_mode(load,store,self.generations,"receive-only",action,confirmed)
+
+    def test_mode_failed_send_preserves_one_candidate_and_old_mode(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        before, remote = snapshot(f.store), snapshot(f.remote)
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+            failed = store_mode.change_mode(load,store,self.generations,"receive-only","send-confirmed",[candidate])
+        self.assertEqual((failed["mode"],failed["outcome"]),("two-way","not-accepted"))
+        next_review = store_mode.change_mode(load,store,Generations(**failed["generations"]),"receive-only")
+        self.assertEqual(next_review["pending"],[candidate])
+        self.assertEqual(snapshot(f.store),before)
+        self.assertEqual(snapshot(f.remote),remote)
+
+    def test_mode_lost_ack_keeps_fence_until_original_attempt_settles(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        native = store_publish.send
+        def lose_ack(*args):
+            self.assertEqual(native(*args),"accepted")
+            return "uncertain"
+        with patch.object(store_publish,"send",side_effect=lose_ack):
+            uncertain = store_mode.change_mode(load,store,self.generations,"receive-only","send-confirmed",[candidate])
+        self.assertEqual((uncertain["mode"],uncertain["outcome"]),("two-way","uncertain"))
+        expected = Generations(**uncertain["generations"])
+        with patch.object(store_publish,"send",side_effect=AssertionError("must never replay")):
+            self.assertEqual(store_publish.settle(load,store,expected,uncertain["settle_attempt"])["outcome"],"accepted")
+            final = store_mode.change_mode(load,store,expected,"receive-only")
+        self.assertEqual(final["mode"],"receive-only")
+        self.assertNotIn("transition_id",final)
+
+    def test_mode_recovers_sender_death_after_fence_before_start_without_resend(self):
+        import store_mode
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        store, load = self.entries[1]["store_id"], lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            candidate = edit()["attempt_id"]
+        pid = os.fork()
+        if pid == 0:
+            try:
+                with patch.object(store_publish,"launch_reserved",side_effect=lambda *a:os._exit(79)):
+                    store_mode.change_mode(load,store,self.generations,"receive-only","send-confirmed",[candidate])
+            finally:
+                os._exit(78)
+        self.assertEqual(os.waitstatus_to_exitcode(os.waitpid(pid,0)[1]),79)
+        entry = json.loads(self.registry.read_bytes())["stores"][1]
+        expected = store_context.entry_generations(entry)
+        self.assertEqual(entry["effective_mode"],"two-way")
+        paused = store_mode.change_mode(load,store,expected,"cancel")
+        self.assertIsNotNone(paused["transition_id"])
+        result = store_publish.settle(load,store,expected,paused["settle_attempt"])
+        self.assertEqual(result["outcome"],"not-accepted")
+        with patch.object(store_publish,"send",side_effect=AssertionError("must never replay")):
+            finished = store_mode.change_mode(load,store,expected,"receive-only")
+            self.assertEqual(finished["mode"],"two-way")
+            review = store_mode.change_mode(load,store,Generations(**finished["generations"]),"receive-only")
+        self.assertEqual(review["pending"],[candidate])
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main"),f.tip)
 
     def test_mode_recovers_unpointed_fence_and_releases_terminal_pointer(self):
         import store_mode

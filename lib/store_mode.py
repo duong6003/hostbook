@@ -1,19 +1,24 @@
 """Change a registered shared store's effective mode through its durable fence."""
+from contextlib import ExitStack
 from dataclasses import asdict
 import hashlib
 import json
 import os
 from pathlib import Path
 import pwd
+import shutil
+import tempfile
 from uuid import uuid4
 
-from store_checkout import durable_file, make_parents, rename_guarded
-from store_context import (JSON_LIMIT, Generations, acquire_local_lock, entry_generations, fields, fixture_request, load_approved_account,
+from store_checkout import direct_ref, durable_file, make_parents, rename_guarded
+from store_context import (JSON_LIMIT, Generations, acquire_local_lock, entry_generations, fields, fixture_request, index_rows, load_approved_account,
                            open_directory, path_parts, read_registry, registry_entries, require, resolved_store, require_approval_file, require_private_directory,
                            staged_local_file, store_writer, sync_local, valid_id, validate_entry, verify_state_directory)
 from store_journal import classify, private_json, require_idle
 from store_publish import attempt_binding, boot_id, read_attempt, json_bytes, recovery_root, reserve, select_record, sync_named
-from store_receive import receive_binding
+from store_receive import absolute_directory, fetch_from_fd, git, oid, receive, receive_binding, verify_incoming
+from store_read import local_inputs
+import store_publish
 
 
 def verify_live(load, account, state, writer, entry):
@@ -54,7 +59,7 @@ def replace_entry(state, account, old, new, verify):
 
 
 def mode_records(recovery, account, store_id, pointer):
-    active, pending, retired = [], [], {}
+    active, pending, retired, retries = [], [], {}, {}
     try:
         control_fd = os.open("control", os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery)
     except FileNotFoundError:
@@ -78,12 +83,27 @@ def mode_records(recovery, account, store_id, pointer):
                             retired[candidate["attempt_id"]] = candidate
                     if not terminal or pointer == ident:
                         active.append((first, tail))
-                elif terminal and tail["detail"]["outcome"] == "not-accepted":
-                    pending.append(ident)
+                elif terminal:
+                    with open_directory(recovery, ("edits", ident)) as edit:
+                        try:
+                            retry = private_json(edit, "retry.json")
+                        except FileNotFoundError:
+                            retry = None
+                    if retry:
+                        fields(retry, "original_attempt")
+                        require(valid_id(retry["original_attempt"]), "invalid retry evidence")
+                        origin = candidate_record(recovery, account, store_id, retry["original_attempt"])
+                        verify_retry(recovery, account, first, origin)
+                        retries[ident] = (origin, tail["detail"]["outcome"])
+                    elif tail["detail"]["outcome"] == "not-accepted":
+                        pending.append(ident)
     finally:
         os.close(control_fd)
     require(len(active) <= 1 and (pointer is None or active and active[0][0]["record_id"] == pointer),
             "mode transition needs reconciliation")
+    for origin, outcome in retries.values():
+        if outcome == "accepted":
+            retired[origin["attempt_id"]] = origin
     for ident, saved in retired.items():
         require(ident in pending and candidate_record(recovery, account, store_id, ident) == saved,
                 "retired publication evidence disagrees")
@@ -98,8 +118,10 @@ def decision(recovery, first):
         record = private_json(folder, "decision.json")
         require(hashlib.sha256(json_bytes(record)).hexdigest() == plan["decision_sha256"],
                 "mode decision evidence changed")
-    fields(record, "action candidates")
-    require(record["action"] in ("clean","discard-confirmed") and isinstance(record["candidates"],list)
+    fields(record, "action candidates" + (" send_attempt" if record.get("action") == "send-confirmed" else ""))
+    if record["action"] == "send-confirmed":
+        require(valid_id(record["send_attempt"]) and len(record["candidates"]) == 1, "invalid confirmed sender")
+    require(record["action"] in ("clean","discard-confirmed","send-confirmed") and isinstance(record["candidates"],list)
             and bool(record["candidates"]) == (record["action"] != "clean"), "invalid mode decision")
     return record
 
@@ -121,6 +143,9 @@ def candidate_record(recovery, account, store, attempt, verify_bundle=False):
                         and header[2] == detail["proposed_oid"].encode()+b" refs/hostbook/proposal\n"
                         and header[3] == b"\n", "candidate bundle does not match reservation")
                 pack = stream.read(info.st_size+1)
+                digest = hashlib.sha256(b"".join(header))
+                digest.update(pack)
+                require(digest.hexdigest() == evidence["bundle_sha256"], "candidate bundle digest changed")
                 require(pack.startswith(b"PACK") and hashlib.sha1(pack[:-20]).digest() == pack[-20:],
                         "candidate bundle integrity check failed")
     return {"attempt_id":attempt, "binding_id":detail["connection_binding_id"], "base_oid":detail["base_oid"],
@@ -128,7 +153,20 @@ def candidate_record(recovery, account, store, attempt, verify_bundle=False):
 
 
 
-def prepare_transition(recovery, account, entry, wanted, action, candidates):
+def verify_retry(recovery, account, first, source):
+    detail = first["detail"]
+    require(all(detail[k] == source[k] for k in ("base_oid","proposed_oid")), "retry changed candidate")
+    with open_directory(recovery, ("edits", first["record_id"])) as retry:
+        require(private_json(retry, "retry.json") == {"original_attempt":source["attempt_id"]}, "retry owner mismatch")
+        new = attempt_binding(retry, account, first)
+    with open_directory(recovery, ("edits", source["attempt_id"])) as older:
+        original, _ = read_attempt(recovery, account, first["store_id"], source["attempt_id"])
+        old = attempt_binding(older, account, original)
+    require(all(old[k] == new[k] for k in ("store_id","device_id","target_id","ref","bare_repository","uid","host_id","bundle_sha256"))
+            and old["generations"]["connection"] == new["generations"]["connection"], "retry binding changed")
+
+
+def prepare_transition(recovery, account, entry, wanted, action, candidates, send_attempt=None):
     ident = str(uuid4())
     old_id, new_id = str(uuid4()), str(uuid4())
     rec = {"format":"hostbook-control", "version":1, "record_id":ident, "device_id":account.device_id,
@@ -141,7 +179,10 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates):
         os.mkdir(ident, 0o700, dir_fd=modes)
         sync_local(modes)
         with open_directory(modes, (ident,)) as evidence:
-            saved = json_bytes({"action":action, "candidates":candidates})
+            choice = {"action":action, "candidates":candidates}
+            if send_attempt is not None:
+                choice["send_attempt"] = send_attempt
+            saved = json_bytes(choice)
             durable_file(evidence, "decision.json", saved)
             durable_file(evidence, old_id, json_bytes(entry))
             proposed = dict(entry, effective_mode=wanted, policy_generation=entry["policy_generation"]+3)
@@ -171,7 +212,7 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
         require_private_directory(evidence, "mode evidence")
         old = private_json(evidence, detail["old_binding_id"])
         proposed = private_json(evidence, detail["proposed_binding_id"])["entry"]
-        decision(recovery, first)
+        choice = decision(recovery, first)
     validate_entry(old)
     validate_entry(proposed)
     wanted = proposed["effective_mode"]
@@ -183,7 +224,15 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     changed = dict(fenced, effective_mode=wanted, policy_generation=fenced["policy_generation"]+1)
     cancelled = dict(old, policy_generation=fenced["policy_generation"]+1)
     require(requested in (wanted, "cancel") and entry in (old, fenced, changed), "mode plan and registration disagree")
-    require_idle(recovery, account, entry["store_id"], transition=first)
+    sender, outcome = None, None
+    if choice["action"] == "send-confirmed":
+        sender, current = read_attempt(recovery, account, entry["store_id"], choice["send_attempt"])
+        verify_retry(recovery, account, sender, choice["candidates"][0])
+        outcome = current["detail"]["outcome"]
+        with open_directory(recovery, ("control",sender["record_id"])) as control:
+            if private_json(control, "current.json")["sequence"] != current["sequence"]:
+                outcome = "uncertain"
+    require_idle(recovery, account, entry["store_id"], transition=first, sender=sender)
     verify(entry)
     if entry == old:
         header, _ = read_registry(state)
@@ -191,7 +240,10 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
             registry_update(header, future, steps)
         replace_entry(state, account, old, fenced, verify)
         entry = fenced
-    if tail["detail"]["phase"] == "cancelled" or (requested == "cancel" and entry == fenced):
+    if outcome in ("reserved","uncertain"):
+        require(entry == fenced, "unsettled sender crossed the publication fence")
+        return entry
+    if tail["detail"]["phase"] == "cancelled" or (entry == fenced and (requested == "cancel" or outcome == "not-accepted")):
         require(entry == fenced, "cancelled transition changed its effective mode")
         finish_record(recovery, first, tail, "cancelled")
         replace_entry(state, account, fenced, cancelled, verify)
@@ -206,6 +258,10 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
 
 def change_mode(load_account, store_id, expected, wanted, action="clean", confirmed=()):
     require(wanted in ("two-way", "receive-only", "cancel"), "unknown sync mode")
+    if action == "send-confirmed":
+        require(wanted == "receive-only" and len(confirmed) == 1 and valid_id(confirmed[0]),
+                "confirm one exact candidate to send before switching")
+        return send_then_switch(load_account, store_id, expected, confirmed[0])
     require(action in ("clean", "discard-confirmed") and all(valid_id(ident) for ident in confirmed),
             "invalid mode decision")
     with store_writer(load_account, store_id, expected) as (account, context, state, writer):
@@ -223,7 +279,7 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
                         candidates = [candidate_record(recovery, account, store_id, a, verify_bundle=True) for a in pending]
                         if pending and action == "clean":
                             return {"store_id":store_id, "mode":entry["effective_mode"], "pending":pending,
-                                    "candidates":candidates, "choices":["discard-then-switch","cancel"],
+                                    "candidates":candidates, "choices":(["send-then-switch"] if len(pending)==1 else []) + ["discard-then-switch","cancel"],
                                     "generations":asdict(expected)}
                         require(sorted(confirmed) == pending and (action != "clean") == bool(confirmed),
                                 "confirm the exact pending publication candidates")
@@ -233,7 +289,87 @@ def change_mode(load_account, store_id, expected, wanted, action="clean", confir
                     verify_live(load_account, account, state, writer, current)
                 entry = apply_transition(state, recovery, account, entry, active, wanted, verify)
                 verify(entry)
-            return {"store_id":store_id, "mode":entry["effective_mode"], "generations":asdict(entry_generations(entry))}
+            result = {"store_id":store_id, "mode":entry["effective_mode"], "generations":asdict(entry_generations(entry))}
+            if entry["transition_id"]:
+                result["transition_id"] = entry["transition_id"]
+                result["settle_attempt"] = decision(recovery,active[0])["send_attempt"]
+            return result
+
+
+def send_then_switch(load, store_id, expected, source):
+    account = load()
+    with recovery_root(account) as recovery, ExitStack() as opened:
+        with store_writer(load, store_id, expected) as (actual, ctx, state, _):
+            require(actual == account and ctx.effective_mode == "two-way" and ctx.transition_id is None,
+                    "send before switching requires an unfenced two-way registration")
+            active, pending = mode_records(recovery, account, store_id, None)
+            require(not active and pending == [source], "confirm the exact pending candidate")
+            candidate = candidate_record(recovery, account, store_id, source, verify_bundle=True)
+            local = local_inputs(state, store_id)
+        host, tip, proposed = (candidate[k] for k in ("host_id", "base_oid", "proposed_oid"))
+        bound = opened.enter_context(receive_binding(account, store_id, expected))
+        current, target, target_fd, _, checkout = bound
+        require(current == ctx, "registered sender changed")
+        with open_directory(recovery, ("edits",source)) as original:
+            stored, _ = read_attempt(recovery, account, store_id, source)
+            evidence = attempt_binding(original, account, stored)
+            require(evidence["ref"] == ctx.ref and evidence["target_id"] == ctx.target_id
+                    and evidence["bare_repository"] == dict(asdict(target),path=str(target.path))
+                    and evidence["generations"]["connection"] == expected.connection,
+                    "confirmed candidate belongs to another connection")
+            stage = Path(opened.enter_context(tempfile.TemporaryDirectory(prefix="confirmed-",dir=account.state.path)))
+            bundle = stage/"proposal.bundle"
+            fd = os.open("proposal.bundle", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=original)
+            with os.fdopen(fd,"rb") as src, bundle.open("wb") as dest:
+                require_approval_file(fd, os.fstat(fd))
+                shutil.copyfileobj(src,dest)
+        git(stage,"init","-q","--bare","--template=")
+        store_publish.require_plain_receiver(target_fd)
+        require(direct_ref(target_fd,ctx.ref) == tip and fetch_from_fd(stage,target_fd,ctx.ref,"refs/hostbook/base") == tip,
+                "confirmed candidate base changed")
+        git(stage,"bundle","verify",str(bundle))
+        git(stage,"fetch","--no-tags","--",str(bundle),"refs/hostbook/proposal:refs/hostbook/proposal")
+        require(oid(stage,"refs/hostbook/proposal") == proposed and
+                git(stage,"show","-s","--format=%P",proposed).strip().decode() == tip,"candidate does not match reservation")
+        verify_incoming(stage,proposed,tip,store_id,local)
+        signature = store_publish.record_at(stage,tip,store_id,host)[4]
+        with store_writer(load,store_id,expected) as (actual, locked, state, writer):
+            require(actual == account and locked == ctx, "registered sender changed")
+            with receive_binding(account,store_id,expected) as (again, remote, _, _, binding):
+                require((again,remote,binding) == (ctx,target,checkout) and local_inputs(state,store_id)==local,
+                        "registered sender changed")
+                active, pending = mode_records(recovery,account,store_id,None)
+                require(not active and pending == [source] and candidate_record(recovery,account,store_id,source,verify_bundle=True)==candidate,
+                        "confirmed candidate changed")
+                with absolute_directory(ctx.checkout) as work:
+                    info = os.fstat(work)
+                    require((info.st_dev,info.st_ino)==(binding.root.device,binding.root.inode),"checkout changed")
+                    files = {}
+                    identity, _ = index_rows(work,store_id,files)
+                    require(store_publish.stanza(identity,files.__getitem__,store_id,host)[4] == signature,
+                            "confirmed local host revision changed")
+                attempt = str(uuid4())
+                reservation = store_publish.reserve_edit(opened,recovery,account,ctx,target,host,tip,proposed,bundle,
+                                                         attempt,str(uuid4()),retry_of=source)
+                entry = registry_entries(state,account)[0][store_id]
+                active = prepare_transition(recovery,account,entry,"receive-only","send-confirmed",[candidate],attempt)
+                def verify(row):
+                    verify_live(load,account,state,writer,row)
+                fenced = apply_transition(state,recovery,account,entry,active,"receive-only",verify)
+                require(fenced["transition_id"] == active[0]["record_id"] and fenced["effective_mode"] == "two-way",
+                        "sender needs its original publication fence")
+        generations = entry_generations(fenced)
+        result = store_publish.launch_reserved(load,account,recovery,ctx,generations,stage,target_fd,reservation)
+    mode = change_mode(load,store_id,generations,"receive-only")
+    mode.update(result)
+    if mode["outcome"] == "accepted" and mode["mode"] == "receive-only":
+        from store_context import StoreContextError
+        try:
+            receive(load,store_id,Generations(**mode["generations"]))
+            mode["local"] = "received"
+        except (StoreContextError,OSError):
+            mode["local"] = "reconciliation-required"
+    return mode
 
 
 def mode_command(action, args):
@@ -251,4 +387,4 @@ def mode_command(action, args):
             return load_approved_account(home)
     result = change_mode(load, store_id, expected, args[0], args[1] if len(args) > 1 else "clean", args[2:])
     print(json.dumps(result))
-    return 75 if "pending" in result else 0
+    return 75 if "pending" in result or "settle_attempt" in result or result.get("outcome","accepted") != "accepted" else 0

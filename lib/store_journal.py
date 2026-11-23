@@ -192,7 +192,7 @@ def classify(folder, account, ident, kind):
         return affected, terminal and not unsettled_terminal and selector["sequence"] == len(names)
 
 
-def require_idle(recovery_fd, account, store_id, transition=None):
+def require_idle(recovery_fd, account, store_id, transition=None, sender=None):
     for kind in ("transactions", "control"):
         try:
             container = os.open(kind, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery_fd)
@@ -213,6 +213,14 @@ def require_idle(recovery_fd, account, store_id, transition=None):
                             and scope == {store_id} and transition["operation"] == "registration-transition"):
                         with open_directory(folder, ("records",)) as history:
                             own = private_json(history, "1.json") == transition
+                    if (not own and sender is not None and transition is not None and kind == "control"
+                            and ident == sender["record_id"] and sender["operation"] == "publish" and scope == {store_id}
+                            and transition["store_id"] == sender["store_id"] == store_id):
+                        with open_directory(recovery_fd, ("modes", transition["record_id"])) as plan:
+                            decision = private_json(plan, "decision.json")
+                        with open_directory(folder, ("records",)) as history:
+                            own = (decision.get("action") == "send-confirmed" and decision.get("send_attempt") == ident
+                                   and private_json(history, "1.json") == sender)
                     require(terminal or own or (scope is not None and store_id not in scope),
                             "store has unresolved recovery")
         finally:

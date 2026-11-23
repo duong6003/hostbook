@@ -153,7 +153,12 @@ a retained candidate is reported in `pending` before the mode changes. Use
 `cancel` to keep the current mode and candidates, or append
 `discard-confirmed ATTEMPT_ID ...` to the requested mode. Discard requires
 every currently reviewed ID; the applied transition retires those exact edits
-and preserves unrelated files and the user's Git index.
+and preserves unrelated files and the user's Git index. With one candidate,
+`send-confirmed ATTEMPT_ID` reserves that exact proposal before fencing the
+store. Native Git conditionally sends it outside the gate. A refused send keeps
+the original mode and work. An uncertain send returns `settle_attempt`; use
+`store-settle` with the fenced generations, then repeat `store-mode` to finish.
+The complete retained bundle digest must match its original reservation.
 
 ### Edit one registered shared host address
 
