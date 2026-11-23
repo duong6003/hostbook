@@ -78,6 +78,7 @@ else rm -rf "$APP"; mkdir -p "$(dirname "$APP")"; git clone -q --depth 1 "$REPO"
 # Registered checkouts use scoped SSH routes; install only the launcher for them.
 store=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 if [ -e "$store/.hostbook" ] || [ -L "$store/.hostbook" ]; then
+  APP=$(CDPATH= cd -- "$APP" && pwd -P)
   [ -x "$APP/hostbook" ] || die "Không tìm thấy chương trình hostbook đã cài"
   if [ ! "$BIN/hostbook" -ef "$APP/hostbook" ]; then
     [ ! -e "$BIN/hostbook" ] && [ ! -L "$BIN/hostbook" ] || die "Đường dẫn đã tồn tại: $BIN/hostbook"
