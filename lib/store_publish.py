@@ -24,7 +24,7 @@ from store_context import (JSON_LIMIT, Generations, StoreContextError, bound_dir
                            sync_local, valid_id, valid_ref, verified_account, verify_path_isolation)
 from store_journal import classify, private_json
 from store_read import DIRECTIVE, INDEX_NAME, local_inputs, managed_credentials, selected_route
-from store_receive import (GIT, SAFE_ENV, IDENTITY, absolute_directory, fetch_from_fd, git, git_result, oid, plain_git,
+from store_receive import (GIT, SAFE_ENV, IDENTITY, absolute_directory, fetch_direct, git, git_result, oid, plain_git,
                            receive, receive_binding, verify_incoming)
 
 
@@ -314,9 +314,7 @@ def publish_address(load_account, store_id, expected, host_id, stamp, text):
         with receive_binding(account, store_id, expected) as (current, remote, target_fd, _, checkout):
             require((current, remote, checkout) == (ctx, target, binding), "registered binding changed")
             require_plain_receiver(target_fd)
-            advertised = direct_ref(target_fd, ctx.ref)
-            tip = fetch_from_fd(stage, target_fd, ctx.ref, "refs/hostbook/incoming")
-            require(tip == advertised == direct_ref(target_fd, ctx.ref), "registered branch changed during fetch")
+            tip = fetch_direct(stage, target_fd, ctx.ref, "refs/hostbook/incoming")
             verify_incoming(stage, tip, base, store_id, local)
             proposed = prepare_proposal(stage, base, tip, store_id, host_id, address, attempt, signature)
             shutil.rmtree(stage / "validated")
@@ -496,9 +494,7 @@ def observe_attempt(account, edit, original, evidence):
             with tempfile.TemporaryDirectory(prefix="settle-", dir=account.state.path) as folder:
                 stage = Path(folder)
                 git(stage, "init", "-q", "--bare", "--template=")
-                observed = direct_ref(directory, evidence["ref"])
-                tip = fetch_from_fd(stage, directory, evidence["ref"], "refs/hostbook/observed")
-                require(tip == observed == direct_ref(directory, evidence["ref"]), "original branch changed during fetch")
+                tip = fetch_direct(stage, directory, evidence["ref"], "refs/hostbook/observed")
                 proposal = original["detail"]["proposed_oid"]
                 if tip == proposal and git(stage, "show", "-s", "--format=%P", proposal).strip().decode() == original["detail"]["base_oid"]:
                     return "accepted"

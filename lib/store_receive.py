@@ -233,6 +233,13 @@ def fetch_from_fd(stage, directory_fd, ref, destination):
     return oid(stage, destination + "^{commit}")
 
 
+def fetch_direct(stage, target_fd, ref, destination):
+    advertised = direct_ref(target_fd, ref)
+    tip = fetch_from_fd(stage, target_fd, ref, destination)
+    require(tip == advertised == direct_ref(target_fd, ref), "registered branch changed during fetch")
+    return tip
+
+
 def prepare_adoption(stage, original_index, before, base, tip):
     check_index(stage, original_index, before, git)
     (stage / "index").unlink()
@@ -295,7 +302,7 @@ def receive(load_account, store_id, expected):
                 plain_git(local_git, bare=False)
                 accepted = fetch_from_fd(stage, local_git, context.ref, "refs/hostbook/accepted")
                 require(accepted == base, "local branch changed during receive")
-            tip = fetch_from_fd(stage, target_fd, context.ref, "refs/hostbook/incoming")
+            tip = fetch_direct(stage, target_fd, context.ref, "refs/hostbook/incoming")
             after, changed = verify_incoming(stage, tip, base, store_id, local)
             before = tree(stage, base, git)
             prepare_adoption(stage, original_index, before, base, tip)

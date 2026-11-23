@@ -375,6 +375,18 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(f.remote), before_remote)
         self.assertEqual(snapshot(self.root / "shared b"), before_b)
 
+    def test_receive_requires_the_direct_registered_branch(self):
+        f = self.prepare_receive()
+        ref = "refs/heads/main"
+        other = "refs/heads/other"
+        f.git(f.remote,"update-ref",other,f.tip)
+        f.git(f.remote,"symbolic-ref",ref,other)
+        before = snapshot(f.store)
+        result = f.receive()
+        self.assertEqual(result.returncode,65,result.stderr)
+        self.assertEqual(snapshot(f.store),before)
+        self.assertFalse((f.target.parent.parent.parent/"receive.pending").exists())
+
     def test_receive_uses_the_registered_reader_for_ssh_and_credentials(self):
         f = self.prepare_receive()
         path = f.author / "team.conf"
