@@ -16,10 +16,12 @@ Core files:
 | `lib/import.sh` | Bulk and share-package import, loaded for human flows and import callbacks. |
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
 | `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
+| `lib/store_vault.py` | Process-local unlock cache for registered store contexts. Uses an inherited pipe for the passphrase and verifies the age recipient. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
+| `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. Checks verified account and checkout bindings and the v1 recovery root. The `_store_context` callback supports an isolated fixture request over a pipe or a pre-approved local account lookup. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and rollback regressions. |
 | `tests/sync.sh`, `tests/discovery.sh` | Isolated sync/locking failures and synthetic VPN discovery/address controls. |
-| `tests/install.sh` | Isolated Unix installation and update using a local Git repository. |
+| `tests/install.sh` | Isolated Unix installation and update using a local Git repository, including the fixture store callback from another directory. |
 | `tests/test.sh` | Core regression tests with isolated data. |
 | `tests/ui.sh` | Configuration, themes, rendering, and search tests. |
 | `tests/onboarding.sh` | Vault setup and first-run flows with synthetic credentials. |
@@ -36,12 +38,84 @@ Core files:
 | `docs/wiki/` | Versioned source for this wiki. |
 | `docs/archive/` | Historical design and implementation notes; not current user instructions. |
 
+### Pre-approved store lookup
+
+`_store_context STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` reads an
+existing approval from `~/.config/hostbook/store-account-v1.json`. The home
+comes from the effective OS account. `HOME`, XDG overrides and the working
+directory have no role in approval lookup. Expect a read failure when the
+approval is absent.
+
+For first local approval of a prepared v1 account, run
+`_approve_store_account ACCOUNT_ROOT` and review the stores and checkout paths
+in the returned JSON. Run the same command with the returned confirmation as a
+second argument to save the approval. The absolute prepared root must contain
+the existing private `state/stores/v1/registry.json` and `recovery/root.json`
+directories and the registered checkouts and Git directories. The approved
+OS home must already contain an owned `.config/hostbook` directory. Connected
+shared entries must already be receive-only.
+
+The command rechecks the plan and refuses a changed checkout or overlapping Git
+directory. It publishes a private file without replacing an existing approval,
+then resolves each approved checkout. A file or directory sync failure blocks
+completion. If publication is uncertain, retain the observed approval and
+reconcile before retrying. This operation creates local approval for prepared
+metadata. Registry creation, replacement approval, vault changes and sync
+have their own flows.
+
+The approval is UTF-8 JSON with exactly `format` (`hostbook-store-account`),
+`version` (integer 1), `home` and `account`. The `home` binding contains
+`path`, `device` and `inode`. `account` holds the approved root, state
+and recovery bindings, device and recovery IDs, and checkout bindings.
+Use a private owner-only approval file outside all checkout, Git, state and
+recovery directories. macOS approval paths with ACL grants are rejected.
+The reader validates the approval and returns context metadata without
+opening a vault or starting sync.
+
+`_refresh_store_index STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
+explicitly rebuilds that store's local alias inventory. The index lives
+under the registered state, keyed by store ID and checkout generation.
+Rows contain tab-separated store ID, host ID and alias from the v1 sidecar.
+Each explicit refresh checks the declared managed `.conf` source bytes and
+their simple `Host` alias bindings. It rechecks the current approval,
+binding, generations and sidecar before publishing via atomic replacement.
+Quoted or escaped `Host` lists require the scoped SSH resolver. A stale association leaves the previous
+index intact and the command reports failure. Effective SSH settings and
+integration with the search UI are later work.
+
+`_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
+records local connection status as `unchecked`. It writes only the
+selected store and connection generation's local status file after
+revalidating the binding. The status supplies no remote result.
+
+Registered stores use a native descriptor lock on the private `sync.lock`
+directory. Its scope is the store ID across generations. A second operation
+requiring that store's writer lock fails as busy while another store can
+progress. Closing the descriptor releases the lock and leaves its directory in place. This lock
+serializes cooperating local operations and does not grant mutation or
+publication authority. The legacy single-checkout lock runs independently.
+
+The registered store vault cache lives in the unlock consumer's process.
+It scopes identities to the effective account, device and store. Each
+lookup checks the vault directory, public recipient, password envelope and
+recovery envelope against the cached snapshot. Replacing or rewrapping any of
+those inputs invalidates the cache, even if the public recipient stays the
+same. Unlock verifies the decrypted identity with `age-keygen` and rechecks
+the snapshot before caching. The passphrase uses an inherited pipe and the
+identity stays in memory. This API is for scoped consumers. The CLI and the
+legacy Keychain, Secret Service and SSH agent flows still require integration.
+
+The test suite's installed account case requires a disposable system
+account whose effective home is an empty `/fixture-home`. Set
+`HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.
+
 ## Run checks
 
 ```bash
 bash -n hostbook
 bash -n install.sh
 bash tests/install.sh
+python3 -B tests/store-context.py
 for t in test platform sync discovery hosts-module settings-module ui file-input menu-empty controls open-mode \
          home-recovery import import-keys import-input import-package import-review import-tui \
          onboarding tui screens; do bash tests/$t.sh || break; done
