@@ -10,7 +10,7 @@ import re
 import sys
 
 from store_context import (
-    JSON_LIMIT, Generations, StoreContextError, acquire_local_lock, bound_directory, fixture_request,
+    INDEX_NAME, JSON_LIMIT, Generations, StoreContextError, acquire_local_lock, bound_directory, fixture_request,
     index_rows, load_approved_account, open_directory, parse_json, path_parts, read_file, require,
     require_approval_file, require_private_directory, resolved_store, staged_local_file,
     store_state_directory, valid_id, verify_state_directory,
@@ -19,22 +19,25 @@ from store_context import (
 
 SSH = "/usr/bin/ssh"
 ROUTES = "routes.json"
-ROUTE_VERSION = 3
+ROUTE_VERSION = 4
 MAX_ROUTE_BYTES = 16 * 1024 * 1024
 ROUTE_FIELDS = {"hostname", "user", "port", "proxyjump", "name"}
 STAMP = re.compile(r"[0-9a-f]{64}")
 SSH_OPTIONS = frozenset("""
     addressfamily batchmode checkhostip compression connectionattempts connecttimeout
-    host hostname ipqos kbdinteractiveauthentication loglevel match numberofpasswordprompts
+    host hostname identitiesonly ipqos kbdinteractiveauthentication loglevel match numberofpasswordprompts
     passwordauthentication port preferredauthentications proxyjump pubkeyauthentication
     requesttty serveralivecountmax serveraliveinterval tcpkeepalive user
 """.split())
 LOCAL_OPTIONS = SSH_OPTIONS | {"stricthostkeychecking"}
+INLINE_COMMENT = re.compile(r"(?:^|[ 	])#")
 DIRECTIVE = re.compile(r"([A-Za-z][A-Za-z0-9]*)(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)")
 SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_.:\[\]-]|%h)+")
-SECRET_COMMENT = re.compile(rb"(?m)^[ \t]*#[ \t]*secret[ \t]*:")
-JUMP = re.compile(r"(?:ssh://)?(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+\])(?::[0-9]+)?")
+SECRET_COMMENT = re.compile(r"#[ 	]*secret[ 	]*:[ 	]*(.*)")
+SECRET_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
+JUMP = re.compile(r"(?:ssh://)?(?:([A-Za-z0-9._-]+)@)?"
+                  r"([A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+\])(?::([0-9]+))?")
 
 
 def snapshot_config(contents, local=False):
@@ -54,7 +57,7 @@ def snapshot_config(contents, local=False):
         quoted = False
         if option in ("match", "proxyjump", "hostname", "user"):
             # OpenSSH considers '#' a comment only at the beginning of an argument.
-            value = re.split(r"(?:^|[ 	])#", value, maxsplit=1)[0].rstrip(" 	")
+            value = INLINE_COMMENT.split(value, maxsplit=1)[0].rstrip(" 	")
             quoted = option != "match" and value.startswith('"') and value.endswith('"')
             if quoted:
                 value = value[1:-1]
@@ -85,6 +88,54 @@ def snapshot_config(contents, local=False):
     return "\n".join(output).encode("utf-8")
 
 
+def managed_credentials(files, hosts):
+    import shlex
+
+    occurrences = {}
+    for host in hosts:
+        for binding in host["bindings"]:
+            aliases = occurrences.setdefault((binding["path"], binding["host_ordinal"]), set())
+            aliases.add(host["name"].lower())
+    credentials, snapshots = {}, []
+    for path, contents in files.items():
+        ordinal, pending, secret = 0, "", ""
+        output = []
+        for line in contents.decode("utf-8").split("\n"):
+            text = line.rstrip("\r").strip(" 	")
+            annotation = SECRET_COMMENT.fullmatch(text)
+            if annotation:
+                name = annotation[1]
+                require(SECRET_NAME.fullmatch(name) and name != "vault" and not name.startswith("vault.")
+                        and (not pending or pending == name), "invalid store credential binding")
+                pending = name
+            elif directive := DIRECTIVE.fullmatch(text):
+                option, value = directive[1].lower(), directive[2]
+                if option == "host":
+                    ordinal += 1
+                    secret = pending
+                    if secret:
+                        aliases = occurrences.get((path, ordinal))
+                        pattern_list = INLINE_COMMENT.split(value, maxsplit=1)[0].strip(" 	")
+                        patterns = re.split(r"[ 	]+", pattern_list)
+                        require(aliases and all(INDEX_NAME.fullmatch(pattern) for pattern in patterns),
+                                "credential binding requires an unambiguous managed Host")
+                        for alias in aliases:
+                            require(credentials.setdefault(alias, secret) == secret, "ambiguous store credential binding")
+                elif option == "match":
+                    secret = ""
+                elif option == "identityfile":
+                    args = shlex.split(value, comments=True)
+                    require(secret and len(args) == 1 and re.search(r"(?:^|/)secrets/"
+                            + re.escape(secret) + r"\.pub$", args[0]),
+                            "unapproved SSH directive: IdentityFile")
+                    # The authorizing binding is the annotation. Never read this path from the SSH file.
+                    continue
+                pending = ""
+            output.append(line)
+        snapshots.append("\n".join(output).encode("utf-8"))
+    return snapshots, credentials
+
+
 def local_inputs(state_fd, store_id):
     try:
         with open_directory(state_fd, ("stores", "v1", store_id, "ssh")) as fd:
@@ -111,7 +162,8 @@ def route_inputs(account, context, binding, root_fd, state_fd, *, collect=False)
     ).encode())
     for contents in local:
         fingerprint.update(b"-" if contents is None else hashlib.sha256(contents).digest())
-    return fingerprint.hexdigest(), identity["hosts"], list(files.values()) if collect else None, local
+    hosts = identity["hosts"]
+    return fingerprint.hexdigest(), hosts, managed_credentials(files, hosts) if collect else None, local
 
 
 @contextmanager
@@ -171,8 +223,8 @@ def refresh_routes(load_account, store_id, expected):
         parts = path_parts(account.state.path, context.index.parent)
         with store_state_directory(state_fd, parts) as index_fd:
             acquire_local_lock(index_fd, "store index is already being refreshed")
-            stamp, hosts, files, local = route_inputs(account, context, binding, root_fd, state_fd, collect=True)
-            with ssh_view(files, local) as config:
+            stamp, hosts, prepared, local = route_inputs(account, context, binding, root_fd, state_fd, collect=True)
+            with ssh_view(prepared[0], local) as config:
                 routes = {host["host_id"]: dict(effective(config, host["name"]), name=host["name"])
                           for host in hosts}
 
@@ -215,24 +267,71 @@ def selected_route(load_account, store_id, expected, host_id, stamp, *, collect=
         return route, files, local
 
 
-def connect_route(load_account, store_id, expected, host_id, stamp):
+def credential_targets(config, alias, route, credentials):
+    eligible, seen = {}, set()
+    for _ in range(32):
+        normalized = alias.lower()
+        signature = normalized, route["user"], route["port"]
+        require(signature not in seen, "SSH jump route contains a loop")
+        seen.add(signature)
+        if normalized in credentials:
+            ordinary = effective(config, alias)
+            bound = all(ordinary[key] == route[key] for key in ("hostname", "user", "port"))
+            if eligible.get(normalized, bound) and bound:
+                eligible[normalized] = True
+            else:
+                eligible[normalized] = False
+        hops = route["proxyjump"]
+        if not hops or hops.lower() == "none":
+            return {alias: credentials[alias] for alias, bound in eligible.items() if bound}
+        remainder, _, next_hop = hops.rpartition(",")
+        jump = JUMP.fullmatch(next_hop)
+        require(jump, "OpenSSH returned an unrecognized jump route")
+        user, alias, port = jump.groups()
+        alias = alias.strip("[]")
+        options = []
+        if user:
+            options.extend(("-l", user))
+        if port:
+            options.extend(("-p", port))
+        if remainder:
+            options.extend(("-J", remainder))
+        route = effective(config, alias, options)
+    raise StoreContextError("SSH jump route is too long to bind credentials")
+
+
+def launch_ssh(config, alias):
     import subprocess
 
-    selection = selected_route(load_account, store_id, expected, host_id, stamp, collect=True)
-    route, files, local = selection
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SSH_")}
+    env.update(SHELL="/bin/sh", LC_ALL="C", PATH="/usr/bin:/bin")
+    result = subprocess.run([SSH, "-F", str(config), "--", alias], env=env)
+    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+
+
+def connect_route(load_account, store_id, expected, host_id, stamp, *, read_passphrase=None):
+    from contextlib import ExitStack
+
+    route, prepared, local = selected_route(load_account, store_id, expected, host_id, stamp, collect=True)
     require(local[1] is not None, "registered SSH requires store-local known_hosts")
-    require(not any(SECRET_COMMENT.search(contents) for contents in files),
-            "store SSH credential binding requires an approved login")
     alias = route["name"]
-    with ssh_view(files, local) as config:
-        require(effective(config, alias) == {key: value for key, value in route.items() if key != "name"},
+    files, credentials = prepared
+    with ExitStack() as resources:
+        config = resources.enter_context(ssh_view(files, local))
+        settings = effective(config, alias)
+        require(settings == {key: value for key, value in route.items() if key != "name"},
                 "effective SSH selection changed; refresh the store hosts")
+        verify_credentials = None
+        if credentials and (targets := credential_targets(config, alias, settings, credentials)):
+            from store_login import scoped_login
+            verify_credentials = resources.enter_context(
+                scoped_login(load_account, store_id, expected, config, targets, read_passphrase)
+            )
         require(selected_route(load_account, store_id, expected, host_id, stamp)[0] == route,
                 "SSH selection changed; refresh the store hosts")
-        env = {key: value for key, value in os.environ.items() if not key.startswith("SSH_")}
-        env.update(SHELL="/bin/sh", LC_ALL="C", PATH="/usr/bin:/bin")
-        result = subprocess.run([SSH, "-F", str(config), "--", alias], env=env)
-    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+        if verify_credentials:
+            verify_credentials()
+        return launch_ssh(config, alias)
 
 
 def route_command(action, args):
@@ -255,7 +354,10 @@ def route_command(action, args):
     else:
         host_id, stamp = args
         if action.endswith("connect"):
-            return connect_route(load, store_id, expected, host_id, stamp)
+            try:
+                return connect_route(load, store_id, expected, host_id, stamp)
+            except KeyboardInterrupt:
+                return 130
         route, _, _ = selected_route(load, store_id, expected, host_id, stamp)
         print(json.dumps(dict(route, store_id=store_id, host_id=host_id)))
     return 0

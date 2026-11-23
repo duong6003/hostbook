@@ -4,6 +4,7 @@ Callers pass the approved account resolver and trusted installed age tool
 directory. Passphrases and decrypted identities stay out of argv, environment,
 logs and files. This module is loaded only by an explicit unlock consumer.
 """
+from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -50,12 +51,14 @@ class VaultUnlockCache:
         require(self._tools.is_absolute(), "age tool directory must be absolute")
         self._entries = {}
 
-    def _run(self, name, args, data, pass_fd=None):
+    def _run(self, name, args, data, pass_fd=None, identity_fd=None):
         env = {"PATH": str(self._tools)}
         inherited_fds = ()
         if pass_fd is not None:
             env["AGE_PASSPHRASE_FD"] = str(pass_fd)
             inherited_fds = (pass_fd,)
+        elif identity_fd is not None:
+            inherited_fds = (identity_fd,)
         try:
             result = subprocess.run([str(self._tools / name), *args], input=data, env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -68,15 +71,25 @@ class VaultUnlockCache:
         require(isinstance(passphrase, bytes) and passphrase and b"\r" not in passphrase
                 and b"\n" not in passphrase and b"\0" not in passphrase,
                 "vault passphrase must be a nonempty line")
+        with self._secret_pipe(passphrase) as reader:
+            return self._run("age", ("-d", "-j", "batchpass"), envelope, pass_fd=reader)
+
+    @staticmethod
+    @contextmanager
+    def _secret_pipe(value):
         reader, writer = os.pipe()
         try:
             with os.fdopen(writer, "wb", buffering=0) as pipe:
-                require(len(passphrase) <= os.fpathconf(pipe.fileno(), "PC_PIPE_BUF"),
-                        "vault passphrase exceeds pipe limit")
-                require(pipe.write(passphrase) == len(passphrase), "vault passphrase pipe write failed")
-            return self._run("age", ("-d", "-j", "batchpass"), envelope, pass_fd=reader)
+                require(value and len(value) <= os.fpathconf(pipe.fileno(), "PC_PIPE_BUF"),
+                        "vault input exceeds pipe limit")
+                require(pipe.write(value) == len(value), "vault pipe write failed")
+            yield reader
         finally:
             os.close(reader)
+
+    def open_secret(self, identity, ciphertext):
+        with self._secret_pipe(identity) as reader:
+            return self._run("age", ("-d", "-i", f"/dev/fd/{reader}"), ciphertext, identity_fd=reader)
 
     def _current(self, load_account, store_id, expected):
         require(valid_id(store_id), "invalid store ID")

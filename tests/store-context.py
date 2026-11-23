@@ -112,9 +112,8 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            route_module = source / "lib/store_read.py"
-            if route_module.is_file():
-                shutil.copy2(route_module, app / "lib/store_read.py")
+            for name in ("store_read.py", "store_login.py", "store_vault.py"):
+                shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
             launcher.symlink_to(app / "hostbook")
@@ -640,6 +639,109 @@ Host *
             globals_.chmod(0o600)
             self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, listing()), 0)
             self.assertEqual(len(launches), 1)
+
+    def test_registered_connect_offers_the_key_from_the_selected_store_only(self):
+        from store_read import connect_route, refresh_routes
+
+        paths = [shutil.which(tool) for tool in ("age", "age-keygen", "age-plugin-batchpass")]
+        if not all(paths):
+            self.skipTest("requires age, age-keygen and age-plugin-batchpass")
+        tools = Path(paths[0]).parent
+        agent_tools = ("/usr/bin/ssh-agent", "/usr/bin/ssh-add", "/usr/bin/ssh-keygen")
+        if not all(os.access(tool, os.X_OK) for tool in agent_tools):
+            self.skipTest("requires system OpenSSH key and agent tools")
+        fixture_env = {"PATH": str(tools), "HOME": str(self.root / "fixture-home")}
+        passphrase = b"disposable vault unlock"
+        host_id = new_id()
+        load = lambda: self.account
+
+        def tool(name, *args, data=None, env=fixture_env, pass_fds=()):
+            return subprocess.run([tools / name, *args], input=data, env=env, pass_fds=pass_fds,
+                                  capture_output=True, check=True, timeout=30).stdout
+
+        for index in range(3):
+            with self.subTest(store=index):
+                context = self.write_route(index, host_id, f"""# secret: login
+Host db
+    HostName 192.0.2.{index + 10}
+    User fixture
+    IdentityFile ~/ssh-hosts/secrets/login.pub
+    IdentitiesOnly yes
+""")
+                ssh = self.state / f"stores/v1/{context.store_id}/ssh"
+                ssh.mkdir(parents=True, mode=0o700)
+                ssh.parent.chmod(0o700)
+                (ssh / "known_hosts").touch(mode=0o600)
+                identity = tool("age-keygen")
+                recipient = tool("age-keygen", "-y", data=identity)
+                (context.vault / "vault.pub").write_bytes(recipient)
+                reader, writer = os.pipe()
+                try:
+                    with os.fdopen(writer, "wb") as stream:
+                        stream.write(passphrase)
+                    envelope = tool("age", "-e", "-j", "batchpass", data=identity, pass_fds=(reader,),
+                                    env=dict(fixture_env, AGE_PASSPHRASE_FD=str(reader)))
+                finally:
+                    os.close(reader)
+                (context.vault / "vault.key.age").write_bytes(envelope)
+                (context.vault / "vault.recovery.age").write_bytes(envelope)
+                key = self.root / f"key-{index}"
+                subprocess.run([agent_tools[2], "-q", "-t", "ed25519", "-N", "", "-f", key],
+                               env=fixture_env, check=True, timeout=10)
+                public_key = (key.with_suffix(".pub")).read_bytes()
+                (context.vault / "login.pub").write_bytes(public_key)
+                (context.vault / "login.meta").write_bytes(b"type=key\n")
+                ciphertext = tool("age", "-e", "-r", recipient.decode().strip(), data=key.read_bytes())
+                (context.vault / "login.age").write_bytes(ciphertext)
+                stamp = refresh_routes(load, context.store_id, self.generations).strip().split("\t")[3]
+                before = snapshot(self.root)
+
+                sockets = []
+
+                def launch(config, alias):
+                    result = subprocess.run(["/usr/bin/ssh", "-F", config, "-G", alias], env=fixture_env,
+                                            capture_output=True, check=True, timeout=5)
+                    settings = [line.split(b" ", 1) for line in result.stdout.splitlines()]
+                    details = dict(settings)
+                    self.assertEqual(details[b"hostname"], f"192.0.2.{index + 10}".encode())
+                    self.assertTrue(details[b"identityagent"].startswith(b"/tmp/hb-route-"))
+                    sockets.append(Path(os.fsdecode(details[b"identityagent"])))
+                    self.assertEqual(details[b"identitiesonly"], b"yes")
+                    public_files = [Path(os.fsdecode(value)) for key, value in settings
+                                    if key == b"identityfile" and value != b"none"]
+                    self.assertEqual(len(public_files), 1)
+                    self.assertEqual(public_files[0].read_bytes().split()[:2], public_key.split()[:2])
+                    keys = subprocess.run([agent_tools[1], "-L"], input=b"", capture_output=True, check=True,
+                                          env=dict(fixture_env, SSH_AUTH_SOCK=os.fsdecode(details[b"identityagent"])),
+                                          timeout=5).stdout
+                    self.assertEqual(len(keys.splitlines()), 1)
+                    self.assertEqual(keys.split()[:2], public_key.split()[:2])
+                    return 0
+
+                with patch("store_read.launch_ssh", side_effect=launch, create=True) as transport:
+                    self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                                   read_passphrase=lambda: passphrase), 0)
+                    transport.assert_called_once()
+                self.assertEqual(len(sockets), 1)
+                self.assertFalse(sockets[0].exists())
+                self.assertEqual(snapshot(self.root), before)
+
+                def rotate_during_unlock():
+                    (context.vault / "login.age").write_bytes(ciphertext + b"changed")
+                    return passphrase
+
+                with patch("store_read.launch_ssh", create=True) as transport:
+                    with self.assertRaisesRegex(StoreContextError, "credential changed"):
+                        connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                      read_passphrase=rotate_during_unlock)
+                    transport.assert_not_called()
+
+    def test_registered_key_marker_requires_a_concrete_active_host_block(self):
+        from store_read import refresh_routes
+
+        context = self.write_route(1, new_id(), "# secret: login\nHost db other#tag !db\n")
+        with self.assertRaisesRegex(StoreContextError, "credential binding requires an unambiguous managed Host"):
+            refresh_routes(lambda: self.account, context.store_id, self.generations)
 
     def test_installed_callback_rejects_duplicate_and_malformed_host_ids(self):
         self.launcher = self.installed_launcher()

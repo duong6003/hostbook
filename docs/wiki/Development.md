@@ -97,8 +97,8 @@ and an owner-only config file. Use it for applicable local defaults and
 standalone jump aliases. Hostbook opens this file without following links.
 The scoped route view accepts data-only SSH settings, applies OpenSSH's
 first-value precedence and excludes ambient SSH configuration and other
-stores' files. It rejects external Includes, command directives and managed
-identity files. Registered routing uses the system OpenSSH at `/usr/bin/ssh`.
+stores' files. It rejects external Includes, command directives and
+external identity files. Registered routing uses the system OpenSSH at `/usr/bin/ssh`.
 The combined admitted source limit is 16 MiB. `_store_hosts` and `_store_preview` also support the isolated
 fixture pipe used by `_store_context`.
 
@@ -112,9 +112,18 @@ approved host keys for the destination and any jumps. You can separately stage
 `global_known_hosts` there to add approved defaults. Use owner-only regular
 files. Hostbook snapshots both files, requires strict OpenSSH host-key checks
 and rejects host key changes. The scoped view takes its host keys from these
-files and leaves device SSH trust databases untouched. At this checkpoint
-it supports interactive authentication for routes without managed credentials.
-A store with a managed credential marker needs the registered vault consumer.
+files and leaves device SSH trust databases untouched.
+
+A `# secret: NAME` marker above a concrete managed Host binds a key from
+that store's vault. A matching legacy `IdentityFile .../secrets/NAME.pub`
+is a hint only. The launcher takes the public key from the verified vault,
+loads the matching encrypted private key into a short-lived private agent
+and offers that key only for the selected destination or bound hop.
+It checks the credential and route again after unlocking. Plaintext key
+material and the vault identity travel in process memory or inherited pipes.
+An unbound route uses interactive authentication without ambient keys.
+Stored password markers currently stop connection before SSH because this
+path has no approved askpass attribution for them.
 
 Legacy history, groups and undo still use checkout-local aliases and paths.
 Registered list, preview and connect neither read nor rewrite those references.
