@@ -132,8 +132,11 @@ and the full confirmed plan. It contains exact original/proposed bytes, local du
 generation, file and directory flush outcomes, exact post-write comparison), remote target/ref, expected
 base/proposed revision, sender ownership/transport evidence and acceptance facts. It contains complete migration
 recovery state required by the migration contract, not just commits or diffs. Transfer retains the original
-host/settings, credential mapping/material and reference context. Sensitive comparisons stay inside this
-protection; neither ordinary hashes nor secret-derived hashes replace access checks.
+host/settings, credential mapping/material and reference context. An
+update-existing transfer records both host keys in `hosts` and binds their
+roles, revisions, the previous destination and its proposed replacement to the
+protected plan. Sensitive comparisons stay inside this protection; neither
+ordinary hashes nor secret-derived hashes replace access checks.
 
 Preserve original source/destination vault ciphertext, public identities and password/recovery envelopes for
 **every referenced old generation**, plus required credential material re-encrypted into this payload. Preserve an
@@ -315,6 +318,5 @@ PY
 
 These checks do not exercise encryption, crash recovery, remote settlement or ACLs. macOS/Linux durability and permission
 mechanics remain unverified. The [acceptance map](store-acceptance.md) tracks concrete
-upgrade verification and restoration primitives. The first-transfer scope defers
-different-ID merge.
+upgrade verification and restoration primitives.
 Downstream #36–#46 own implementation and isolated runtime checks.

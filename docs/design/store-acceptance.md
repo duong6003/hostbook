@@ -9,7 +9,7 @@ The runtime fixture column describes evidence still to collect.
 
 | Gate | Evidence in the draft | Remaining work before #35 can close |
 | --- | --- | --- |
-| Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | The first transfer scope is recorded below. Different-ID merge is deferred. |
+| Stable identity, versions, duplicates, manual edits and transfer | [Identity](store-identity.md), [sidecar v1](store-format.md), [rename](fixtures/rename.json), [invalid records](fixtures/invalid-records.json), [transfer](fixtures/transfer.json) and [store-aware SSH resolution](store-identity.md#ssh-resolution-for-a-selected-host), with [existing-destination transfer rules](store-transfer.md#existing-destination-host), [source references](store-transfer.md#source-references-before-removal) and [destination routes](store-transfer.md#destination-routes-before-writing). | Update-existing decisions and identity retention are recorded below. |
 | Store resources and write boundaries | [Mutation and resource inventory](store-mutations.md), [callback contexts](store-registration.md) and [permission decisions](fixtures/mutation-permissions.json). | Managed writers are mapped at [current main](store-mutations.md#file-level-write-boundaries-on-current-main). Carry the map into final design review and downstream enforcement. |
 | Transfer states, concurrency and recovery | [Transfer contract](store-transfer.md), [recovery cases](fixtures/transfer-recovery.json) and [journal](store-journal.md). | Validate complete transaction durability and restoration. The [local replacement sequence](store-journal.md#local-selector-and-registry-replacement) and the [recovery passphrase pipe](store-journal.md#recovery-passphrase-transport) have isolated tool evidence. |
 | Migration, backups, rollback and old writers | [Upgrade boundary](store-migration.md#first-supported-upgrade), [migration cases](fixtures/migration-decisions.json), [writer exclusion checkpoint](store-writer-validation.md), [staged restore checkpoint](store-migration.md#staged-restore-checkpoint), [restore metadata checkpoint](store-migration.md#restore-permissions-and-ownership-checkpoint) and [local cutover interruption checkpoint](store-migration.md#local-cutover-interruption-checkpoint). | Verify native macOS exclusion, and choose ACL, remote-policy and restoration evidence for the supported migration path. |
@@ -38,15 +38,14 @@ suites are mapped below.
 
 ## First transfer scope
 
-Preserve the moving host ID. For distinct IDs with the same effective endpoint,
-show the comparison and allow keeping both with valid distinct names or
-cancelling. If a name is occupied, continuing requires an explicit free alias.
-Same-ID reconciliation still follows the existing-destination contract.
-Defer merging into a different destination ID until there is a reviewed rule
-for the surviving ID and both stores' references. This is a first-slice scope
-decision. [#33](https://github.com/duong6003/hostbook/issues/33) and
-[#41](https://github.com/duong6003/hostbook/issues/41) still list the broader
-update-existing outcome, which remains pending.
+Creating a destination record keeps the moving host ID. For distinct IDs with
+the same effective endpoint, compare the records and offer
+[updating the chosen destination](store-transfer.md#update-an-existing-destination-with-a-different-id),
+keeping both with valid distinct aliases, or cancellation. Updating keeps the
+destination ID and name and uses the original transfer intent on retry.
+The synthetic cases cover a verified update, an interrupted attempt and a
+changed destination revision. [#41](https://github.com/duong6003/hostbook/issues/41)
+owns implementation, with restart coverage in [#42](https://github.com/duong6003/hostbook/issues/42).
 
 ## First #36 slice after #35
 

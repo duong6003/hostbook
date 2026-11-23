@@ -214,16 +214,17 @@ print('PASS: stale same-host edit preserved, independent hosts unaffected, revie
 
 ## Transfer identity and duplicate decisions
 
-A cross-store transfer **moves**, rather than copies, a host. It preserves its
-stable host ID while changing the store component of its lookup key. Store-bound
+A cross-store transfer moves a host. Creating a destination record keeps the
+host ID while changing the store component of its key. An explicit update of
+an existing record keeps that destination's ID and name. Store-bound
 references follow the [source-removal checks](store-transfer.md#source-references-before-removal).
 An old source key must not silently resolve by alias in another store. Cross-store move semantics differ from the
 current move between project files. The source is removed only after destination
 success is established; [Cross-store transfer transaction](store-transfer.md)
 defines the proposed ordering, publication evidence and recovery contract.
 
-Retry recognition uses the preserved host ID, the source/destination store IDs
-and recorded transfer intent. If the destination already has that host ID,
+Retry recognition uses the recorded transfer intent and both (store ID, host ID)
+keys. If the destination already has that host ID,
 classify it as the same-identity candidate: reconcile the prior operation and
 content, never create a second record or silently overwrite. ID equality alone
 does not prove that a transfer committed or that the source may be deleted. A
@@ -233,12 +234,12 @@ crash recovery are specified in the [existing-destination rules](store-transfer.
 
 Different IDs with equal effective (address, port, login) are **potential
 duplicates**, not the same identity. Use resolved SSH values (including defaults)
-for this comparison; do not equate DNS aliases through a network lookup. For
-the first transfer slice, compare both records and offer keeping both with
-distinct valid names or cancelling. A matching alias with different IDs
-requires an explicit free alias or cancellation even when endpoints differ.
-[Different-ID merge is deferred](store-acceptance.md#first-transfer-scope). Never silently mint a
-new ID, rename, duplicate or overwrite to make a transfer succeed. Credential
+for this comparison; do not equate DNS aliases through a network lookup.
+Compare both records and offer [updating the chosen destination](store-transfer.md#update-an-existing-destination-with-a-different-id),
+keeping both with distinct valid names, or cancelling. A matching alias with
+different IDs requires a free alias when creating a separate destination record,
+even when endpoints differ. Changes to identity, name or existing records
+require explicit review. Credential
 names are scoped to the destination vault; a name match must never silently
 overwrite credentials or prove credential equivalence. Credential mapping and
 any reuse/rename decision need explicit review without exposing secret material.

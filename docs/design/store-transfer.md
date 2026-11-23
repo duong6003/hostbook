@@ -14,12 +14,13 @@ The [journal/retention proposal](store-journal.md) selects their device-local en
 
 ## Outcome and authorization
 
-Transfer moves one host between distinct logical stores. It preserves the stable
-host ID and all supported connection settings, including the existing ProxyJump
-value and resolution behavior. It neither copies a host as a new identity nor
-moves jump hosts automatically. References to the old (store ID, host ID) need
-explicit reconciliation; do not redirect them by alias. Two checkouts with the
-same store ID are not a cross-store transfer.
+Transfer moves one host between distinct logical stores. A new destination
+record keeps the source host ID. An explicit update of an existing record
+keeps that record's destination ID and name. Preserve supported connection
+settings, including the existing ProxyJump value and resolution behavior,
+and leave jump hosts in their original stores. Reconcile references to the old
+(store ID, host ID) explicitly. Two checkouts with the same store ID are not a
+cross-store transfer.
 
 A successful move requires a durable destination host and usable destination
 credentials, destination publication when shared, durable source removal, and
@@ -32,17 +33,16 @@ rights check or confirmation never grants remote rights. Rejection, offline stat
 or changed mode pauses the transfer; do not queue an apparently successful move.
 The same checks apply to retries, compensation and credential cleanup.
 
-Before mutation, show an explicit preview and confirmation: source/destination
-store labels and keys, host ID, alias/name decisions, connection-setting changes
-(normally none), required publications, credential mapping decisions, reference
-impacts and any unresolved duplicate. Never show secrets, secret-derived hashes
+Before mutation, show an explicit preview and confirmation with both stores
+and host keys, alias decisions, connection-setting changes, required
+publications, credential mapping, reference impacts and unresolved duplicates. Never show secrets, secret-derived hashes
 or decrypted key material. A changed plan requires renewed confirmation.
 
 Classify an existing destination host using
 [the comparison and retry rules](#existing-destination-host) before preparing
-a write. For distinct IDs, compare the records and allow keep-both with valid
-distinct names or cancellation. Defer merging into a different ID as recorded
-in the [first transfer scope](store-acceptance.md#first-transfer-scope).
+a write. For distinct IDs with the same effective endpoint, compare the
+records and offer an explicit update of the chosen destination record, keeping
+both with valid distinct names, or cancellation.
 
 Credentials are decrypted only as needed and re-encrypted for the destination
 vault; copying source ciphertext is insufficient. Resolve destination credential
@@ -57,9 +57,10 @@ not a prerequisite for completing the host move.
 
 ## Durable evidence and observed state
 
-Allocate one opaque transfer ID and retain it, the host ID and both store IDs on
-retry. Before the first write, durably save the confirmed intent, non-secret
-snapshot identifiers, selected collision/credential decisions and the next step.
+Allocate one opaque transfer ID and retain it and both (store ID, host ID)
+keys on retry. Before the first write, durably save the confirmed intent,
+non-secret snapshot identifiers, selected collision/credential decisions and
+the next step.
 Before deleting source data, durably retain its recoverable original payload and
 credential references/material under vault protection. If that cannot be done,
 stop while the source remains intact. Protected recovery must survive process
@@ -112,7 +113,8 @@ the same spelling across stores do not establish equal state.
 | Same ID, planned destination revision and matching payload | Report that the destination has the matching version. Reuse this transfer's verified destination effect when its exact acceptance is settled and current content still matches. Without that evidence, leave the source intact and reconcile. |
 | Same ID and revision with a different payload | Block and reconcile inconsistent revision evidence before offering a write. |
 | Same ID with a different revision | Preserve both versions for comparison. With verified common host lineage and explicit confirmation, prepare a replacement of the same destination ID on its freshly observed revision. A changed source or destination base invalidates the confirmation. |
-| Same alias with a different ID, including case variants | Report a name collision. Require an explicit free alias or cancellation before continuing. Equal endpoints can still raise the separate potential-duplicate review. |
+| Same alias with a different ID, including case variants | Report a name collision. Creating a separate destination record requires a free alias. Equal endpoints allow the explicit update below. |
+| Different IDs with the same effective address, port and login | Offer comparison, explicit update of the chosen destination, keep both with distinct names, or cancel. |
 
 A prior send that is in flight or uncertain takes priority over comparison.
 Keep its original target, base and proposed revision. Reconcile acceptance and
@@ -136,10 +138,33 @@ Record a new confirmed plan and attempt, binding both observed versions and the
 chosen destination payload. Keep earlier effects and attempts immutable. The
 replacement advances from the destination's own revision and uses the usual
 conditional write. Recheck name availability against all other destination IDs.
-Refresh both stores and verify destination credentials and reference impacts before the existing source-removal gate. Compensating for a
-replacement means conditionally restoring its previous destination record as a
-new change, subject to current revisions and write authority. Compensation must
-never delete a pre-existing destination or claim an unrelated match as its effect.
+Refresh both stores and verify destination credentials and reference impacts
+before the existing source-removal gate. Compensating for a replacement
+conditionally restores the previous destination record as a new change,
+subject to current revisions and write authority. Keep the pre-existing
+destination identity throughout compensation.
+
+### Update an existing destination with a different ID
+
+Resolve any existing record with the source ID under the same-ID rules
+before offering this choice. Confirm the exact source and destination keys
+and revisions, reviewed settings and credential changes, and source
+reference handling. Keep the
+destination ID, name, group membership and history. Existing destination
+references retain that same key. Check effective connection settings under
+the retained name, and apply the destination route checks before effects.
+Save both prior records and the exact proposed destination in protected
+recovery. Update the chosen destination from its current revision through
+the same conditional write and publication checks as a same-ID replacement.
+
+A retry uses the original transfer ID and both keys. Reconcile any unsettled
+attempt against its exact target, base and proposal. Reuse its accepted
+effect only if the verified destination revision, contents and usable vault
+mapping still match. Further destination edits cause a conflict and require
+a fresh review. Before removing the exact source key, revalidate source
+contents, references and write authority. A blocked check leaves the source
+intact or recoverable if local removal already occurred. Source history stays
+under its original key and no reference silently changes store.
 
 ## Destination routes before writing
 
@@ -218,8 +243,8 @@ working tree as the pre-removal baseline.
 If this check blocks before deletion, keep the source intact. If it blocks
 after local deletion, preserve the protected original and keep the source
 publication blocked. Retain any confirmed destination effect under the
-existing recovery rules. A destination-side rename or merge of a different
-identity requires its own reference reconciliation.
+existing recovery rules. Updating an existing destination retains its
+identity and name and still requires the destination route checks.
 
 ## Serialization and revalidation
 
@@ -362,16 +387,18 @@ Before destination effects, cancellation preserves the source and ends the inten
 After local destination effects, cancellation stops forward progress and offers
 review of intent-owned cleanup. After remote publication, cancellation cannot
 promise a simple undo: it may require a separately confirmed compensating change
-to remove an unchanged destination, restore the source, or publish that restore.
+to remove a record created by the transfer, restore the reviewed previous
+version of a pre-existing record, restore the source, or publish that restore.
 Obtain current two-way mode/rights and compare current revisions first. Do not
 silently erase others' edits, remove a credential now referenced elsewhere, or
 rewrite remote history. If compensation is blocked, report a recoverable partial
 transfer and retain the protected original; cancellation itself is not rollback.
 
-Retry uses the original intent and host ID, rechecks authorization and current
-content, and resumes only missing effects whose preconditions still hold. It
-never assumes a same-ID record is its prior write. Rollback likewise records its
-own intent/evidence and can be interrupted or rejected; report `rolled-back`
+Retry uses the original intent and both host keys, rechecks authorization and
+current content, and resumes only missing effects whose preconditions still
+hold. An existing record needs verified evidence of this transfer's effect.
+Rollback records its own intent and evidence and can be interrupted or
+rejected. Report `rolled-back`
 only when required local and shared compensations have succeeded. Otherwise
 retain a blocked, recoverable state with the next decision clearly identified.
 
@@ -379,7 +406,8 @@ retain a blocked, recoverable state with the next decision clearly identified.
 
 [transfer-recovery.json](fixtures/transfer-recovery.json) contains independent
 synthetic failure/restart checkpoints, publication barriers, deliberate invalid
-barrier counterexamples, existing-destination decisions and source-reference checks. Run
+barrier counterexamples, existing-destination decisions, update-existing
+decisions and source-reference checks. Run
 from the repository root:
 
 ```bash

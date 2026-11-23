@@ -193,6 +193,19 @@
     {"case": "same-revision-with-different-payload", "observed": "inconsistent-revision", "attempt": "settled-accepted", "expected": "reconcile-evidence"},
     {"case": "alias-owned-by-another-id", "observed": "other-id-alias", "attempt": "none", "expected": "resolve-name-collision"}
   ],
+  "update_existing": {
+    "destination_before": {"host_id": "20000000-0000-4000-8000-000000000022", "alias": "web-existing", "revision": "destination-7"},
+    "destination_after": {"host_id": "20000000-0000-4000-8000-000000000022", "alias": "web-existing", "revision": "destination-8"},
+    "cases": [
+      {"case": "confirmed-before-first-write", "observed": "before", "attempt": "none", "expected": "prepare-update"},
+      {"case": "confirmed-update-with-safe-source-references", "observed": "after", "attempt": "settled-accepted", "expected": "revalidate-and-remove-source"},
+      {"case": "interrupted-with-unsettled-destination-update", "observed": "after", "attempt": "unsettled", "expected": "reconcile-attempt"},
+      {"case": "restart-after-reconciling-exact-update", "observed": "after", "attempt": "settled-accepted", "expected": "revalidate-and-remove-source"},
+      {"case": "concurrent-destination-edit", "observed": "changed", "attempt": "settled-accepted", "expected": "compare-conflict"},
+      {"case": "source-still-needed-as-jump", "observed": "after", "attempt": "settled-accepted", "source_jump": "missing", "expected": "block-dependent-host"},
+      {"case": "matching-version-without-this-attempt", "observed": "after", "attempt": "none", "expected": "reconcile-evidence"}
+    ]
+  },
   "source_references": [
     {"case": "group-removals-reviewed", "jump": "unchanged", "groups": "reviewed", "expected": "revalidate-removal"},
     {"case": "group-removal-not-reviewed", "jump": "unchanged", "groups": "unreviewed", "expected": "review-groups"},

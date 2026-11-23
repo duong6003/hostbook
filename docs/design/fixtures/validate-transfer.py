@@ -79,6 +79,19 @@ def source_reference_decision(case):
     return 'revalidate-removal'
 
 
+def update_existing_decision(before, after, observed, attempt, references):
+    if attempt in {'unsettled', 'reachable-only'}:
+        return 'reconcile-attempt'
+    if observed == after:
+        if attempt != 'settled-accepted':
+            return 'reconcile-evidence'
+        next_step = source_reference_decision(references)
+        return 'revalidate-and-remove-source' if next_step == 'revalidate-removal' else next_step
+    if observed == before and attempt in {'none', 'settled-rejected'}:
+        return 'prepare-update'
+    return 'compare-conflict'
+
+
 def validate(data):
     require(data['fixture_kind'] == 'documentation-only', 'documentation marker')
     require(data['contract_version'] == 1, 'unsupported conceptual version')
@@ -194,16 +207,28 @@ def validate(data):
             {'refresh-plan', 'block-dependent-host', 'review-groups',
              'reconcile-group-binding', 'revalidate-removal'},
             'source reference coverage')
-    return len(names), len(barriers), len(negatives), len(existing), len(references)
+    update = data['update_existing']
+    before, after = update['destination_before'], update['destination_after']
+    require(str(uuid.UUID(before['host_id'])) == before['host_id'] != data['host_id'], 'distinct destination ID')
+    require((after['host_id'], after['alias']) == (before['host_id'], before['alias']) and
+            before['revision'] != after['revision'], 'update preserves destination identity and advances revision')
+    observations = {'before': before, 'after': after, 'changed': dict(after, revision='concurrent-edit')}
+    for case in update['cases']:
+        references_to_check = {'jump': case.get('source_jump', 'unchanged'), 'groups': 'reviewed'}
+        decision = update_existing_decision(before, after, observations[case['observed']], case['attempt'],
+                                            references_to_check)
+        require(decision == case['expected'], case['case'] + ': update-existing decision')
+    return len(names), len(barriers), len(negatives), len(existing), len(references), len(update['cases'])
 
 
 if __name__ == '__main__':
     try:
         fixture = Path(__file__).with_name('transfer-recovery.json')
-        count, barriers, negatives, existing, references = validate(json.loads(fixture.read_text()))
+        count, barriers, negatives, existing, references, updates = validate(json.loads(fixture.read_text()))
     except (ValueError, KeyError, TypeError) as error:
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
     print(f'PASS: {count} transfer checkpoints, {barriers} publication barriers, '
-          f'{negatives} rejected counterexamples, {existing} existing-destination decisions, {references} source-reference checks '
+          f'{negatives} rejected counterexamples, {existing} existing-destination decisions, {references} source-reference checks, '
+          f'{updates} update-existing decisions '
           '(documentation only; no runtime validation)')
