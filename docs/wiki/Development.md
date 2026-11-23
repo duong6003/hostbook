@@ -16,6 +16,7 @@ Core files:
 | `lib/import.sh` | Bulk and share-package import, loaded for human flows and import callbacks. |
 | `lib/settings.sh` | Interactive settings and language choices, loaded for human flows and sourced fixtures. |
 | `lib/hosts.sh` | Add, edit, rename, move and delete host interactions, loaded for human flows and sourced fixtures. |
+| `lib/store_vault.py` | Process-local unlock cache for registered store contexts. Uses an inherited pipe for the passphrase and verifies the age recipient. |
 | `install.sh` | macOS/Linux user-local installation and dependency downloads; `HOSTBOOK_REPO` (source) and `HOSTBOOK_HOME` (install directory) override its defaults. |
 | `python3 -B tests/store-context.py` | Read-only v1 registry resolution with one private and two shared fixture stores. Checks verified account and checkout bindings and the v1 recovery root. The `_store_context` callback supports an isolated fixture request over a pipe or a pre-approved local account lookup. |
 | `tests/platform.sh` | Shared callback, path, CRLF, and rollback regressions. |
@@ -94,6 +95,16 @@ progress. Closing the descriptor releases the lock and leaves its directory in p
 serializes cooperating local operations and does not grant mutation or
 publication authority. The legacy single-checkout lock runs independently.
 
+The registered store vault cache lives in the unlock consumer's process.
+It scopes identities to the effective account, device and store. Each
+lookup checks the vault directory, public recipient, password envelope and
+recovery envelope against the cached snapshot. Replacing or rewrapping any of
+those inputs invalidates the cache, even if the public recipient stays the
+same. Unlock verifies the decrypted identity with `age-keygen` and rechecks
+the snapshot before caching. The passphrase uses an inherited pipe and the
+identity stays in memory. This API is for scoped consumers. The CLI and the
+legacy Keychain, Secret Service and SSH agent flows still require integration.
+
 The test suite's installed account case requires a disposable system
 account whose effective home is an empty `/fixture-home`. Set
 `HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.
@@ -104,6 +115,7 @@ account whose effective home is an empty `/fixture-home`. Set
 bash -n hostbook
 bash -n install.sh
 bash tests/install.sh
+python3 -B tests/store-context.py
 for t in test platform sync discovery hosts-module settings-module ui file-input menu-empty controls open-mode \
          home-recovery import import-keys import-input import-package import-review import-tui \
          onboarding tui screens; do bash tests/$t.sh || break; done

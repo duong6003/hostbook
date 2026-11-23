@@ -547,6 +547,70 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         current = self.resolve(1, generations=replace(self.generations, connection=4))
         self.assertFalse(current.status.exists())
 
+    def test_vault_unlock_cache_is_scoped_and_rejects_rotated_envelopes(self):
+        tools = [shutil.which(name) for name in ("age", "age-keygen", "age-plugin-batchpass")]
+        if not all(tools):
+            self.skipTest("requires age, age-keygen and age-plugin-batchpass")
+        from store_vault import VaultUnlockCache
+
+        tool_dir = Path(tools[0]).parent
+        env = {"PATH": str(tool_dir), "HOME": str(self.root / "fixture-home")}
+        passphrase = b"synthetic cache passphrase"
+        recovery = b"synthetic recovery passphrase"
+
+        def tool(name, args=(), data=None, *, pass_fds=(), extra_env=None):
+            return subprocess.run([str(tool_dir / name), *args], input=data, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, env=dict(env, **(extra_env or {})),
+                                  timeout=30, check=True, pass_fds=pass_fds).stdout
+
+        def seal(identity, password):
+            reader, writer = os.pipe()
+            try:
+                with os.fdopen(writer, "wb") as pipe:
+                    pipe.write(password)
+                return tool("age", ("-e", "-j", "batchpass", "-a"), identity,
+                            pass_fds=(reader,), extra_env={"AGE_PASSPHRASE_FD": str(reader)})
+            finally:
+                os.close(reader)
+
+        contexts = [self.resolve(index) for index in range(3)]
+        identities = [tool("age-keygen") for _ in contexts]
+        for context, identity in zip(contexts, identities):
+            (context.vault / "vault.pub").write_bytes(tool("age-keygen", ("-y",), identity))
+            (context.vault / "vault.key.age").write_bytes(seal(identity, passphrase))
+            (context.vault / "vault.recovery.age").write_bytes(seal(identity, recovery))
+
+        cache = VaultUnlockCache(tool_dir)
+        load = lambda: self.account
+        private, shared_a, shared_b = contexts
+        before = snapshot(self.root)
+        cache.unlock(load, shared_a.store_id, self.generations, passphrase)
+        self.assertTrue(cache.get(load, shared_a.store_id, self.generations) == identities[1])
+        self.assertIsNone(cache.get(load, private.store_id, self.generations))
+        self.assertIsNone(cache.get(load, shared_b.store_id, self.generations))
+        self.assertEqual(snapshot(self.root), before)
+        self.assertIsNone(VaultUnlockCache(tool_dir).get(load, shared_a.store_id, self.generations))
+        with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+            cache.get(load, shared_a.store_id, replace(self.generations, checkout=99))
+        self.assertTrue(cache.get(load, shared_a.store_id, self.generations) == identities[1])
+
+        # A copied vault with the same recipient and envelopes still gets a separate cache.
+        for name in ("vault.pub", "vault.key.age", "vault.recovery.age"):
+            shutil.copyfile(shared_a.vault / name, shared_b.vault / name)
+        self.assertIsNone(cache.get(load, shared_b.store_id, self.generations))
+
+        # Rewrap the same key. Keeping the same public recipient still invalidates the old cache.
+        next_password = b"synthetic rotated passphrase"
+        (shared_a.vault / "vault.key.age").write_bytes(seal(identities[1], next_password))
+        self.assertIsNone(cache.get(load, shared_a.store_id, self.generations))
+        with self.assertRaisesRegex(StoreContextError, "vault unlock failed"):
+            cache.unlock(load, shared_a.store_id, self.generations, passphrase)
+        self.assertIsNone(cache.get(load, shared_a.store_id, self.generations))
+        cache.unlock(load, shared_a.store_id, self.generations, next_password)
+        self.assertTrue(cache.get(load, shared_a.store_id, self.generations) == identities[1])
+        self.assertIsNone(cache.get(load, private.store_id, self.generations))
+        self.assertIsNone(cache.get(load, shared_b.store_id, self.generations))
+
     def test_three_contexts_are_independent_and_resolution_does_not_write(self):
         before = snapshot(self.root)
         contexts = [self.resolve(index) for index in range(3)]

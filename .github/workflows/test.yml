@@ -42,6 +42,7 @@ jobs:
           for tool in tmux fzf gum; do command -v "$tool" >/dev/null || exit 1; done
           bash tests/test.sh
           bash tests/platform.sh
+          python3 -B tests/store-context.py
           bash tests/sync.sh
           bash tests/discovery.sh
           bash tests/hosts-module.sh
