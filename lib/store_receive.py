@@ -1,6 +1,5 @@
 """Receive a validated fast-forward from an approved local bare Git repository."""
 from contextlib import contextmanager
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,13 +22,13 @@ from store_context import (
     resolved_store, staged_local_file, store_writer, sync_local, verify_path_isolation,
     verify_state_directory,
 )
+from store_checkout import OID, check_index, check_worktree, fast_forward, read_index, read_ref, tree
 from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
 
 GIT = "/usr/bin/git"
 SAFE_ENV = {"PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_ATTR_NOSYSTEM": "1", "GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0",
             "GIT_NO_REPLACE_OBJECTS": "1", "GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C"}
-OID = re.compile(rb"(?:[a-f0-9]{40}|[a-f0-9]{64})")
 IDENTITY = ".hostbook/identity.json"
 
 
@@ -60,7 +59,7 @@ def oid(repo, ref):
     return output.decode("ascii")
 
 
-def plain_git(directory_fd, directory, *, bare):
+def plain_git(directory_fd, *, bare):
     # Only regular repositories are supported. Do not allow configuration redirects or filters.
     contents = read_file(directory_fd, "config", 65536)
     config = git("/", "config", "--no-includes", "--file", "-", "--null", "--list", data=contents)
@@ -82,10 +81,14 @@ def plain_git(directory_fd, directory, *, bare):
     for name in ("commondir", "shallow", "objects/info/alternates", "objects/info/http-alternates",
                  "info/grafts", "info/attributes", "info/sparse-checkout", "MERGE_HEAD", "REVERT_HEAD",
                  "CHERRY_PICK_HEAD", "rebase-merge", "rebase-apply", "sequencer"):
-        require(not os.path.lexists(directory / name), "unsupported or unfinished Git operation")
-    for base, folders, names in os.walk(directory, followlinks=False, onerror=raise_walk_error):
+        try:
+            os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise StoreContextError("unsupported or unfinished Git operation")
+    for _, folders, names, fd in os.fwalk(".", dir_fd=directory_fd, follow_symlinks=False, onerror=raise_walk_error):
         for name in folders + names:
-            info = os.lstat(Path(base) / name)
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             require(stat.S_ISDIR(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1),
                     "unsupported linked Git resource")
             require(not name.endswith(".lock"), "registered Git repository is busy")
@@ -95,8 +98,12 @@ def raise_walk_error(exc):
     raise exc
 
 
-def require_no_receive_pending(store_fd):
-    require("receive.pending" not in os.listdir(store_fd), "receive requires reconciliation")
+def require_no_receive_pending(store_fd, own_record):
+    if own_record is None:
+        require("receive.pending" not in os.listdir(store_fd), "receive requires reconciliation")
+    else:
+        actual = read_file(store_fd, "receive.pending", 4096, require_approval_file)
+        require(actual == json.dumps(own_record).encode(), "receive evidence changed")
     # Early versions recorded local receives under their original connection generation.
     with open_directory(store_fd, ("connection",)) as connections:
         for name in os.listdir(connections):
@@ -118,7 +125,7 @@ def publish_receive_marker(store_fd, record):
 
 
 @contextmanager
-def receive_binding(account, store_id, expected):
+def receive_binding(account, store_id, expected, own_record=None):
     with resolved_store(account, store_id, expected) as (context, checkout, root_fd, state_fd):
         require(context.kind == "shared" and context.effective_mode in ("receive-only", "two-way")
                 and context.transition_id is None, "a connected unfenced shared store is required")
@@ -151,8 +158,8 @@ def receive_binding(account, store_id, expected):
                                  "registered transport changed") as target_fd:
                 with open_directory(state_fd, parts[:3]) as store_fd:
                     require_private_directory(store_fd, "store state")
-                    require_no_receive_pending(store_fd)
-                    yield context, target, target_fd, store_fd
+                    require_no_receive_pending(store_fd, own_record)
+                    yield context, target, target_fd, store_fd, checkout
 
 
 @contextmanager
@@ -165,58 +172,15 @@ def absolute_directory(path):
         os.close(root)
 
 
-def check_clean(context):
-    repo = context.checkout
-    with absolute_directory(repo) as checkout_fd:
-        with open_directory(checkout_fd, (".git",)) as git_fd:
-            plain_git(git_fd, context.git_dir, bare=False)
-        index_rows(checkout_fd, context.store_id)
-    require(git(repo, "symbolic-ref", "--quiet", "HEAD").rstrip(b"\n") == context.ref.encode(),
-            "registered branch is not checked out")
-    require(not git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored", "--ignore-submodules=all"),
-            "registered checkout has local changes")
-    entries = git(repo, "ls-files", "--stage", "-v", "-z").split(b"\0")[:-1]
-    require(len(entries) <= 4096, "registered store has too many files")
-    total = 0
-    with absolute_directory(repo) as checkout_fd:
-        for entry in entries:
-            meta, path = entry.split(b"\t", 1)
-            flag, mode, blob, stage = meta.split()
-            require(flag == b"H" and mode == b"100644" and OID.fullmatch(blob) and stage == b"0",
-                    "unsupported registered index entry")
-            parts = path.decode().split("/")
-            require(all(p and p not in (".", "..") and p.casefold() != ".git" for p in parts),
-                    "invalid tracked file path")
-            with open_directory(checkout_fd, parts[:-1]) as parent:
-                def unlinked(_fd, info):
-                    require(info.st_nlink == 1, "linked tracked file requires reconciliation")
-                contents = read_file(parent, parts[-1], JSON_LIMIT, unlinked)
-            total += len(contents)
-            require(total <= 4 * MAX_ROUTE_BYTES, "registered store exceeds receive size limit")
-            algo = "sha1" if len(blob) == 40 else "sha256"
-            digest = hashlib.new(algo, b"blob " + str(len(contents)).encode() + b"\0" + contents)
-            require(digest.hexdigest().encode() == blob, "registered checkout differs from its index")
-    return oid(repo, "HEAD^{commit}")
-
-
 def verify_incoming(stage, tip, base, store_id, local):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
-    tree = git(stage, "ls-tree", "-rlz", "--full-tree", tip).split(b"\0")[:-1]
-    require(len(tree) <= 4096, "incoming store has too many files")
+    incoming_files = tree(stage, tip, git)
     view = stage / "validated"
     view.mkdir()
     collected, sources, seen = 0, set(), {}
-    for line in tree:
-        meta, name = line.split(b"\t", 1)
-        mode, kind, blob, size = meta.split()
-        path = name.decode()
+    for path, blob in incoming_files.items():
         components = path.split("/")
-        require(mode == b"100644" and kind == b"blob" and OID.fullmatch(blob)
-                and not re.search(r"[\x00-\x1f\x7f\\]", path)
-                and all(part and part not in (".", "..") and part.casefold() not in
-                        (".git", ".gitmodules", ".gitattributes") for part in components),
-                "unsupported incoming Git tree")
         for i in range(1, len(components) + 1):
             prefix = "/".join(components[:i])
             key = unicodedata.normalize("NFC", prefix).casefold()
@@ -228,12 +192,11 @@ def verify_incoming(stage, tip, base, store_id, local):
             require(all(not part.startswith(".") for part in components) and components[0].casefold() != "secrets",
                     "unsupported incoming source path")
             sources.add(path)
-        require(int(size) <= JSON_LIMIT, "incoming store file is too large")
-        collected += int(size)
+        contents = git(stage, "cat-file", "blob", blob.decode())
+        collected += len(contents)
         require(collected <= MAX_ROUTE_BYTES, "incoming SSH sources exceed size limit")
         file = view / path
         file.parent.mkdir(parents=True, exist_ok=True)
-        contents = git(stage, "cat-file", "blob", blob.decode())
         file.write_bytes(contents)
     require(changed <= {p.encode() for p in sources | {IDENTITY}}, "receive currently supports host-source changes only")
     with absolute_directory(view) as view_fd:
@@ -247,50 +210,73 @@ def verify_incoming(stage, tip, base, store_id, local):
     previous = parse_json(git(stage, "show", base + ":" + IDENTITY))
     require(incoming == previous or incoming["generation"] > previous["generation"],
             "incoming identity generation did not advance")
+    return incoming_files, [name.decode() for name in changed]
 
 
 def receive(load_account, store_id, expected):
-    account = load_account()
-    with store_writer(load_account, store_id, expected) as (locked, start, state, _lock):
-        require(locked == account, "store approval changed")
-        with receive_binding(account, store_id, expected) as (context, target, _remote, settings):
+    with store_writer(load_account, store_id, expected) as (account, start, state, _lock):
+        with receive_binding(account, store_id, expected) as (context, target, _, _store, binding):
             require(start == context, "store binding changed")
-            base = check_clean(context)
             local = local_inputs(state, store_id)
-    with receive_binding(account, store_id, expected) as (start_again, observed, target_fd, _settings):
+            with absolute_directory(context.git_dir) as git_fd:
+                require(os.fstat(git_fd).st_ino == binding.git_dir.inode
+                        and os.fstat(git_fd).st_dev == binding.git_dir.device, "Git directory changed")
+                plain_git(git_fd, bare=False)
+                base, original_index = read_ref(git_fd, context.ref), read_index(git_fd)
+    with receive_binding(account, store_id, expected) as (start_again, observed, target_fd, _store, _binding):
         require((start_again, observed) == (context, target), "registered transport changed")
-        plain_git(target_fd, target.path, bare=True)
+        plain_git(target_fd, bare=True)
         with tempfile.TemporaryDirectory(prefix="receive-", dir=account.state.path) as temp:
             stage = Path(temp)
             git(stage, "init", "--quiet", "--bare", "--template=")
-            # The file transport runs upload-pack from the verified open repository descriptor.
             uploader = shlex.join([sys.executable, "-I", "-B", "-S", str(Path(__file__).resolve()),
                                    "upload", str(target_fd)])
             git(stage, "fetch", "--no-tags", "--no-recurse-submodules", "--upload-pack=" + uploader,
                 "--", "file:///unused", context.ref + ":refs/hostbook/incoming", pass_fds=(target_fd,))
             tip = oid(stage, "refs/hostbook/incoming^{commit}")
-            verify_incoming(stage, tip, base, store_id, local)
+            after, changed = verify_incoming(stage, tip, base, store_id, local)
+            before = tree(stage, base, git)
+            check_index(stage, original_index, before, git)
+            (stage / "index").unlink()
+            git(stage, "read-tree", tip)
+            if tip != base:
+                git(stage, "repack", "-adq")
             with store_writer(load_account, store_id, expected) as (current, gated, state_fd, lock_fd):
                 require(local_inputs(state_fd, store_id) == local, "registered SSH inputs changed")
                 require(current == account and gated == context, "registered checkout changed")
-                with receive_binding(current, store_id, expected) as (latest, bound, _, settings):
-                    require((latest, bound) == (context, target) and check_clean(latest) == base,
-                            "store changed during receive")
-                    verify_state_directory(state_fd, path_parts(account.state.path, context.writer_lock),
-                                           lock_fd, "store writer directory changed")
-                    if base != tip:
-                        publish_receive_marker(settings, {
-                            "store_id": store_id, "target_id": context.target_id, "ref": context.ref,
-                            "base": base, "incoming": tip, "connection_generation": expected.connection,
-                            "checkout_generation": expected.checkout,
-                        })
-                        git(context.checkout, "fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
-                            "--", str(stage), tip)
-                        require(check_clean(context) == base, "checkout changed before local fast-forward")
-                        git(context.checkout, "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", tip)
-                        require(check_clean(context) == tip, "received checkout requires reconciliation")
-                        os.unlink("receive.pending", dir_fd=settings)
-                        sync_local(settings)
+                with receive_binding(current, store_id, expected) as (latest, bound, _, store_fd, active):
+                    require((latest, bound, active) == (context, target, binding), "registered transport changed")
+                    record = {"store_id": store_id, "target_id": context.target_id, "ref": context.ref,
+                              "base": base, "incoming": tip, "connection_generation": expected.connection,
+                              "checkout_generation": expected.checkout}
+
+                    def verify_binding(own_record=None):
+                        require(load_account() == account and local_inputs(state_fd, store_id) == local,
+                                "registered approval or SSH inputs changed")
+                        with receive_binding(account, store_id, expected, own_record) as (actual, remote, _, namespace, registered):
+                            require((actual, remote, registered) == (context, target, binding)
+                                    and os.path.samestat(os.fstat(namespace), os.fstat(store_fd)),
+                                    "registered binding changed during receive")
+                        verify_state_directory(state_fd, path_parts(account.state.path, context.writer_lock),
+                                               lock_fd, "store writer directory changed")
+
+                    with absolute_directory(context.checkout) as checkout_fd:
+                        with bound_directory(checkout_fd, (".git",), binding.git_dir, "Git directory changed") as git_fd:
+                            info = os.fstat(checkout_fd)
+                            require((info.st_dev, info.st_ino) == (binding.root.device, binding.root.inode),
+                                    "registered checkout changed")
+                            plain_git(git_fd, bare=False)
+                            require(read_ref(git_fd, context.ref) == base and read_index(git_fd) == original_index,
+                                    "Git branch or index changed during receive")
+                            check_worktree(checkout_fd, before)
+                            verify_binding()
+                            if base != tip:
+                                publish_receive_marker(store_fd, record)
+                                verify_binding(record)
+                                fast_forward(checkout_fd, git_fd, context.ref, base, tip, original_index,
+                                             stage, changed, before, after, lambda: verify_binding(record))
+                                os.unlink("receive.pending", dir_fd=store_fd)
+                                sync_local(store_fd)
     return {"store_id": store_id, "received": tip}
 
 

@@ -168,6 +168,10 @@ connection-scoped records also fence the store. It contains the two Git revision
 their original store and target binding. Preserve it and compare the branch,
 index and worktree against both revisions before any repair. Pending state
 blocks subsequent receives. The original revision remains accessible in Git.
+Git constructs the candidate index and objects in private staging. Hostbook
+updates the verified checkout and Git directory through open descriptors under
+the store gate and native index and branch locks. The full resulting tree is
+limited to 4096 regular files, 4 MiB per file and 64 MiB overall.
 This command currently handles host sources whose resulting paths and sidecar
 can all be validated. It requires a conventional non-shallow Git directory.
 

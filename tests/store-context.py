@@ -115,7 +115,7 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -258,6 +258,7 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), f.tip)
         self.assertEqual((f.store / "team.conf").read_bytes(), (f.author / "team.conf").read_bytes())
         self.assertEqual(f.git(f.store, "status", "--porcelain"), "")
+        f.git(f.store, "fsck", "--full", "--strict")
         self.assertEqual(snapshot(f.remote), before_remote)
         self.assertEqual(snapshot(self.root / "shared b"), before_b)
 
@@ -365,6 +366,51 @@ class StoreContextTest(unittest.TestCase):
         self.assertFalse(marker.exists())
         self.assertFalse((f.target.parent / "receive.pending").exists())
         self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), f.base)
+
+    def check_receive_binding_replacement(self, git_only):
+        import store_receive
+        f = self.prepare_receive()
+        publish = store_receive.publish_receive_marker
+        replacement = f.store / ".git" if git_only else f.store
+        before = snapshot(f.store)
+        def replace_after_reservation(fd, record):
+            publish(fd, record)
+            original = self.root / "original"
+            replacement.rename(original)
+            shutil.copytree(original, replacement)
+        with patch.object(store_receive, "publish_receive_marker", side_effect=replace_after_reservation):
+            with self.assertRaises(StoreContextError):
+                store_receive.receive(lambda: self.account, self.entries[1]["store_id"], self.generations)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertTrue((f.target.parent.parent.parent / "receive.pending").is_file())
+
+    def test_receive_never_writes_replacement_checkout(self):
+        self.check_receive_binding_replacement(False)
+
+    def test_receive_never_writes_replacement_git_directory(self):
+        self.check_receive_binding_replacement(True)
+
+    def test_receive_counts_unchanged_tracked_data_before_any_effect(self):
+        import store_checkout
+        import store_receive
+        f = self.prepare_receive()
+        base_size = sum((f.store / path).stat().st_size for path in
+                        ("team.conf", ".hostbook/identity.json", "secrets/vault.pub"))
+        source = f.author / "team.conf"
+        source.write_text(source.read_text() + "# Some additional incoming bytes\n")
+        manifest = f.author / ".hostbook/identity.json"
+        metadata = json.loads(manifest.read_bytes())
+        metadata["generation"] += 1
+        metadata["sources"][0]["sha256"] = hashlib.sha256(source.read_bytes()).hexdigest()
+        manifest.write_text(json.dumps(metadata))
+        f.git(f.author, "commit", "-qam", "Increase host configuration length")
+        f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+        before = snapshot(f.store)
+        with patch.object(store_checkout, "MAX_STORE_BYTES", base_size + 1):
+            with self.assertRaisesRegex(StoreContextError, "size limit"):
+                store_receive.receive(lambda: self.account, self.entries[1]["store_id"], self.generations)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertFalse((f.target.parent.parent.parent / "receive.pending").exists())
 
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
