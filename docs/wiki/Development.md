@@ -121,6 +121,9 @@ loads the matching encrypted private key into a short-lived private agent
 and offers that key only for the selected destination or bound hop.
 It checks the credential and route again after unlocking. Plaintext key
 material and the vault identity travel in process memory or inherited pipes.
+The vault tools must come from the OS package, the OS account's local
+installer directory or a canonical Homebrew package. The connection's
+private agent closes with its owner even if the launcher is terminated.
 An unbound route uses interactive authentication without ambient keys.
 Stored password markers currently stop connection before SSH because this
 path has no approved askpass attribution for them.

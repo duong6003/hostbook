@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 from threading import Thread
 import unittest
 from unittest.mock import patch
@@ -551,7 +553,7 @@ Host local-hop
     HostName 127.0.0.1
     Port {target.getsockname()[1]}
     User destination
-    ProxyJump "approved-hop"
+    ProxyJump "ops+relay@approved-hop"
 """)
             local = self.state / f"stores/v1/{context.store_id}/ssh/config"
             local.parent.mkdir(parents=True, mode=0o700)
@@ -640,6 +642,75 @@ Host *
             self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, listing()), 0)
             self.assertEqual(len(launches), 1)
 
+    def test_registered_vault_tools_cannot_resolve_into_the_selected_checkout(self):
+        from store_login import verified_age_dir
+
+        checkout = self.resolve(1).checkout
+        package = checkout / "1.0" / "bin"
+        package.mkdir(parents=True)
+        with tempfile.TemporaryDirectory(prefix="hb-tools-", dir="/tmp") as installed:
+            directory = Path(installed).resolve()
+            for program in ("age", "age-keygen", "age-plugin-batchpass"):
+                tool = package / program
+                tool.write_text("#!/bin/sh\nexit 1\n")
+                tool.chmod(0o700)
+                (directory / program).symlink_to(tool)
+            with patch("store_login.age_installations", return_value=((directory, checkout),)):
+                with self.assertRaisesRegex(StoreContextError, "in an approved tool directory"):
+                    verified_age_dir(self.account)
+
+    def test_public_connect_execs_the_registered_launcher_in_place(self):
+        fixture_bin = self.root / "bin-stub"
+        fixture_bin.mkdir()
+        interpreter = fixture_bin / "python3"
+        interpreter.write_text('#!/bin/sh\nprintf "%s\\n" "$$"\n')
+        interpreter.chmod(0o700)
+        launcher = self.installed_launcher()
+        env = {"PATH": f"{fixture_bin}:/bin:/usr/bin", "HOME": str(self.root / "fixture-home")}
+        with subprocess.Popen([launcher, "store-connect"], stdout=subprocess.PIPE, env=env) as worker:
+            stdout, _ = worker.communicate(timeout=5)
+            self.assertEqual(worker.returncode, 0)
+            self.assertEqual(int(stdout), worker.pid)
+
+    def test_private_agent_exits_after_its_launcher_is_killed(self):
+        lib_dir = Path(__file__).resolve().parents[1] / "lib"
+        script = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from store_login import ssh_agent
+with ssh_agent(Path(sys.argv[2])):
+    print("ready", flush=True)
+    sys.stdin.read()
+"""
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.root / "fixture-home")}
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signum=signum):
+                with tempfile.TemporaryDirectory(prefix="hb-agent-", dir="/tmp") as folder:
+                    agent = Path(folder) / "agent"
+                    worker = subprocess.Popen([sys.executable, "-B", "-c", script, str(lib_dir), str(agent)],
+                                              start_new_session=True, stdin=subprocess.PIPE,
+                                              stdout=subprocess.PIPE, text=True, env=env)
+                    try:
+                        self.assertTrue(select.select([worker.stdout], [], [], 5)[0])
+                        self.assertEqual(worker.stdout.readline().strip(), "ready")
+                        self.assertTrue(agent.is_socket())
+                        worker.send_signal(signum)
+                        worker.wait(timeout=5)
+                        deadline = time.monotonic() + 3
+                        while agent.exists() and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        self.assertFalse(agent.exists())
+                    finally:
+                        worker.stdin.close()
+                        worker.stdout.close()
+                        if worker.poll() is None or agent.exists():
+                            try:
+                                os.killpg(worker.pid, signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
+                        worker.wait(timeout=5)
+
     def test_registered_connect_offers_the_key_from_the_selected_store_only(self):
         from store_read import connect_route, refresh_routes
 
@@ -694,6 +765,13 @@ Host db
                 ciphertext = tool("age", "-e", "-r", recipient.decode().strip(), data=key.read_bytes())
                 (context.vault / "login.age").write_bytes(ciphertext)
                 stamp = refresh_routes(load, context.store_id, self.generations).strip().split("\t")[3]
+                commands = context.checkout / "fake-bin"
+                commands.mkdir()
+                marker = self.root / f"checkout-tool-{index}-ran"
+                for program in ("age", "age-keygen", "age-plugin-batchpass"):
+                    fake = commands / program
+                    fake.write_text(f"#!/bin/sh\n: > '{marker}'\nexit 97\n")
+                    fake.chmod(0o700)
                 before = snapshot(self.root)
 
                 sockets = []
@@ -718,10 +796,13 @@ Host db
                     self.assertEqual(keys.split()[:2], public_key.split()[:2])
                     return 0
 
-                with patch("store_read.launch_ssh", side_effect=launch, create=True) as transport:
-                    self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, stamp,
-                                                   read_passphrase=lambda: passphrase), 0)
-                    transport.assert_called_once()
+                override = {"PATH": f"{commands}:{os.environ['PATH']}"} if index == 0 else {}
+                with patch.dict(os.environ, override):
+                    with patch("store_read.launch_ssh", side_effect=launch) as transport:
+                        self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                                       read_passphrase=lambda: passphrase), 0)
+                        transport.assert_called_once()
+                self.assertFalse(marker.exists())
                 self.assertEqual(len(sockets), 1)
                 self.assertFalse(sockets[0].exists())
                 self.assertEqual(snapshot(self.root), before)
@@ -735,6 +816,35 @@ Host db
                         connect_route(load, context.store_id, self.generations, host_id, stamp,
                                       read_passphrase=rotate_during_unlock)
                     transport.assert_not_called()
+
+                if index == 1:
+                    source = context.checkout / "team.conf"
+                    text = source.read_text() + """    ProxyJump relay
+# secret: relay
+Host relay
+    HostName 192.0.2.51
+    User relay-user
+"""
+                    source.write_text(text)
+                    sidecar = context.checkout / ".hostbook/identity.json"
+                    identity_data = json.loads(sidecar.read_text())
+                    identity_data["sources"][0]["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+                    identity_data["hosts"].append({"name": "relay", "host_id": new_id(), "bindings": [
+                        {"path": "team.conf", "host_ordinal": 2, "token_ordinal": 1},
+                    ]})
+                    sidecar.write_text(json.dumps(identity_data))
+                    other = self.root / "key-0"
+                    (context.vault / "relay.meta").write_bytes(b"type=key\n")
+                    (context.vault / "relay.pub").write_bytes(other.with_suffix(".pub").read_bytes())
+                    (context.vault / "relay.age").write_bytes(ciphertext)
+                    swapped = tool("age", "-e", "-r", recipient.decode().strip(), data=other.read_bytes())
+                    (context.vault / "login.age").write_bytes(swapped)
+                    stamp = refresh_routes(load, context.store_id, self.generations).strip().split("\n")[0].split("\t")[3]
+                    with patch("store_read.launch_ssh") as transport:
+                        with self.assertRaisesRegex(StoreContextError, "store public and private key do not match"):
+                            connect_route(load, context.store_id, self.generations, host_id, stamp,
+                                          read_passphrase=lambda: passphrase)
+                        transport.assert_not_called()
 
     def test_registered_key_marker_requires_a_concrete_active_host_block(self):
         from store_read import refresh_routes

@@ -36,7 +36,7 @@ SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_.:\[\]-]|%h)+")
 SECRET_COMMENT = re.compile(r"#[ 	]*secret[ 	]*:[ 	]*(.*)")
 SECRET_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
-JUMP = re.compile(r"(?:ssh://)?(?:([A-Za-z0-9._-]+)@)?"
+JUMP = re.compile(r"(?:ssh://)?(?:([A-Za-z0-9._+-]+)@)?"
                   r"([A-Za-z0-9_][A-Za-z0-9_.-]*|\[[A-Fa-f0-9:]+\])(?::([0-9]+))?")
 
 

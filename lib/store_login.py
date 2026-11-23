@@ -3,13 +3,74 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import os
 from pathlib import Path
-import shutil
+import pwd
+import stat
 import subprocess
 import time
 
 from store_context import (JSON_LIMIT, StoreContextError, bound_directory, open_directory,
-                           path_parts, read_file, require, resolved_store)
+                           path_parts, read_file, require, require_no_acl_grants, resolved_store)
 from store_vault import VaultUnlockCache, file_evidence, read_vault
+
+
+AGE_PROGRAMS = ("age", "age-keygen", "age-plugin-batchpass")
+AGENT_GUARD = """
+/usr/bin/ssh-agent -D -a "$1" -t 2h </dev/null &
+agent=$!
+trap 'kill "$agent" 2>/dev/null; wait "$agent" 2>/dev/null || :' EXIT
+trap 'exit 129' HUP
+trap 'exit 143' TERM
+/bin/cat >/dev/null
+"""
+
+
+def age_installations():
+    home = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve(strict=True)
+    local = home / ".local" / "bin"
+    return (
+        (Path("/usr/bin"), None),
+        (local, None),
+        (Path("/opt/homebrew/bin"), Path("/opt/homebrew/Cellar/age")),
+        (Path("/usr/local/bin"), Path("/usr/local/Cellar/age")),
+    )
+
+
+def verified_age_dir(account):
+    protected = {(item.device, item.inode) for item in (account.root, account.state, account.recovery)}
+    for checkout in account.checkouts.values():
+        protected.update((item.device, item.inode) for item in (checkout.root, checkout.git_dir, checkout.git_common_dir))
+    owners = (0, os.geteuid())
+    for directory, cellar in age_installations():
+        try:
+            if directory.resolve(strict=True) != directory:
+                continue
+            paths = [(directory / name).resolve(strict=True) for name in AGE_PROGRAMS]
+            target = paths[0].parent
+            if target != directory and not (cellar and target.is_relative_to(cellar)
+                                              and len(target.relative_to(cellar).parts) == 2
+                                              and target.name == "bin"):
+                continue
+            if paths != [target / name for name in AGE_PROGRAMS]:
+                continue
+            for parent in (target, *target.parents):
+                info = parent.stat()
+                require((info.st_dev, info.st_ino) not in protected
+                        and info.st_uid in owners and not info.st_mode & stat.S_IWOTH,
+                        "untrusted registered vault tool directory")
+            for path in paths:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                try:
+                    info = os.fstat(fd)
+                    require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_uid in owners
+                            and not info.st_mode & 0o022 and os.access(path, os.X_OK),
+                            "untrusted registered vault tool")
+                    require_no_acl_grants(fd)
+                finally:
+                    os.close(fd)
+            return target
+        except (OSError, RuntimeError, StoreContextError):
+            continue
+    raise StoreContextError("registered login requires age, age-keygen and batchpass in an approved tool directory")
 
 
 @dataclass(frozen=True, repr=False)
@@ -60,8 +121,9 @@ def ssh_agent(socket):
     ssh_agent_bin = "/usr/bin/ssh-agent"
     require(os.access(ssh_agent_bin, os.X_OK), "registered login requires system ssh-agent")
     env = {"PATH": "/usr/bin:/bin", "SSH_AUTH_SOCK": str(socket), "SSH_ASKPASS_REQUIRE": "never"}
-    child = subprocess.Popen([ssh_agent_bin, "-D", "-a", socket, "-t", "2h"], env=env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Only this process retains the write end. The guard observes EOF even after SIGKILL.
+    child = subprocess.Popen(["/bin/sh", "-c", AGENT_GUARD, "hostbook-agent", socket], env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         deadline = time.monotonic() + 2
         while not socket.is_socket() and child.poll() is None and time.monotonic() < deadline:
@@ -69,12 +131,8 @@ def ssh_agent(socket):
         require(socket.is_socket() and child.poll() is None, "could not start the private SSH agent")
         yield env
     finally:
-        child.terminate()
-        try:
-            child.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            child.kill()
-            child.wait()
+        child.stdin.close()
+        child.wait(timeout=5)
 
 
 def agent_keys(env, data=None):
@@ -91,9 +149,7 @@ def agent_keys(env, data=None):
 def scoped_login(load_account, store_id, expected, config, targets, read_passphrase):
     names = sorted(set(targets.values()))
     selection = current_keys(load_account, store_id, expected, names)
-    path = shutil.which("age")
-    require(path and Path(path).is_absolute(), "registered login requires age on the trusted tool path")
-    cache = VaultUnlockCache(Path(path).parent)
+    cache = VaultUnlockCache(verified_age_dir(selection[0]))
     cache.unlock(load_account, store_id, expected, (read_passphrase or prompt_passphrase)())
 
     def verify():
@@ -111,10 +167,10 @@ def scoped_login(load_account, store_id, expected, config, targets, read_passphr
             key = material[name]
             offers.add(tuple(key.public_key.split()[:2]))
             agent_keys(env, cache.open_secret(identity, key.ciphertext))
+            actual = {tuple(line.split()[:2]) for line in agent_keys(env).splitlines()}
+            require(actual == offers, "store public and private key do not match")
             public_files[name] = config.parent / f"key-{number}.pub"
             public_files[name].write_bytes(key.public_key)
-        actual = {tuple(line.split()[:2]) for line in agent_keys(env).splitlines()}
-        require(actual == offers, "store public and private key do not match")
         entries = "".join(f"Host {alias}\n  IdentityFile {public_files[name]}\n" for alias, name in targets.items())
         configuration = config.read_text().replace("IdentityAgent none\n", f"IdentityAgent {socket}\n", 1)
         config.write_text(configuration + entries)
