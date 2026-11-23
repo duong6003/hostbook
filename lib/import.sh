@@ -220,9 +220,11 @@ prepare_import_config(){ # split directory → private stage with accepted names
   printf '%s\n' "$d"
 }
 import_discard_secret(){
+  legacy_destinations "$SEC"/* || return 65
   rm -f "$SEC/$1.pub" "$SEC/$1.meta" "$SEC/$1.age" || { err "$(t err_import_secret_cleanup "$SEC/$1")" >&2; return 1; }
 }
 import_commit_secret(){ # commit only a newly confirmed import key, preserving unrelated staged changes
+  legacy_destinations "$SEC"/* || return 65
   local name=$1 rollback idxfile failed=0 restore=0
   revert_in_progress && return 1
   validate >/dev/null || return 1
@@ -239,6 +241,7 @@ import_commit_secret(){ # commit only a newly confirmed import key, preserving u
   : > "$ST.force"; rm -rf "$rollback"
 }
 import_config_keys(){ # staged config → encrypted key bindings before host writes
+  legacy_destinations "$SEC"/* || return 65
   local d=$1 f h effective k full nm choice path secret fp IMPORT_KEY_MODE=1
   for f in "$d"/*.conf; do [ ! -f "$f" ] || import_config_guard "$f" || return 1; done
   printf 'Include "%s/*.conf"\n' "$d" > "$d/ssh-config" || return 1
@@ -321,6 +324,7 @@ import_targets_unchanged(){
   done < "$stage/targets"
 }
 apply_import_config(){ # staged config and names; restore only these destinations on failure
+  legacy_destinations "$DIR"/*.conf || return 65
   local stage=$1 rollback f name idxfile before failed=0 restore=0 n
   lock 10 || { err "$(t sync_busy)"; return 1; }
   if [ ! -s "$stage/added" ]; then : > "$STATE/last-import"; ONLY_NEXT=; IMPORT_COMMIT=; unlock; return 0; fi
@@ -530,6 +534,7 @@ pack_state_signature(){ # detect changes to files that influence package choices
 }
 # The package transaction snapshots a fixed manifest and records each path before mutation.
 import_touch(){
+  legacy_destinations "$DIR/$1" || return 65
   local rel=$1 file=$DIR/$1 saved=$IMPORT_ROLLBACK/files/$1
   grep -Fxq "$rel" "$IMPORT_ROLLBACK/manifest" || return 1
   grep -Fxq "$rel" "$IMPORT_ROLLBACK/touched" && return 0
@@ -539,6 +544,7 @@ import_touch(){
   printf '%s\n' "$rel" >> "$IMPORT_ROLLBACK/touched"
 }
 pack_write_host(){
+  legacy_destinations "$DIR/$1.conf" || return 65
   local project=$1 block=$2 rel=$1.conf work=$IMPORT_ROLLBACK/work/$1.conf
   rm -f "$work" || return 1
   if [ -e "$DIR/$rel" ]; then cp -p "$DIR/$rel" "$work" || return 1; fi
@@ -546,6 +552,7 @@ pack_write_host(){
   import_touch "$rel" && cp -p "$work" "$DIR/$rel"
 }
 pack_delete_host(){
+  legacy_destinations "$DIR"/*.conf || return 65
   local n=$1 keep=${2:-} f l r rel work=$IMPORT_ROLLBACK/work
   f=$(host_field "$n" 10); l=$(host_field "$n" 11)
   case $f in "$DIR/"*) rel=${f#"$DIR/"};; *) return 1;; esac
@@ -570,6 +577,7 @@ pack_normalize_decisions(){ # resolve "both" names while reserving every incomin
   awk -F '\t' 'FILENAME==ARGV[1] {seen[$1]=1; next} {name[++n]=$1; act[n]=$2; if($2!="skip") seen[$1]=1} END {for(i=1;i<=n;i++) {a=act[i]; if(a=="both") {v=name[i] "-2"; while(v in seen) v=v "-2"; seen[v]=1; a="both:" v} print name[i] "\t" a}}' "$IDX" "$1"
 }
 apply_import_package(){ # package and decisions; preserve unrelated and staged files on failure
+  legacy_destinations "$DIR"/*.conf "$SEC"/* || return 65
   local x=$1 decisions=$2 rollback idxfile f rel n act p target loc status needed before failed=0 restore=0
   if ! awk -F '\t' '$2!="skip" {found=1} END {exit !found}' "$decisions"; then : > "$STATE/last-import"; ONLY_NEXT=; IMPORT_COMMIT=; return 0; fi
   lock 10 || { err "$(t sync_busy)"; return 1; }
@@ -636,6 +644,7 @@ apply_import_package(){ # package and decisions; preserve unrelated and staged f
 }
 # Apply a decisions file: "name<TAB>add|skip|update|both|replace:<existing name>". Record added/updated names in last-import.
 pack_apply_raw(){ # package-directory decisions-file
+  legacy_destinations "$DIR"/*.conf "$SEC"/* || return 65
   local x=$1 dec=$2 n act p blk line t st new loc m needed i=0 work=$IMPORT_ROLLBACK/work
   : > "$x/applied"; blk=$work/blk
   needed=$(awk -F '\t' 'FILENAME==ARGV[1] {if($2!="skip") act[$1]=1; next} ($1 in act) && $12!="" {print $12}' "$dec" "$x/index" | sort -u | tr '\n' ' ')

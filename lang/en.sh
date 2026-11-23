@@ -1183,3 +1183,4 @@ L_secrets_saved='Saved to vault: %s'
 L_err_share_write='Could not save the export package. Check write permissions and available disk space.'
 
 L_secrets_empty='No keys or passwords are saved yet. Choose Add to vault to get started.'
+L_err_legacy_store='This checkout uses registered stores. Select the store with store-hosts.'

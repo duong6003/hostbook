@@ -480,9 +480,10 @@ def index_host_tokens(contents, path):
                 yield (path, ordinal, index), token.lower()
 
 
-def index_rows(checkout_fd, store_id):
+def index_rows(checkout_fd, store_id, source_bytes=None, max_source_bytes=None):
     identity = verify_sidecar(checkout_fd, store_id)
     paths, occurrences = set(), {}
+    total_bytes = 0
     for source in identity["sources"]:
         fields(source, "path sha256")
         source_path, digest = source["path"], source["sha256"]
@@ -496,8 +497,12 @@ def index_rows(checkout_fd, store_id):
         paths.add(source_path.casefold())
         with open_directory(checkout_fd, parts[:-1]) as source_fd:
             contents = read_file(source_fd, parts[-1], JSON_LIMIT, require_unlinked_index_source)
+        total_bytes += len(contents)
+        require(max_source_bytes is None or total_bytes <= max_source_bytes, "SSH sources exceed size limit")
         require(hashlib.sha256(contents).hexdigest() == digest, "index source bytes changed since identity review")
         occurrences.update(index_host_tokens(contents, source_path))
+        if source_bytes is not None:
+            source_bytes[source_path] = contents
 
     ids, names = set(), set()
     rows = []
@@ -821,22 +826,162 @@ def approve_account(home, root, confirmation):
     return {"stores": plan["stores"]}
 
 
-def fixture_request():
+def fixture_request(extra=None):
     require(stat.S_ISFIFO(os.fstat(sys.stdin.fileno()).st_mode), "a fixture request pipe is required")
     contents = sys.stdin.buffer.read(JSON_LIMIT + 1)
     require(len(contents) <= JSON_LIMIT, "fixture request exceeds size limit")
     request = parse_json(contents)
-    fields(request, "account store_id generations")
+    fields(request, "account store_id generations" + (" " + extra if extra else ""))
     fields(request["generations"], "registration checkout connection policy")
     account = parse_account(request["account"])
     root = account.root.path
     require(root.parent == Path("/tmp").resolve() and root.name.startswith("hostbook-context-"),
             "fixture account must be in a Hostbook scratch directory")
-    return account, request["store_id"], Generations(**request["generations"])
+    bound = (account, request["store_id"], Generations(**request["generations"]))
+    return (*bound, request[extra]) if extra else bound
+
+
+def check_legacy_destinations(account, paths):
+    """Deny a legacy path or filesystem identity claimed by an independently approved registration."""
+    claimed = [account.state, account.recovery]
+    for binding in account.checkouts.values():
+        claimed.extend((binding.root, binding.git_dir, binding.git_common_dir))
+    names = {item.path for item in claimed}
+    identities = {(item.device, item.inode) for item in claimed}
+    for argument in paths:
+        if not argument:
+            continue
+        path = Path(argument).absolute()
+        actual = path.resolve(strict=False)
+        for location in (path, actual):
+            require(not any(location == name or name in location.parents or location in name.parents for name in names),
+                    "legacy destination overlaps registered store data")
+        for parent in (actual,*actual.parents):
+            try:
+                info = parent.stat()
+            except FileNotFoundError:
+                continue
+            require((info.st_dev, info.st_ino) not in identities and
+                    (parent != actual or not stat.S_ISREG(info.st_mode) or info.st_nlink == 1),
+                    "legacy destination aliases registered resources")
+    checkout = Path(paths[0])
+    if (checkout / ".git").exists():
+        from store_receive import git_result
+        rc, dirs = git_result(checkout, "rev-parse", "--absolute-git-dir", "--git-common-dir")
+        require(rc == 0, "legacy Git binding is unavailable")
+        for item in dirs.splitlines():
+            git_dir = (checkout / os.fsdecode(item)).resolve(strict=True)
+            require(all(git_dir != name and name not in git_dir.parents for name in names),
+                    "legacy Git directory belongs to a registered store")
+            info = git_dir.stat()
+            require((info.st_dev,info.st_ino) not in identities, "legacy Git directory was registered")
+
+
+def legacy_write_host(account, directory, project, block):
+    """Write an unrelated legacy config through a verified parent directory descriptor."""
+    from store_checkout import rename_guarded
+    from store_receive import absolute_directory
+    require(project and "/" not in project and not any(ord(c)<32 for c in project), "invalid legacy project")
+    root = Path(directory).resolve(strict=True)
+    name = project + ".conf"
+    target = root / name
+    check_legacy_destinations(account, (directory, str(target)))
+    input_fd = os.open(block, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(input_fd,"rb") as source:
+        require(stat.S_ISREG(os.fstat(input_fd).st_mode), "expected a legacy Host block file")
+        data = source.read(JSON_LIMIT + 1)
+    require(len(data) <= JSON_LIMIT, "legacy input exceeds size limit")
+    with absolute_directory(root) as parent:
+        def verify_parent():
+            require(os.path.samestat(root.stat(),os.fstat(parent)), "legacy destination moved")
+            check_legacy_destinations(account, (directory, str(target)))
+        verify_parent()
+        try:
+            prior = read_file(parent, name, JSON_LIMIT, require_unlinked_index_source)
+            mode = os.stat(name,dir_fd=parent,follow_symlinks=False).st_mode & 0o777
+        except FileNotFoundError:
+            prior, mode = None, 0o600
+        lines = (prior or b"").split(b"\n")
+        wildcard = next((index for index,line in enumerate(lines)
+                         if re.match(rb"^[ \t]*host[ \t].*[*?]",line,re.I)), None)
+        if wildcard is None:
+            updated = (prior + b"\n" if prior else b"") + data
+        else:
+            if lines[-1] == b"":
+                lines.pop()
+            inserted = data if not data or data.endswith(b"\n") else data+b"\n"
+            updated = b"".join(line+b"\n" for line in lines[:wildcard]) + inserted+b"\n"
+            updated += b"".join(line+b"\n" for line in lines[wildcard:])
+        require(len(updated) <= JSON_LIMIT, "legacy project exceeds size limit")
+        staged = ".hostbook-write-" + str(uuid4())
+        fd = os.open(staged,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
+        keep = False
+        try:
+            with os.fdopen(fd,"wb") as stream:
+                stream.write(updated)
+                stream.flush()
+                os.fchmod(stream.fileno(),mode)
+                sync_local(stream.fileno())
+            verify_parent()
+            rename_guarded(parent,staged,parent,name,exchange=prior is not None)
+            if prior is not None:
+                keep = True
+                try:
+                    displaced = read_file(parent,staged,JSON_LIMIT,require_unlinked_index_source)
+                    require(displaced == prior,"legacy file changed during save")
+                except (OSError,StoreContextError):
+                    rename_guarded(parent,staged,parent,name,exchange=True)
+                    raise
+            sync_local(parent)
+            verify_parent()
+            keep = False
+        finally:
+            if not keep:
+                try:
+                    os.unlink(staged,dir_fd=parent)
+                except FileNotFoundError:
+                    pass
 
 
 def main(args):
     try:
+        if args and args[0] == "_registered_selection":
+            require(len(args) == 2, "one checkout directory is required")
+            account = load_approved_account(Path(pwd.getpwuid(os.geteuid()).pw_dir))
+            selection = Path(args[1]).resolve(strict=True)
+            info = selection.stat()
+            require(any(binding.root.path == selection and
+                        (binding.root.device,binding.root.inode) == (info.st_dev,info.st_ino)
+                        for binding in account.checkouts.values()), "selection is not the approved checkout")
+            return 0
+        if args and args[0] == "_legacy_merge_install":
+            require(len(args)==3 and re.fullmatch(r"\.hostbook-merge\.[a-zA-Z0-9]+",args[1])
+                    and args[2] not in ("",".","..") and "/" not in args[2], "invalid merge output")
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            account = load_approved_account(home)
+            parent = os.open(".",DIRECTORY_FLAGS)
+            try:
+                cwd = Path.cwd()
+                check_legacy_destinations(account, (str(cwd),str(cwd/args[1]),str(cwd/args[2])))
+                source = os.stat(args[1],dir_fd=parent,follow_symlinks=False)
+                target = os.stat(args[2],dir_fd=parent,follow_symlinks=False)
+                require(all(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 for info in (source,target))
+                        and source.st_uid == os.geteuid() and source.st_mode & 0o077 == 0,"merge output changed")
+                os.replace(args[1],args[2],src_dir_fd=parent,dst_dir_fd=parent)
+                sync_local(parent)
+            finally:
+                os.close(parent)
+            return 0
+        if args and args[0] == "_legacy_write_host":
+            require(len(args) == 4, "legacy directory, project and input are required")
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            legacy_write_host(load_approved_account(home), *args[1:])
+            return 0
+        if args and args[0] == "_legacy_destinations":
+            require(len(args) >= 2, "actual legacy destination required")
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            check_legacy_destinations(load_approved_account(home), args[1:])
+            return 0
         if args and args[0] == "_approve_store_account":
             require(len(args) in (2, 3), "prepared account root and optional confirmation are required")
             home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
@@ -846,6 +991,24 @@ def main(args):
             print(json.dumps(result))
             return 0
         action = args[0] if args else None
+        if action in ("_store_add", "store-add", "_store_import", "store-import"):
+            from store_private import private_command
+            return private_command(action, args[1:])
+        if action in ("_store_mode", "store-mode"):
+            from store_mode import mode_command
+            return mode_command(action, args[1:])
+        if action in ("_store_settle", "store-settle"):
+            from store_publish import settle_command
+            return settle_command(action, args[1:])
+        if action in ("_store_edit_address", "store-edit-address"):
+            from store_publish import edit_command
+            return edit_command(action, args[1:])
+        if action in ("_store_receive", "store-receive"):
+            from store_receive import receive_command
+            return receive_command(action, args[1:])
+        if action in ("_store_hosts", "_store_preview", "_store_connect", "store-hosts", "store-preview", "store-connect"):
+            from store_read import route_command
+            return route_command(action, args[1:])
         refresh = action in ("_refresh_store_index", "_refresh_store_status")
         if refresh or action == "_store_context":
             args = args[1:]
@@ -874,4 +1037,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Isolated Python mode excludes the script directory from module lookup.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.modules["store_context"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))

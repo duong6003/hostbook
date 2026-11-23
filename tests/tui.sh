@@ -2,6 +2,7 @@
 # Test the real fzf screen in an isolated tmux server, using only sample hosts and temporary configuration.
 set -eu
 unset SSH_AUTH_SOCK SSH_AGENT_PID
+export SHELL=/bin/bash   # private tmux panes must not load the OS account's interactive shell startup
 command -v tmux >/dev/null || { echo 'Bỏ qua TUI: chưa có tmux'; exit 0; }
 HERE=$(cd "$(dirname "$0")" && pwd); S=$HERE/../hostbook
 T=$(mktemp -d); socket=hb-ui-$$
@@ -237,9 +238,11 @@ if grep -E '>.*current' "$foot" >/dev/null; then cat "$foot"; echo 'FAIL TUI: sc
 # preview auto-hides (<36 cols), after a cursor move, after widening again and after two quick resizes.
 footer_at(){ # width → _footer's line for a host row
   local line='' i=0
-  tmux -L "$socket" new-session -d -x "$1" -y 5 -s ref "env HOME=$(printf %q "$HOME") XDG_CONFIG_HOME=$(printf %q "$XDG_CONFIG_HOME") HOSTBOOK_DIR=$(printf %q "$HOSTBOOK_DIR") HOSTBOOK_STATE=$(printf %q "$HOSTBOOK_STATE") HOSTBOOK_SSH_CONFIG=$(printf %q "$HOSTBOOK_SSH_CONFIG") /bin/bash $(printf %q "$S_REAL") _footer h:many02; sleep 30"
+  tmux -L "$socket" new-session -d -x "$1" -y 5 -s ref env HOME="$HOME" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    HOSTBOOK_DIR="$HOSTBOOK_DIR" HOSTBOOK_STATE="$HOSTBOOK_STATE" HOSTBOOK_SSH_CONFIG="$HOSTBOOK_SSH_CONFIG" \
+    HOSTBOOK_LANG=vi /bin/bash -c '/bin/bash "$1" _footer h:many02; IFS= read -r _' fixture "$S_REAL"
   while [ -z "$line" ] && [ "$i" -lt 50 ]; do line=$(tmux -L "$socket" capture-pane -p -t ref | sed -n 1p | sed 's/ *$//'); i=$((i+1)); sleep .1; done
-  tmux -L "$socket" kill-session -t ref; printf '%s' "$line"
+  tmux -L "$socket" send-keys -t ref Enter; printf '%s' "$line"
 }
 screen_footer(){ tmux -L "$socket" capture-pane -p -t ui | sed -e 's/^│ *//' -e 's/ *│.*$//' -e 's/ *$//'; }   # lines without the border; the footer is one of them
 wait_footer(){ # width: poll until a whole line equals the reference footer, then check it stays

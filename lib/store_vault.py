@@ -4,9 +4,13 @@ Callers pass the approved account resolver and trusted installed age tool
 directory. Passphrases and decrypted identities stay out of argv, environment,
 logs and files. This module is loaded only by an explicit unlock consumer.
 """
+from contextlib import contextmanager
 from dataclasses import dataclass
+import base64
+import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 from store_context import (JSON_LIMIT, StoreContextError, bound_directory,
@@ -44,18 +48,85 @@ def read_vault(root_fd, account, binding):
     return VaultMaterial(tuple(evidence), recipient, password, recovery)
 
 
+def receive_password_records(account, changes, before, incoming, blob, read_passphrase=None):
+    """Inspect encrypted records from the approved source without unlocking the existing vault."""
+    from store_login import age_installations, verified_age_tools, verified_programs
+    from store_read import SECRET_NAME
+
+    anchors = ("secrets/vault.pub", "secrets/vault.key.age", "secrets/vault.recovery.age")
+    require(all(path in before and before[path] == incoming.get(path) for path in anchors),
+            "receive requires the existing unchanged vault identity and both envelopes")
+    names = set()
+    for path in changes:
+        name, dot, suffix = path.removeprefix("secrets/").rpartition(".")
+        require(dot and SECRET_NAME.fullmatch(name) and name != "vault" and not name.startswith("vault.")
+                and suffix in ("age", "meta") and path in incoming, "unsupported received credential change")
+        names.add(name)
+
+    tools, _ = verified_programs(account, age_installations(), ("age-inspect","age"),
+                                 "encrypted receive requires trusted age and age-inspect")
+    def inspect_tool(program, args, data):
+        try:
+            return subprocess.run([str(tools/program), *args], input=data, env={"PATH":str(tools)},
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            raise StoreContextError("received vault material failed inspection") from None
+
+    def archive(data, kind):
+        lines = data.split(b"\n")
+        require(len(lines) >= 4 and lines[0] == b"-----BEGIN AGE ENCRYPTED FILE-----"
+                and lines[-2:] == [b"-----END AGE ENCRYPTED FILE-----",b""], "expected one armored age archive")
+        # age-inspect reads the age header. Bound the entire input to the single reviewed armor block.
+        require(all(line and len(line) <= 64 for line in lines[1:-2]), "invalid age armor")
+        base64.b64decode(b"".join(lines[1:-2]), validate=True)
+        result = json.loads(inspect_tool("age-inspect",["--json"],data))
+        require(result.get("version") == "age-encryption.org/v1" and result.get("armor") is True
+                and result.get("stanza_types") == [kind] and result.get("sizes",{}).get("min_payload",0)>0,
+                "unsupported encrypted archive")
+
+    pub = blob(before[anchors[0]]).rstrip(b"\n")
+    require(re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}",pub),"unsupported existing vault recipient")
+    inspect_tool("age",["-e","-r",pub.decode()],b"")
+    for path in anchors[1:]:
+        archive(blob(before[path]), "scrypt")
+    verify = []
+    for name in names:
+        prefix = "secrets/"+name
+        encrypted, metadata = prefix+".age", prefix+".meta"
+        for files in (before,incoming):
+            if files is before and encrypted not in files and metadata not in files:
+                continue
+            require(encrypted in files and metadata in files and prefix+".pub" not in files,
+                    "receive requires a complete password credential")
+            meta = blob(files[metadata])
+            require(re.fullmatch(rb"type=password\n(?:created=[0-9]{4}-[0-9]{2}-[0-9]{2}\n)?",meta),
+                    "unsupported password credential metadata")
+            archive(blob(files[encrypted]),"X25519")
+        if before.get(encrypted) != incoming[encrypted] and (encrypted in before or read_passphrase is not None):
+            verify.append(incoming[encrypted])
+    if verify:
+        require(read_passphrase is not None, "unlock the existing vault to receive replacement ciphertext")
+        tool_dir, evidence = verified_age_tools(account)
+        passphrase = read_passphrase()
+        require(verified_age_tools(account) == (tool_dir,evidence), "vault tools changed during verification")
+        vault = VaultUnlockCache(tool_dir)
+        vault.verify_passwords(blob(before[anchors[1]]),pub,passphrase,(blob(oid) for oid in verify))
+
+
 class VaultUnlockCache:
     def __init__(self, tool_dir):
         self._tools = Path(tool_dir)
         require(self._tools.is_absolute(), "age tool directory must be absolute")
         self._entries = {}
 
-    def _run(self, name, args, data, pass_fd=None):
+    def _run(self, name, args, data, pass_fd=None, identity_fd=None):
         env = {"PATH": str(self._tools)}
         inherited_fds = ()
         if pass_fd is not None:
             env["AGE_PASSPHRASE_FD"] = str(pass_fd)
             inherited_fds = (pass_fd,)
+        elif identity_fd is not None:
+            inherited_fds = (identity_fd,)
         try:
             result = subprocess.run([str(self._tools / name), *args], input=data, env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -68,15 +139,32 @@ class VaultUnlockCache:
         require(isinstance(passphrase, bytes) and passphrase and b"\r" not in passphrase
                 and b"\n" not in passphrase and b"\0" not in passphrase,
                 "vault passphrase must be a nonempty line")
+        with self._secret_pipe(passphrase) as reader:
+            return self._run("age", ("-d", "-j", "batchpass"), envelope, pass_fd=reader)
+
+    @staticmethod
+    @contextmanager
+    def _secret_pipe(value):
         reader, writer = os.pipe()
         try:
             with os.fdopen(writer, "wb", buffering=0) as pipe:
-                require(len(passphrase) <= os.fpathconf(pipe.fileno(), "PC_PIPE_BUF"),
-                        "vault passphrase exceeds pipe limit")
-                require(pipe.write(passphrase) == len(passphrase), "vault passphrase pipe write failed")
-            return self._run("age", ("-d", "-j", "batchpass"), envelope, pass_fd=reader)
+                require(value and len(value) <= os.fpathconf(pipe.fileno(), "PC_PIPE_BUF"),
+                        "vault input exceeds pipe limit")
+                require(pipe.write(value) == len(value), "vault pipe write failed")
+            yield reader
         finally:
             os.close(reader)
+
+    def verify_passwords(self, envelope, recipient, passphrase, ciphertexts):
+        identity = self._decrypt(envelope, passphrase)
+        require(self._run("age-keygen",("-y",),identity).strip() == recipient,
+                "accepted vault envelope does not match its recipient")
+        for ciphertext in ciphertexts:
+            require(self.open_secret(identity, ciphertext), "received password is empty")
+
+    def open_secret(self, identity, ciphertext):
+        with self._secret_pipe(identity) as reader:
+            return self._run("age", ("-d", "-i", f"/dev/fd/{reader}"), ciphertext, identity_fd=reader)
 
     def _current(self, load_account, store_id, expected):
         require(valid_id(store_id), "invalid store ID")

@@ -142,7 +142,7 @@ add_host(){ # [address] [name]: ask only what is needed, infer the rest, allow r
   done
   blk=$(mktemp); host_block "$name" "$h" "$user" "$port" "$jump" "$secret" "$tags" "$desc" > "$blk"
   f=$DIR/$group.conf; [ -f "$f" ] && cp "$f" "$blk.bak"
-  write_host "$group" "$blk"
+  write_host "$group" "$blk" || return 65
   if ! i=$(validate); then
     if [ -f "$blk.bak" ]; then mv "$blk.bak" "$f"; else rm -f "$f"; fi
     at "$(t add_title)"; shown; err "$(t add_err_invalid)"; dim "$i"; rm -f "$blk"; pause; return 1
@@ -157,13 +157,14 @@ edit_host(){ # open the file at the correct line, validate on close, and prompt 
   ed=${VISUAL:-${EDITOR:-$(have nano && echo nano || echo vi)}}
   bak=$(mktemp); cp "$f" "$bak"
   while :; do
+    legacy_destinations "$f" || return 65
     case $ed in code*|cursor*) $ed -g "$f:$l" --wait;; *) $ed "+$l" "$f";; esac
     cmp -s "$f" "$bak" && { rm -f "$bak"; return 0; }
     if e=$(validate); then rm -f "$bak"; build_index; save_and_sync "$(t done_edited "$n")"; return 0; fi
     echo; box err "${CR}$(t eh_unsynced)${C0}" "$(printf '%s' "$e" | sed "s|$DIR/||" | head -3)"
     l=$(printf '%s' "$e" | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p' | head -1); l=${l:-1}
     case $(pick "$(t eh_next)" "$(t eh_reopen)|$(t eh_reopen_h "$l")" "$(t eh_revert)|$(t eh_revert_h)") in
-      1) cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ $(t done_restored "$(basename "$f")")${C0}"; return 0;;
+      1) legacy_destinations "$f" || return 65; cp "$bak" "$f"; rm -f "$bak"; build_index; flash "${CG}↩ $(t done_restored "$(basename "$f")")${C0}"; return 0;;
       *) ;;   # the first item and esc both go back to the editor: esc never drops the edit
     esac
   done

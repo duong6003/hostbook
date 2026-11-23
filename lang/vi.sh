@@ -1183,3 +1183,4 @@ L_secrets_saved='Đã lưu vào vault: %s'
 L_err_share_write='Không lưu được gói export. Kiểm tra quyền ghi và dung lượng ổ đĩa.'
 
 L_secrets_empty='Vault chưa có key hoặc mật khẩu. Chọn Thêm vào vault để bắt đầu.'
+L_err_legacy_store='Thư mục này dùng kho đã đăng ký. Hãy chọn kho bằng store-hosts.'

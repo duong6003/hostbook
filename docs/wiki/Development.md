@@ -79,9 +79,208 @@ Rows contain tab-separated store ID, host ID and alias from the v1 sidecar.
 Each explicit refresh checks the declared managed `.conf` source bytes and
 their simple `Host` alias bindings. It rechecks the current approval,
 binding, generations and sidecar before publishing via atomic replacement.
-Quoted or escaped `Host` lists require the scoped SSH resolver. A stale association leaves the previous
-index intact and the command reports failure. Effective SSH settings and
-integration with the search UI are later work.
+Quoted or escaped `Host` lists require explicit reconciliation. A stale association leaves the previous
+index intact and the command reports failure.
+
+`store-hosts STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` refreshes the
+selected store's effective route index. Rows contain the store ID, stable
+host ID, alias and a snapshot stamp. Pass the IDs, same expected generations
+and stamp to `store-preview STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`.
+Preview reads the derived route and rejects a changed selection without
+running SSH. Refresh if the identity, admitted source bytes, approved defaults
+or expected binding change.
+
+The route view reads inventoried sources in sidecar order, followed by the
+optional device-approved file `state/stores/v1/STORE_ID/ssh/config`. Prepare
+this file inside the verified account state with a private `ssh` directory
+and an owner-only config file. Use it for applicable local defaults and
+standalone jump aliases. Hostbook opens this file without following links.
+The scoped route view accepts data-only SSH settings, applies OpenSSH's
+first-value precedence and excludes ambient SSH configuration and other
+stores' files. It rejects external Includes, command directives and
+external identity files. Registered routing uses the system OpenSSH at `/usr/bin/ssh`.
+The combined admitted source limit is 16 MiB. `_store_hosts` and `_store_preview` also support the isolated
+fixture pipe used by `_store_context`.
+
+`store-connect STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`
+opens the selected registered route. It rechecks the current listing
+snapshot and runs native OpenSSH with a private copy of the same configuration
+for the target and its ProxyJump children. Jump users can include a realm
+such as `operator@example.org`, and bracketed IPv6 hops can name an interface
+zone such as `[fe80::1%en0]`. Hostbook handles the necessary escaping inside
+the private configuration. The scoped connection disables
+ambient keys, the ambient agent and control-socket reuse. Before connecting,
+provision `known_hosts` in that store's private state `ssh` directory with the
+approved host keys for the destination and any jumps. You can separately stage
+`global_known_hosts` there to add approved defaults. Use owner-only regular
+files. Hostbook snapshots both files, requires strict OpenSSH host-key checks
+and rejects host key changes. The scoped view takes its host keys from these
+files and leaves device SSH trust databases untouched.
+
+A `# secret: NAME` marker above a concrete managed Host binds a key from
+that store's vault. A matching legacy `IdentityFile .../secrets/NAME.pub`
+is a hint only. The launcher takes the public key from the verified vault,
+loads the matching encrypted private key into a short-lived private agent
+and offers that key only for the selected destination or bound hop.
+It checks the credential and route again after unlocking. Plaintext key
+material and the vault identity travel in process memory or inherited pipes.
+The vault tools must come from the OS package, the OS account's local
+installer directory or a canonical Homebrew age package. Directory modes
+and ACLs must protect those tools. A canonical macOS Homebrew package may
+use directories writable by the OS admin group within its Homebrew prefix.
+Hostbook also rechecks the executables and plugin after the vault prompt.
+Invoke the Bash and Python launcher with a trusted PATH. The connection's
+private agent closes with its owner even if the launcher is terminated.
+An unbound route uses interactive authentication without ambient keys.
+A password marker uses OpenSSH's native terminal prompt. Registered
+connections never read or supply the stored password or use an external
+askpass program.
+
+Legacy history, groups and undo still use checkout-local aliases and paths.
+Registered list, preview and connect neither read nor rewrite those references.
+A registered selection cannot be used as a legacy group target or undo action.
+Changes to registered mutation and group workflows have their own admission path.
+
+On a device with an approved account, legacy data writers consult that
+account's checkout, Git and state directory identities even when a checkout's
+entire `.hostbook` directory is missing. A sourced helper checks the current
+destination again when it writes. The raw host-block writer uses the opened
+directory for its file update, including in an unrelated legacy repository.
+The guard reads the operating system account's approval independently of
+`HOME` and `HOSTBOOK_DIR`. Warm legacy preview, header, footer and list calls
+use cached rows without running Python. A stale index for a disjoint legacy
+checkout is rebuilt after the cold builder checks the input and output paths.
+Changes to the active SSH configuration invalidate the index.
+
+### Add or import private hosts
+
+`store-add NAME ADDRESS` adds one literal IPv4 or IPv6 address to the approved
+private store. `store-import` reads plain OpenSSH host stanzas from standard
+input. Each stanza needs one new concrete Host and literal HostName; User and
+Port are optional. From a registered checkout, `hostbook add ADDRESS NAME`
+and `hostbook import FILE` use that same private destination. Each accepted
+input creates one source and one local private commit on a clean attached
+branch. Duplicate names, credential annotations and richer import formats
+require separate handling. These commands do not acquire credentials or publish.
+
+### Change a connected shared store's sync mode
+
+Use `store-mode STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY MODE` with
+`two-way` or `receive-only`. The command returns the effective mode and
+current generations. A durable transition fences the selected store, updates
+its effective mode, then releases the fence. Each registry effect advances
+that store's policy generation. An interrupted transition can resume with the
+same mode and the current generations. A quiescent rejected publication with
+a retained candidate is reported in `pending` before the mode changes. Use
+`cancel` to keep the current mode and candidates, or append
+`discard-confirmed ATTEMPT_ID ...` to the requested mode. Discard requires
+every currently reviewed ID; the applied transition retires those exact edits
+and preserves unrelated files and the user's Git index. With one candidate,
+`send-confirmed ATTEMPT_ID` reserves that exact proposal before fencing the
+store. Native Git conditionally sends it outside the gate. A refused send keeps
+the original mode and work. An uncertain send returns `settle_attempt`; use
+`store-settle` with the fenced generations, then repeat `store-mode` to finish.
+The complete retained bundle digest must match its original reservation.
+
+### Edit one registered shared host address
+
+`store-edit-address STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY HOST_ID STAMP`
+accepts one literal IPv4 or unscoped IPv6 address on standard input. Use the
+host ID and current selection stamp from `store-hosts`. This explicit Git-only
+save requires effective two-way mode and the prepared local bare connection.
+It supports a single literal stanza with one HostName and independent literal
+host stanzas in the reviewed sources. Other SSH forms remain available for reading.
+
+On save, Hostbook reads the exact configured branch, compares the selected
+host through intervening first-parent revisions, and builds a direct child
+with a private index. A confirmed store/ref binding, exact base and proposal,
+private incremental Git bundle and sender lease precede the conditional push.
+Each shared store retains at most one unresolved edit. A rejected or uncertain
+operation reports its attempt ID and preserves the checkout and its index.
+A definitively rejected edit must be retried or discarded before saving
+another edit in that store. Run
+`store-mode STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY two-way` to see
+the retained ID. Append `retry ATTEMPT_ID` to conditionally send that exact
+proposal or `discard ATTEMPT_ID` to retire it. Both decisions leave two-way
+mode effective. Use the returned policy generation for subsequent operations.
+An uncertain sender must settle first. Other stores retain independent slots. Accepted publication attempts a clean receive;
+`local: reconciliation-required` preserves an independently dirty checkout.
+The current local receiver supports ordinary POSIX-accessible repositories
+without executable server hooks. Git checks the exact direct branch under its
+native ref transaction lock. This requires Git 2.29 or later on systems that
+support directory traversal through inherited `/dev/fd` handles. On macOS,
+Git must advertise configured hook commands (`git help --config`). The receiver
+checks the system Git first and then verified default Homebrew Git installations. A user can retry pre-admission errors
+with their original editor input. Use the original attempt for reconciliation
+once a publication has been admitted.
+
+After a lost acknowledgement, run
+`store-settle STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY ATTEMPT_ID`
+with the current registry generations. It acquires the original attempt's
+sender lease and checks the original approved repository inode and full ref.
+The exact proposal at that ref with the reserved parent establishes acceptance.
+Any other observed tip after a send remains uncertain. Settlement never resends or changes the checkout.
+
+### Receive a registered Git update
+
+`store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY` receives an
+existing full branch from a prepared local bare Git repository. A clean,
+regular attached checkout can fast-forward its validated host sources and v1
+identity in receive-only or two-way mode. The command uses the operating
+system account's existing filesystem access. Dirty or divergent checkouts,
+pending recovery, and unsupported Git configuration block the receive.
+
+A locked existing vault can receive a new password record or metadata for an
+existing record. Replacing an existing password ciphertext requires
+`store-receive STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY --verify-vault`.
+The command prompts on the terminal, opens the original accepted vault envelope,
+checks its public recipient, and decrypts each new or changed ciphertext
+in memory before updating the checkout. A failed unlock or decryption
+preserves the previous active password. Both snapshots must carry the
+same vault public recipient, password envelope and recovery envelope. Each
+changed record needs a supported password metadata file and one complete
+armored X25519 age archive. The installed age tools inspect the recipient
+syntax, envelope types and archive structure. New records first received while
+locked have structural validation only. Use `--verify-vault` on the incoming
+update to confirm that the intended identity can decrypt them. The previous bytes remain available in Git and local recovery.
+Key updates, deletions, vault creation and envelope replacements require
+separate handling. Network transports require a registered network provider.
+A verified terminal publication/control or cancellation before any transaction
+effect can release its fence. Transfer or migration completion/compensation
+after effects requires protected recovery evidence. Receive preserves those
+fences while that reconciliation is unavailable. A provisional migration with
+unknown resource overlap blocks admission across the account.
+
+Prepare `state/stores/v1/STORE_ID/connection/CONNECTION/target.json` in the
+approved account. The generation directory is owner-only and the binding is
+an owner-only regular file. Its exact fields are integer `version` (1),
+`store_id`, `target_id`, integer `connection_generation`, full `ref`, numeric
+`uid`, and `bare_repository` with canonical absolute `path`, `device` and
+`inode`. The binding must match this entry in the registry. Keep the bare
+repository beneath the verified account root, outside registered checkouts,
+Git directories, state and recovery. The sender reads from an open descriptor
+for that repository. An unknown binding fails before applying changes.
+
+A receive interrupted at local fast-forward retains `receive.pending` under
+the verified store directory across connection-generation changes. Older
+connection-scoped records also fence the store. It contains the two Git revisions and
+their original store and target binding. Preserve it and compare the branch,
+index and worktree against both revisions before any repair. Pending state
+blocks subsequent receives. The original revision remains accessible in Git.
+Git constructs the candidate index and objects in private staging. Hostbook
+updates the verified checkout and Git directory through open descriptors under
+the store gate and native index and branch locks. The full resulting tree is
+limited to 4096 regular files, 4 MiB per file and 64 MiB overall.
+The checkout and its source directories must share a filesystem with the
+approved recovery root. Each receive exchanges changed files atomically with
+numbered files in the private recovery root at `receives/RECOVERY_ID/`.
+Its `manifest.json` maps those slots to the original paths and revisions.
+Original inodes are retained there even after success so an editor with an
+open file can finish its save. If an editor replaces a file during receive,
+Hostbook restores the displaced edit and keeps evidence for reconciliation.
+These local captures stay outside Git and require explicit retention review.
+Host sources and their resulting paths must match the validated sidecar.
+Receive requires a conventional non-shallow Git directory.
 
 `_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
 records local connection status as `unchecked`. It writes only the

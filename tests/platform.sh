@@ -78,12 +78,13 @@ check 'index notices edits when the host directory contains spaces' '(
 )'
 check 'home Ctrl-Y callback quotes an apostrophe in the state directory' '(
   STATE="$T/state space$(printf "\047")s"; mkdir -p "$STATE"; unset HOSTBOOK_ONLY
+  tmpd(){ mkdir -p "$STATE/session" && printf "%s" "$STATE/session"; }
   cmd_list(){ :; }; cmd_header(){ :; }; cmd_footer(){ :; }
   fzf(){ local arg command; for arg in "$@"; do
     case $arg in ctrl-y:*) command=${arg#*execute-silent(}; command=${command%%)+transform:*}; bash -c "$command" || :;; esac
     done; return 130; }
   home
-  [ -f "$STATE/share-request" ]
+  [ -f "$STATE/session/share-request" ]
 )'
 # Failed host/secret changes must restore their own files without resetting local work.
 change_fixture(){
