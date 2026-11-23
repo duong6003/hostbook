@@ -34,8 +34,11 @@ def private_destination(account):
 def admitted_hosts(document):
     require(0 < len(document) <= JSON_LIMIT, "private host input exceeds size limit")
     records, current = [], None
-    for line in document.decode().splitlines():
-        text = line.strip()
+    physical = document.decode().replace("\r\n","\n")
+    require(not re.search(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]",physical),
+            "plain host imports require LF or CRLF lines")
+    for line in physical.split("\n"):
+        text = line.strip(" \t")
         if not text:
             continue
         if text.startswith("#"):
@@ -134,7 +137,8 @@ def add_private(load, document):
             require(fetch_from_fd(stage,repo,ref,"refs/hostbook/base")==base,"private branch changed")
         before = tree(stage,base,git)
         tip,host_ids = private_commit(stage,base,store,records,document)
-        after,changes = verify_incoming(stage,tip,base,store,local)
+        requested = {row["name"]:{key:value for key,value in row.items() if key != "name"} for row in records}
+        after,changes = verify_incoming(stage,tip,base,store,local,requested)
         prepare_adoption(stage,original_index,before,base,tip)
         with store_writer(load,store,expected) as (actual,current,state,writer):
             require(actual==account and current==ctx,"private registration changed")

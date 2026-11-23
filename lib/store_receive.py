@@ -181,7 +181,7 @@ def absolute_directory(path):
         os.close(root)
 
 
-def verify_incoming(stage, tip, base, store_id, local):
+def verify_incoming(stage, tip, base, store_id, local, requested=None):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
     incoming_files = tree(stage, tip, git)
@@ -215,7 +215,10 @@ def verify_incoming(stage, tip, base, store_id, local):
     prepared, _ = managed_credentials(files, incoming["hosts"])
     with ssh_view(prepared, local) as config:
         for host in incoming["hosts"]:
-            effective(config, host["name"])
+            route = effective(config, host["name"])
+            if requested and host["name"] in requested:
+                for key, value in requested[host["name"]].items():
+                    require(route[key] == value, "imported host differs from the reviewed OpenSSH route")
     previous = parse_json(git(stage, "show", base + ":" + IDENTITY))
     require(incoming == previous or incoming["generation"] > previous["generation"],
             "incoming identity generation did not advance")

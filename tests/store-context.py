@@ -748,6 +748,13 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(snapshot(private),saved)
         self.assertEqual([snapshot(path) for path in (f.store,self.root/"shared b",f.remote)],before)
 
+    def test_private_import_uses_native_physical_lines_for_literal_host_fields(self):
+        from store_private import admitted_hosts
+        self.assertEqual(admitted_hosts(b"Host db\r\n  HostName 192.0.2.1\r\n")[0]["hostname"],"192.0.2.1")
+        for hidden in ("\r","\v","\f","\x85","\u2028","\u2029"):
+            with self.subTest(hidden=repr(hidden)), self.assertRaises(StoreContextError):
+                admitted_hosts(("Host db\n# note"+hidden+"  HostName 192.0.2.66\n").encode())
+
     def test_mode_switch_changes_only_selected_registration_and_fences_stale_callbacks(self):
         f = self.prepare_receive()
         self.assertEqual(f.receive().returncode, 0)
