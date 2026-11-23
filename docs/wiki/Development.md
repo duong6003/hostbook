@@ -106,7 +106,13 @@ fixture pipe used by `_store_context`.
 opens the selected registered route. It rechecks the current listing
 snapshot and runs native OpenSSH with a private copy of the same configuration
 for the target and its ProxyJump children. The scoped connection disables
-ambient keys, the ambient agent and control-socket reuse. At this checkpoint
+ambient keys, the ambient agent and control-socket reuse. Before connecting,
+provision `known_hosts` in that store's private state `ssh` directory with the
+approved host keys for the destination and any jumps. You can separately stage
+`global_known_hosts` there to add approved defaults. Use owner-only regular
+files. Hostbook snapshots both files, requires strict OpenSSH host-key checks
+and rejects host key changes. The scoped view takes its host keys from these
+files and leaves device SSH trust databases untouched. At this checkpoint
 it supports interactive authentication for routes without managed credentials.
 A store with a managed credential marker needs the registered vault consumer.
 

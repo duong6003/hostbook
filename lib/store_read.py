@@ -19,7 +19,7 @@ from store_context import (
 
 SSH = "/usr/bin/ssh"
 ROUTES = "routes.json"
-ROUTE_VERSION = 2
+ROUTE_VERSION = 3
 MAX_ROUTE_BYTES = 16 * 1024 * 1024
 ROUTE_FIELDS = {"hostname", "user", "port", "proxyjump", "name"}
 STAMP = re.compile(r"[0-9a-f]{64}")
@@ -29,7 +29,7 @@ SSH_OPTIONS = frozenset("""
     passwordauthentication port preferredauthentications proxyjump pubkeyauthentication
     requesttty serveralivecountmax serveraliveinterval tcpkeepalive user
 """.split())
-LOCAL_OPTIONS = SSH_OPTIONS | {"globalknownhostsfile", "userknownhostsfile", "stricthostkeychecking"}
+LOCAL_OPTIONS = SSH_OPTIONS | {"stricthostkeychecking"}
 DIRECTIVE = re.compile(r"([A-Za-z][A-Za-z0-9]*)(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)")
 SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
 SSH_HOST = re.compile(r"(?:[A-Za-z0-9_.:\[\]-]|%h)+")
@@ -81,18 +81,23 @@ def snapshot_config(contents, local=False):
             require(len(args) == 1 and pattern.fullmatch(args[0]) and not args[0].startswith("-"),
                     f"invalid SSH directive: {option}")
         elif option == "stricthostkeychecking":
-            require(args in (["yes"], ["ask"]), "invalid SSH directive: StrictHostKeyChecking")
+            require(args == ["yes"], "invalid SSH directive: StrictHostKeyChecking")
     return "\n".join(output).encode("utf-8")
 
 
 def local_inputs(state_fd, store_id):
-    stack = (state_fd, ("stores", "v1", store_id, "ssh"))
     try:
-        with open_directory(*stack) as fd:
+        with open_directory(state_fd, ("stores", "v1", store_id, "ssh")) as fd:
             require_private_directory(fd, "approved SSH inputs")
-            return read_file(fd, "config", JSON_LIMIT, require_approval_file)
+            selected = []
+            for name in ("config", "known_hosts", "global_known_hosts"):
+                try:
+                    selected.append(read_file(fd, name, JSON_LIMIT, require_approval_file))
+                except FileNotFoundError:
+                    selected.append(None)
+            return tuple(selected)
     except FileNotFoundError:
-        return b""
+        return None, None, None
 
 
 def route_inputs(account, context, binding, root_fd, state_fd, *, collect=False):
@@ -104,7 +109,8 @@ def route_inputs(account, context, binding, root_fd, state_fd, *, collect=False)
     fingerprint = hashlib.sha256(json.dumps(
         [ROUTE_VERSION, asdict(context), identity], default=os.fspath, sort_keys=True
     ).encode())
-    fingerprint.update(local)
+    for contents in local:
+        fingerprint.update(b"-" if contents is None else hashlib.sha256(contents).digest())
     return fingerprint.hexdigest(), identity["hosts"], list(files.values()) if collect else None, local
 
 
@@ -117,11 +123,20 @@ def ssh_view(files, local):
     with tempfile.TemporaryDirectory(prefix="hb-route-", dir="/tmp") as folder:
         root = Path(folder)
         config = root / "config"
+        defaults, known_hosts, global_known_hosts = local
+        known_hosts_copy = root / "known_hosts"
+        known_hosts_copy.write_bytes(known_hosts or b"")
+        global_copy = "none"
+        if global_known_hosts is not None:
+            global_copy = root / "global_known_hosts"
+            global_copy.write_bytes(global_known_hosts)
         lines = [
+            f"UserKnownHostsFile {known_hosts_copy}", f"GlobalKnownHostsFile {global_copy}",
+            "StrictHostKeyChecking yes", "UpdateHostKeys no",
             "CanonicalizeHostname no", "ControlMaster no", "ControlPath none", "IdentityAgent none",
             "IdentitiesOnly yes", "IdentityFile none", "ForwardAgent no", "ClearAllForwardings yes",
         ]
-        for number, contents in enumerate(files + [local]):
+        for number, contents in enumerate(files + [defaults or b""]):
             copy = root / f"input-{number}.conf"
             copy.write_bytes(snapshot_config(contents, local=number == len(files)))
             lines.append(f"Include {copy}")
@@ -205,6 +220,7 @@ def connect_route(load_account, store_id, expected, host_id, stamp):
 
     selection = selected_route(load_account, store_id, expected, host_id, stamp, collect=True)
     route, files, local = selection
+    require(local[1] is not None, "registered SSH requires store-local known_hosts")
     require(not any(SECRET_COMMENT.search(contents) for contents in files),
             "store SSH credential binding requires an approved login")
     alias = route["name"]

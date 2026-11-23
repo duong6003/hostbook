@@ -541,27 +541,29 @@ Host local-hop
     def test_installed_callback_connects_through_the_selected_local_jump(self):
         self.launcher = self.installed_launcher()
         host_id = new_id()
-        context = self.write_route(1, host_id, """Host db
-    HostName 198.51.100.10
-    User destination
-    ProxyJump "approved-hop"
-""")
-        with socket.socket() as hop:
+        with socket.socket() as hop, socket.socket() as target:
             hop.bind(("127.0.0.1", 0))
             hop.listen()
             hop.settimeout(5)
+            target.bind(("127.0.0.1", 0))
+            target.listen()
+            target.setblocking(False)
+            context = self.write_route(1, host_id, f"""Host db
+    HostName 127.0.0.1
+    Port {target.getsockname()[1]}
+    User destination
+    ProxyJump "approved-hop"
+""")
             local = self.state / f"stores/v1/{context.store_id}/ssh/config"
             local.parent.mkdir(parents=True, mode=0o700)
             local.parent.parent.chmod(0o700)
-            known_hosts = self.root / "known_hosts"
-            known_hosts.touch()
+            known_hosts = local.parent / "known_hosts"
+            known_hosts.touch(mode=0o600)
             local.write_text(f"""Host approved-hop
     HostName 127.0.0.1
     User jump
     Port {hop.getsockname()[1]}
 Host *
-    GlobalKnownHostsFile none
-    UserKnownHostsFile "{known_hosts}"
     StrictHostKeyChecking yes
     ConnectTimeout 2
 """)
@@ -589,11 +591,55 @@ Host *
             self.assertEqual(result.returncode, 255, result.stderr)
             self.assertEqual(len(received), 1)
             self.assertTrue(received[0].startswith(b"SSH-2.0-OpenSSH_"))
+            with self.assertRaises(BlockingIOError):
+                target.accept()
 
             local.write_text(local.read_text().replace("User jump", "User stale"))
             stale = self.route_callback(context, "_store_connect", host_id, stamp)
             self.assertEqual(stale.returncode, 65)
             self.assertIn("selection changed", stale.stderr)
+
+    def test_registered_connect_requires_protected_store_key_trust_before_ssh(self):
+        from store_read import connect_route, refresh_routes
+
+        host_id = new_id()
+        context = self.write_route(1, host_id, "Host db\n    HostName 192.0.2.5\n")
+        load = lambda: self.account
+        real_run = subprocess.run
+        launches = []
+
+        def intercept(command, *args, **kwargs):
+            if command[0] != "/usr/bin/ssh" or "-G" in command:
+                return real_run(command, *args, **kwargs)
+            launches.append(command)
+            settings = real_run([*command[:3], "-G", *command[3:]], capture_output=True,
+                                text=True, check=True, timeout=5).stdout
+            fields = dict(line.split(" ", 1) for line in settings.splitlines())
+            expected_tags = {"stricthostkeychecking": "true", "updatehostkeys": "false"}
+            for key, value in expected_tags.items():
+                self.assertIn(fields[key], (value, "yes" if value == "true" else "no"))
+            self.assertEqual(Path(fields["userknownhostsfile"]).read_bytes(), b"local-trust-fixture\n")
+            self.assertEqual(Path(fields["globalknownhostsfile"]).read_bytes(), b"global-trust-fixture\n")
+            return subprocess.CompletedProcess(command, 0)
+
+        def listing():
+            return refresh_routes(load, context.store_id, self.generations).strip().split("\t")[3]
+
+        with patch("subprocess.run", side_effect=intercept):
+            with self.assertRaisesRegex(StoreContextError, "requires store-local known_hosts"):
+                connect_route(load, context.store_id, self.generations, host_id, listing())
+            self.assertEqual(launches, [])
+
+            ssh = self.state / f"stores/v1/{context.store_id}/ssh"
+            ssh.mkdir(mode=0o700)
+            known_hosts = ssh / "known_hosts"
+            known_hosts.write_bytes(b"local-trust-fixture\n")
+            known_hosts.chmod(0o600)
+            globals_ = ssh / "global_known_hosts"
+            globals_.write_bytes(b"global-trust-fixture\n")
+            globals_.chmod(0o600)
+            self.assertEqual(connect_route(load, context.store_id, self.generations, host_id, listing()), 0)
+            self.assertEqual(len(launches), 1)
 
     def test_installed_callback_rejects_duplicate_and_malformed_host_ids(self):
         self.launcher = self.installed_launcher()
