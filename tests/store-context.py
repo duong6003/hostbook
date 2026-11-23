@@ -839,6 +839,46 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(f.git(f.remote,"rev-parse",entry["connection"]["ref"]), f.tip)
         self.assertEqual(json.loads(settle().stdout)["outcome"], "accepted")
 
+    def test_settle_requires_exact_tip_instead_of_private_proposal_reachable_by_merge(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        def ambiguous(stage, _target, _lease, ref, base, proposed, _edit, start):
+            start()
+            f.git(stage, "push", str(f.remote), proposed + ":refs/heads/unrelated")
+            merge = f.git(f.remote, "commit-tree", base + "^{tree}", "-p", base, "-p", proposed, "-m", "Other merge")
+            f.git(f.remote, "update-ref", ref, merge, base)
+            return "uncertain"
+        with patch.object(store_publish, "send", side_effect=ambiguous):
+            result = edit()
+        self.assertEqual(store_publish.settle(lambda:self.account, self.entries[1]["store_id"], self.generations,
+                                             result["attempt_id"])["outcome"], "uncertain")
+
+    def test_publish_revision_keeps_one_link_if_selector_update_is_interrupted(self):
+        import store_publish
+        f, edit, _ = self.prepare_edit()
+        pid = os.fork()
+        if pid == 0:
+            original_link, original_rename = os.link, store_publish.rename_guarded
+            def link(source, dest, **kwargs):
+                original_link(source, dest, **kwargs)
+                if dest == "2.json":
+                    os._exit(77)
+            def rename(old_dir, old, new_dir, new, **kwargs):
+                original_rename(old_dir, old, new_dir, new, **kwargs)
+                if new == "2.json":
+                    os._exit(77)
+            try:
+                with patch.object(os, "link", side_effect=link), patch.object(store_publish, "rename_guarded", side_effect=rename):
+                    edit()
+            finally:
+                os._exit(78)
+        self.assertEqual(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]), 77)
+        control = next((self.recovery / "control").iterdir())
+        self.assertEqual((control / "records/2.json").stat().st_nlink, 1)
+        attempt = control.name
+        self.assertEqual(store_publish.settle(lambda:self.account, self.entries[1]["store_id"],
+                                             self.generations, attempt)["outcome"], "accepted")
+
     def test_settle_absent_unknown_candidate_preserves_uncertainty_and_bundle(self):
         import store_publish
         f, edit, _ = self.prepare_edit()

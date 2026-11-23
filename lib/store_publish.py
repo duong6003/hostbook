@@ -179,7 +179,7 @@ def advance(recovery, account, original, outcome):
             name = f"{n+1}.json"
             with staged_local_file(control_fd, name, json_bytes(rec)) as temp:
                 sync_named(control_fd, temp)
-                os.link(temp, name, src_dir_fd=control_fd, dst_dir_fd=history, follow_symlinks=False)
+                rename_guarded(control_fd, temp, history, name, exchange=False)
                 sync_local(history)
             select_record(control_fd, rec)
 
@@ -450,7 +450,7 @@ def observe_attempt(account, edit, original, evidence):
                 tip = fetch_from_fd(stage, directory, evidence["ref"], "refs/hostbook/observed")
                 require(tip == observed == direct_ref(directory, evidence["ref"]), "original branch changed during fetch")
                 proposal = original["detail"]["proposed_oid"]
-                if git_result(stage, "merge-base", "--is-ancestor", proposal, tip)[0] == 0:
+                if tip == proposal and git(stage, "show", "-s", "--format=%P", proposal).strip().decode() == original["detail"]["base_oid"]:
                     return "accepted"
     return "uncertain"
 

@@ -169,8 +169,8 @@ After a lost acknowledgement, run
 `store-settle STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY ATTEMPT_ID`
 with the current registry generations. It acquires the original attempt's
 sender lease and checks the original approved repository inode and full ref.
-A proposal reachable from that ref establishes acceptance. An absent proposal
-after a send remains uncertain. Settlement never resends or changes the checkout.
+The exact proposal at that ref with the reserved parent establishes acceptance.
+Any other observed tip after a send remains uncertain. Settlement never resends or changes the checkout.
 
 ### Receive a registered Git update
 
