@@ -522,8 +522,8 @@ def index_rows(checkout_fd, store_id):
 
 
 @contextmanager
-def index_directory(state_fd, parts):
-    # stores/v1 already belongs to the verified registry. Create only derived directories.
+def store_state_directory(state_fd, parts):
+    # stores/v1 already belongs to the verified registry. Create only scoped state.
     with ExitStack() as directories:
         fd = state_fd
         for part in parts[:2]:
@@ -535,8 +535,37 @@ def index_directory(state_fd, parts):
             except FileExistsError:
                 pass
             fd = directories.enter_context(open_directory(fd, (part,)))
-            require_private_directory(fd, "index")
+            require_private_directory(fd, "store state")
         yield fd
+
+
+def acquire_local_lock(fd, reason):
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        raise StoreContextError(reason) from exc
+
+
+@contextmanager
+def staged_local_file(directory_fd, name, contents):
+    pending = f".{name}.{uuid4()}.tmp"
+    fd = os.open(pending, os.O_WRONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory_fd)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(contents)
+        yield pending
+    finally:
+        try:
+            os.unlink(pending, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+
+
+def verify_state_directory(state_fd, parts, expected_fd, reason):
+    with open_directory(state_fd, parts) as current_fd:
+        require_private_directory(current_fd, "store state")
+        current, expected = os.fstat(current_fd), os.fstat(expected_fd)
+        require((current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino), reason)
 
 
 def refresh_store_index(load_account, store_id, expected):
@@ -545,35 +574,53 @@ def refresh_store_index(load_account, store_id, expected):
     with resolved_store(account, store_id, expected) as (context, binding, root_fd, state_fd):
         parts = path_parts(account.state.path, context.index.parent)
         checkout_parts = path_parts(account.root.path, binding.root.path)
-        with index_directory(state_fd, parts) as index_fd:
-            try:
-                fcntl.flock(index_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise StoreContextError("store index is already being refreshed") from exc
+        with store_state_directory(state_fd, parts) as index_fd:
+            acquire_local_lock(index_fd, "store index is already being refreshed")
             with bound_directory(root_fd, checkout_parts, binding.root, "checkout binding mismatch") as checkout_fd:
                 snapshot, rows = index_rows(checkout_fd, store_id)
-            pending = f".index.{uuid4()}.tmp"
-            fd = os.open(pending, os.O_WRONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=index_fd)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    stream.write(rows)
+            with staged_local_file(index_fd, context.index.name, rows.encode("utf-8")) as pending:
                 require(load_account() == account, "store approval changed during index refresh")
                 with resolved_store(account, store_id, expected) as (current, actual, current_root, current_state):
                     require(current == context and actual == binding, "store binding changed during index refresh")
                     with bound_directory(current_root, checkout_parts, binding.root,
                                          "checkout binding mismatch") as checkout_fd:
                         require(index_rows(checkout_fd, store_id)[0] == snapshot, "index inputs changed during refresh")
-                    with open_directory(current_state, parts) as current_fd:
-                        require_private_directory(current_fd, "index")
-                        require(directory_binding(context.index.parent, current_fd) ==
-                                directory_binding(context.index.parent, index_fd), "index directory changed")
+                    verify_state_directory(current_state, parts, index_fd, "index directory changed")
                     os.replace(pending, context.index.name, src_dir_fd=index_fd, dst_dir_fd=index_fd)
-            finally:
-                try:
-                    os.unlink(pending, dir_fd=index_fd)
-                except FileNotFoundError:
-                    pass
     return rows
+
+
+@contextmanager
+def store_writer(load_account, store_id, expected):
+    """Serialize local effects for one store. The lock supplies no write authority."""
+    account = load_account()
+    with resolved_store(account, store_id, expected) as (context, _, _, state_fd):
+        lock_parts = path_parts(account.state.path, context.writer_lock)
+        with store_state_directory(state_fd, lock_parts) as lock_fd:
+            # Keep the directory inode in place. Closing the descriptor releases the lease.
+            acquire_local_lock(lock_fd, "store writer is busy")
+            yield account, context, state_fd, lock_fd
+
+
+def refresh_store_status(load_account, store_id, expected):
+    """Record the current local binding without claiming a synchronization result."""
+    with store_writer(load_account, store_id, expected) as (account, context, state_fd, lock_fd):
+        status = {
+            "store_id": store_id, "connection_generation": expected.connection,
+            "effective_mode": context.effective_mode, "state": "unchecked",
+        }
+        status_parts = path_parts(account.state.path, context.status.parent)
+        lock_parts = path_parts(account.state.path, context.writer_lock)
+        with store_state_directory(state_fd, status_parts) as status_fd:
+            contents = (json.dumps(status) + "\n").encode("utf-8")
+            with staged_local_file(status_fd, context.status.name, contents) as pending:
+                require(load_account() == account, "store approval changed during status refresh")
+                with resolved_store(account, store_id, expected) as (current, _, _, current_state):
+                    require(current == context, "store binding changed during status refresh")
+                    verify_state_directory(current_state, lock_parts, lock_fd, "store writer directory changed")
+                    verify_state_directory(current_state, status_parts, status_fd, "store status directory changed")
+                    os.replace(pending, context.status.name, src_dir_fd=status_fd, dst_dir_fd=status_fd)
+    return status
 
 
 def parse_directory_binding(value):
@@ -798,15 +845,19 @@ def main(args):
                       else approve_account(home, root, args[2]))
             print(json.dumps(result))
             return 0
-        refresh_index = bool(args and args[0] == "_refresh_store_index")
-        if args and args[0] in ("_store_context", "_refresh_store_index"):
+        action = args[0] if args else None
+        refresh = action in ("_refresh_store_index", "_refresh_store_status")
+        if refresh or action == "_store_context":
             args = args[1:]
-        if refresh_index or args:
+        if refresh or args:
             require(len(args) == 5, "store ID and four generations are required")
             expected = Generations(*(int(value) for value in args[1:]))
             home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
-            if refresh_index:
+            if action == "_refresh_store_index":
                 sys.stdout.write(refresh_store_index(lambda: load_approved_account(home), args[0], expected))
+                return 0
+            if action == "_refresh_store_status":
+                print(json.dumps(refresh_store_status(lambda: load_approved_account(home), args[0], expected)))
                 return 0
             account, store_id = load_approved_account(home), args[0]
         else:

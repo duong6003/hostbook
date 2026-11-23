@@ -82,6 +82,18 @@ Quoted or escaped `Host` lists require the scoped SSH resolver. A stale associat
 index intact and the command reports failure. Effective SSH settings and
 integration with the search UI are later work.
 
+`_refresh_store_status STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY`
+records local connection status as `unchecked`. It writes only the
+selected store and connection generation's local status file after
+revalidating the binding. The status supplies no remote result.
+
+Registered stores use a native descriptor lock on the private `sync.lock`
+directory. Its scope is the store ID across generations. A second operation
+requiring that store's writer lock fails as busy while another store can
+progress. Closing the descriptor releases the lock and leaves its directory in place. This lock
+serializes cooperating local operations and does not grant mutation or
+publication authority. The legacy single-checkout lock runs independently.
+
 The test suite's installed account case requires a disposable system
 account whose effective home is an empty `/fixture-home`. Set
 `HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.

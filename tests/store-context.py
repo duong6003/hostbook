@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import subprocess
 import sys
@@ -266,6 +267,16 @@ class StoreContextTest(unittest.TestCase):
         self.assertFalse(self.resolve(0).index.exists())
         self.assertFalse(self.resolve(2).index.exists())
 
+        refreshed = subprocess.run([launcher, "_refresh_store_status", store_id, "1", "2", "3", "4"],
+                                   cwd=elsewhere, env=env, stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=10)
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        status = json.loads(refreshed.stdout)
+        self.assertEqual(status["state"], "unchecked")
+        self.assertEqual(json.loads(self.resolve(1).status.read_text()), status)
+        self.assertFalse(self.resolve(0).status.exists())
+        self.assertFalse(self.resolve(2).status.exists())
+
         other = json.loads(self.registry.read_text())
         other["device_id"] = new_id()
         original = self.registry.read_bytes()
@@ -447,6 +458,94 @@ class StoreContextTest(unittest.TestCase):
                 refresh(load, context.store_id, self.generations)
         self.assertEqual(context.index.read_bytes(), before[context.index.relative_to(self.root)][1])
         self.assertEqual(list(context.index.parent.iterdir()), [context.index])
+
+    def test_writer_lock_and_status_are_isolated_across_processes(self):
+        home = self.root / "approved home"
+        home.mkdir(mode=0o700)
+        self.write_local_approval(home)
+        private, shared_a, shared_b = [self.resolve(index) for index in range(3)]
+
+        def refresh(context):
+            return store_context.refresh_store_status(lambda: self.account, context.store_id,
+                                                      context.generations)
+
+        refresh(private)
+        initial_a = shared_a.status.parent
+        script = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from store_context import Generations, load_approved_account, store_writer
+with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3], Generations(1, 2, 3, 4)):
+    print("held", flush=True)
+    sys.stdin.read()
+"""
+        lib_dir = Path(__file__).resolve().parents[1] / "lib"
+        with subprocess.Popen([sys.executable, "-B", "-c", script, str(lib_dir), str(home), shared_a.store_id],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as worker:
+            try:
+                self.assertTrue(select.select([worker.stdout], [], [], 5)[0], "writer did not acquire A")
+                self.assertEqual(worker.stdout.readline().strip(), "held")
+                before = snapshot(self.root)
+                with self.assertRaisesRegex(StoreContextError, "store writer is busy"):
+                    refresh(shared_a)
+                self.assertEqual(snapshot(self.root), before)
+                self.assertFalse(initial_a.exists())
+
+                b = refresh(shared_b)
+                self.assertEqual(b["store_id"], shared_b.store_id)
+                self.assertEqual(json.loads(shared_b.status.read_text()), b)
+                self.assertFalse(shared_a.status.exists())
+                self.assertEqual(snapshot(self.root)[private.status.relative_to(self.root)],
+                                 before[private.status.relative_to(self.root)])
+                self.entries[1]["connection_generation"] += 1
+                self.save_registry()
+                current = self.resolve(1, generations=replace(self.generations, connection=4))
+                self.assertEqual(current.writer_lock, shared_a.writer_lock)
+                self.assertNotEqual(current.status, shared_a.status)
+                with self.assertRaisesRegex(StoreContextError, "store writer is busy"):
+                    refresh(current)
+                self.assertFalse(current.status.exists())
+            finally:
+                worker.stdin.close()
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait()
+        self.assertEqual(worker.returncode, 0)
+
+        before = snapshot(self.root)
+        a = refresh(current)
+        self.assertEqual(a["state"], "unchecked")
+        self.assertEqual(a["connection_generation"], 4)
+        self.assertEqual(json.loads(current.status.read_text()), a)
+        self.assertFalse(shared_a.status.exists())
+        after = snapshot(self.root)
+        scope = current.status.parent.parent.relative_to(self.root)
+        self.assertEqual({k: v for k, v in after.items() if k != scope and scope not in k.parents},
+                         {k: v for k, v in before.items() if k != scope and scope not in k.parents})
+
+    def test_status_refresh_rejects_connection_change_before_publication(self):
+        context = self.resolve(1)
+        refresh = store_context.refresh_store_status
+        initial = refresh(lambda: self.account, context.store_id, context.generations)
+        calls = 0
+
+        def load():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                self.entries[1]["connection_generation"] += 1
+                self.save_registry()
+            return self.account
+
+        with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+            refresh(load, context.store_id, context.generations)
+        self.assertEqual(json.loads(context.status.read_text()), initial)
+        self.assertEqual(list(context.status.parent.iterdir()), [context.status])
+        current = self.resolve(1, generations=replace(self.generations, connection=4))
+        self.assertFalse(current.status.exists())
 
     def test_three_contexts_are_independent_and_resolution_does_not_write(self):
         before = snapshot(self.root)
