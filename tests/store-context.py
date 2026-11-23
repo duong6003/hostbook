@@ -362,6 +362,15 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(result.returncode, 65, result.stderr)
         self.assertEqual(snapshot(f.store), before)
 
+    def test_ssh_view_bounds_generated_configuration_across_files(self):
+        import store_read
+        part = b"ProxyJump [fe80::1%en0],a,b,c\n"
+        self.assertLess(2 * len(part), 80)
+        with patch.object(store_read, "MAX_ROUTE_BYTES", 80):
+            with self.assertRaisesRegex(StoreContextError, "size limit"):
+                with store_read.ssh_view([part, part], (None, None, None)):
+                    pass
+
     def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
         launcher = self.installed_launcher()
         elsewhere = self.root / "unrelated directory"

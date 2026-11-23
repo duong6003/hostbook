@@ -78,12 +78,13 @@ def render_jumps(value, *, logical=False, expansion_budget=None):
     return ",".join(rendered)
 
 
-def snapshot_config(contents, local=False):
+def snapshot_config(contents, local=False, limit=JSON_LIMIT):
     import shlex
 
     # Admit data-only directives before OpenSSH sees the view, even in inactive sections.
     output = []
-    remaining = JSON_LIMIT - len(contents)
+    remaining = min(limit, JSON_LIMIT) - len(contents)
+    require(remaining >= 0, "SSH configuration exceeds size limit")
     for line in contents.decode("utf-8").split("\n"):
         output.append(line)
         line = line.rstrip("\r").strip(" \t")
@@ -226,9 +227,13 @@ def ssh_view(files, local):
             "CanonicalizeHostname no", "ControlMaster no", "ControlPath none", "IdentityAgent none",
             "IdentitiesOnly yes", "IdentityFile none", "ForwardAgent no", "ClearAllForwardings yes",
         ]
+        remaining = MAX_ROUTE_BYTES
         for number, contents in enumerate(files + [defaults or b""]):
             copy = root / f"input-{number}.conf"
-            copy.write_bytes(snapshot_config(contents, local=number == len(files)))
+            rendered = snapshot_config(contents, local=number == len(files), limit=remaining)
+            remaining -= len(rendered)
+            require(remaining >= 0, "SSH configuration exceeds size limit")
+            copy.write_bytes(rendered)
             lines.append(f"Include {copy}")
         lines.extend(("Host *", "ConnectTimeout 15"))
         config.write_text("\n".join(lines) + "\n")
