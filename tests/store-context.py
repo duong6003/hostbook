@@ -157,6 +157,19 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertEqual(snapshot(self.root), before)
 
+    def test_legacy_refusal_does_not_load_translations_from_caller(self):
+        app = Path(__file__).resolve().parents[1] / "hostbook"
+        elsewhere = self.root / "caller"
+        translations = elsewhere / "lang"
+        translations.mkdir(parents=True)
+        (translations / "en.sh").write_text("L_err_legacy_store='caller supplied translation'\n")
+        env = dict(os.environ, HOME=str(elsewhere), HOSTBOOK_DIR=str(self.root / "shared a"),
+                   HOSTBOOK_LANG="en", HOSTBOOK_LANG_DIR=str(translations))
+        for command in ([app, "_write"], ["/bin/bash", "-c", '. "$1" _write', "./caller", app]):
+            result = subprocess.run(command, cwd=elsewhere, env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 65)
+            self.assertNotIn(b"caller supplied translation", result.stderr)
+
     def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
         launcher = self.installed_launcher()
         elsewhere = self.root / "unrelated directory"

@@ -60,9 +60,10 @@ private_dir(){ mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 # A v1 checkout requires explicit registration and scoped store operations.
 if [ -e "$DIR/.hostbook" ] || [ -L "$DIR/.hostbook" ]; then
-  HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
+  [ "${BASH_SOURCE:-}" = "$0" ] || return 65
+  HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
   t err_legacy_store >&2; printf '\n' >&2
-  if [ "${BASH_SOURCE:-}" = "$0" ]; then exit 65; else return 65; fi
+  exit 65
 fi
 STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
 SSHCFG=${HOSTBOOK_SSH_CONFIG:-}   # test override for ~/.ssh/config
