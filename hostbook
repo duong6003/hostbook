@@ -8,6 +8,11 @@
 # Local to each machine (not synced): ~/.local/state/hostbook (usage history, index, status).
 #
 # Requires git, fzf >= 0.63, gum >= 0.14, and tmux to open multiple servers. Bash 3.2 compatible.
+# A rejected source must leave the caller's previously loaded helpers and paths intact.
+if [ "${BASH_SOURCE:-}" != "$0" ] && { [ -e "${HOSTBOOK_DIR:-$HOME/ssh-hosts}/.hostbook" ] ||
+                                     [ -L "${HOSTBOOK_DIR:-$HOME/ssh-hosts}/.hostbook" ]; }; then
+  return 65
+fi
 set -u
 # Closing the terminal must end hostbook and its gum/fzf (#4). "trap cleanup EXIT" makes bash defer SIGHUP until the
 # foreground child exits, and gum ignores a revoked terminal. So the terminal's process is this trap-free parent: it

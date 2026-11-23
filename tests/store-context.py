@@ -170,6 +170,26 @@ class StoreContextTest(unittest.TestCase):
             self.assertEqual(result.returncode, 65)
             self.assertNotIn(b"caller supplied translation", result.stderr)
 
+    def test_refusing_source_preserves_existing_store_context(self):
+        app = Path(__file__).resolve().parents[1] / "hostbook"
+        legacy = self.root / "legacy"
+        legacy.mkdir()
+        env = dict(os.environ, HOME=str(legacy), HOSTBOOK_DIR=str(legacy),
+                   HOSTBOOK_LIB_DIR=str(app.parent / "lib"), HOSTBOOK_LANG_DIR=str(app.parent / "lang"))
+        library = self.root / "hostbook-library"
+        library.write_text(app.read_text().split("# ---------- entry point ----------")[0])
+        input_file = self.root / "input"
+        input_file.write_text("Host db\n")
+        marked = self.root / "shared a"
+        before = snapshot(marked)
+        script = ('. "$1" || exit 1; HOSTBOOK_DIR=$2; . "$1" && exit 1; '
+                  '[ "$DIR" = "$HOME" ] && write_host project "$3"')
+        rc = subprocess.run(["/bin/bash", "-c", script, "test", library, marked, input_file],
+                            cwd=marked, env=env, capture_output=True, timeout=5)
+        self.assertEqual(rc.returncode, 0, rc.stderr)
+        self.assertEqual((legacy / "project.conf").read_bytes(), input_file.read_bytes())
+        self.assertEqual(snapshot(marked), before)
+
     def test_installed_callback_uses_its_own_module_and_has_no_write_effects(self):
         launcher = self.installed_launcher()
         elsewhere = self.root / "unrelated directory"
