@@ -158,6 +158,68 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(result.returncode, 65)
         self.assertEqual(snapshot(self.root), before)
 
+    def test_approved_checkout_without_any_marker_refuses_legacy_raw_writers(self):
+        source = Path(__file__).resolve().parents[1]
+        installed = self.root / "guarded app"
+        installed.mkdir()
+        app = installed / "hostbook"
+        disposable_account = os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME") == "1"
+        if disposable_account:
+            import pwd
+            approved_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            self.assertEqual(approved_home,Path("/home/hostbook-fixture"))
+            self.assertTrue(Path("/.dockerenv").exists())
+        else:
+            approved_home = self.root/"approved-home"
+            approved_home.mkdir(mode=0o700)
+        self.write_local_approval(approved_home)
+        body = (source/"hostbook").read_text()
+        if not disposable_account:
+            body = body.replace("local authority_home=~",'local authority_home="' + str(approved_home) + '"')
+        app.write_text(body)
+        app.chmod(0o700)
+        shutil.copytree(source/"lib",installed/"lib")
+        context = installed/"lib/store_context.py"
+        if not disposable_account:
+            context.write_text(context.read_text().replace("Path(pwd.getpwuid(os.geteuid()).pw_dir)", "Path("+repr(str(approved_home))+")"))
+        shutil.copytree(source/"lang",installed/"lang")
+        library = installed/"copied-helpers"
+        library.write_text(body.split("# ---------- entry point ----------")[0])
+        shared = self.root/"shared a"
+        shutil.rmtree(shared/".hostbook")
+        outside = self.root/"legacy"
+        outside.mkdir()
+        block = self.root/"host-input"
+        block.write_text("Host synthetic\n  HostName 192.0.2.9\n")
+        alias = self.root/"retarget"
+        alias.symlink_to(shared,target_is_directory=True)
+        env = dict(os.environ, HOME=str(outside), HOSTBOOK_DIR=str(alias), HOSTBOOK_STATE=str(self.root/"legacy-state"),
+                   HOSTBOOK_LIB_DIR=str(installed/"lib"), HOSTBOOK_LANG_DIR=str(installed/"lang"),
+                   PATH=f"{Path(sys.executable).parent}:/usr/bin:/bin")
+        prior = snapshot(shared)
+        for args in (["_write","team",block],["_bg_sync"],["_vault_init"],["_rename","old","new"],["_import_write",block]):
+            result = subprocess.run([app,*args],cwd=outside,env=env,capture_output=True,timeout=10)
+            self.assertEqual(result.returncode,65,(args,result.stderr))
+            self.assertEqual(snapshot(shared),prior)
+        env["HOSTBOOK_DIR"] = str(outside)
+        commands = '. "$1"; DIR=$2; write_host touched "$3"'
+        result = subprocess.run(["/bin/bash","-c",commands,"fixture",library,alias,block],cwd=outside,env=env,
+                                capture_output=True,timeout=10)
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(snapshot(shared),prior)
+        retain = '. "$1"; HOSTBOOK_DIR=$2; . "$1" && exit 1; [ "$DIR" = "$HOME" ] && write_host old "$3"'
+        kept = subprocess.run(["/bin/bash","-c",retain,"fixture",library,alias,block],cwd=outside,env=env,
+                              capture_output=True,timeout=10)
+        self.assertEqual(kept.returncode,0,kept.stderr)
+        self.assertTrue((outside/"old.conf").exists())
+        (outside/"alias.conf").symlink_to(shared/"physical.conf")
+        denied = subprocess.run([app,"_write","alias",block],cwd=outside,env=env,capture_output=True)
+        self.assertNotEqual(denied.returncode,0)
+        self.assertEqual(snapshot(shared),prior)
+        allowed = subprocess.run([app,"_write","unregistered",block],cwd=outside,env=env,capture_output=True)
+        self.assertEqual(allowed.returncode,0,allowed.stderr)
+        self.assertEqual((outside/"unregistered.conf").read_bytes(),block.read_bytes())
+
     def test_legacy_refusal_does_not_load_translations_from_caller(self):
         app = Path(__file__).resolve().parents[1] / "hostbook"
         elsewhere = self.root / "caller"

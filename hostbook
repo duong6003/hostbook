@@ -8,10 +8,29 @@
 # Local to each machine (not synced): ~/.local/state/hostbook (usage history, index, status).
 #
 # Requires git, fzf >= 0.63, gum >= 0.14, and tmux to open multiple servers. Bash 3.2 compatible.
-# A rejected source must leave the caller's previously loaded helpers and paths intact.
-if [ "${BASH_SOURCE:-}" != "$0" ] && { [ -e "${HOSTBOOK_DIR:-$HOME/ssh-hosts}/.hostbook" ] ||
-                                     [ -L "${HOSTBOOK_DIR:-$HOME/ssh-hosts}/.hostbook" ]; }; then
-  return 65
+resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this shell instead of a subshell
+  local p=$1 l d o=$PWD
+  while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l;; *) case $p in */*) p=${p%/*}/$l;; *) p=$l;; esac;; esac; done
+  case $p in */*) d=${p%/*}; [ -n "$d" ] || d=/;; *) d=.;; esac
+  SELF=; CDPATH= cd -- "$d" 2>/dev/null && SELF=$PWD/${p##*/}; CDPATH= cd -- "$o" 2>/dev/null || :
+}
+legacy_authority_present(){
+  local HOME
+  unset HOME
+  local authority_home=~
+  local approval=$authority_home/.config/hostbook/store-account-v1.json
+  [ -e "$approval" ] || [ -L "$approval" ]
+}
+# Refusing a source must preserve paths and options already set in the caller.
+if [ "${BASH_SOURCE:-}" != "$0" ]; then
+  if [ -e "${HOSTBOOK_DIR:-$HOME/ssh-hosts}/.hostbook" ] || [ -L "${HOSTBOOK_DIR:-$HOME/ssh-hosts}/.hostbook" ]; then
+    return 65
+  fi
+  if legacy_authority_present && ! (
+    resolve_self "${BASH_SOURCE[0]}"
+    command python3 -I -B -S "${SELF%/*}/lib/store_context.py" _legacy_destinations \
+      "${HOSTBOOK_DIR:-$HOME/ssh-hosts}" "${HOSTBOOK_STATE:-}" >/dev/null 2>&1
+  ); then return 65; fi
 fi
 set -u
 # Closing the terminal must end hostbook and its gum/fzf (#4). "trap cleanup EXIT" makes bash defer SIGHUP until the
@@ -30,13 +49,8 @@ FZF_MIN=0.63; GUM_MIN=0.14; AGE_MIN=1.3.0
 REPO_URL=https://github.com/duong6003/hostbook
 
 # Boot runs on every fzf callback: no forks here unless needed (#5).
-resolve_self(){ # path → SELF, absolute with symlinks resolved; cd in this shell instead of a subshell
-  local p=$1 l d o=$PWD
-  while [ -L "$p" ]; do l=$(readlink "$p"); case $l in /*) p=$l;; *) case $p in */*) p=${p%/*}/$l;; *) p=$l;; esac;; esac; done
-  case $p in */*) d=${p%/*}; [ -n "$d" ] || d=/;; *) d=.;; esac
-  SELF=; CDPATH= cd -- "$d" 2>/dev/null && SELF=$PWD/${p##*/}; CDPATH= cd -- "$o" 2>/dev/null || :
-}
-resolve_self "$0"
+resolve_self "${BASH_SOURCE[0]}"
+LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
   _store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive|_store_context|_approve_store_account|_refresh_store_index|_refresh_store_status|_store_hosts|_store_preview|_store_connect|store-hosts|store-preview|store-connect)
@@ -70,6 +84,23 @@ if [ -e "$DIR/.hostbook" ] || [ -L "$DIR/.hostbook" ]; then
   t err_legacy_store >&2; printf '\n' >&2
   exit 65
 fi
+# Check the effective account's independently approved bindings again at cold data-writing helpers.
+# Local HOME isolation keeps a caller-supplied HOME from selecting the authority.
+legacy_destinations(){
+  legacy_authority_present || return 0
+  [ -r "$LEGACY_GUARD_LIB" ] && command python3 -I -B -S "$LEGACY_GUARD_LIB" _legacy_destinations \
+    "$DIR" "${STATE:-${HOSTBOOK_STATE:-}}" "${SEC:-}" "${GRP:-}" "${IDX:-}" "${HIST:-}" \
+    "${GIT_DIR:-}" "${GIT_COMMON_DIR:-}" "${GIT_WORK_TREE:-}" "${GIT_INDEX_FILE:-}" "${GIT_OBJECT_DIRECTORY:-}" \
+    "$@" >/dev/null 2>&1 || return 65
+}
+case ${1:-} in
+  _demo|_list|_preview|_header|_footer|_footers|_suggest|_suggest_host|_parse|_block|_validate|_import_parse|_share_words|_share_pw|_kho_addr) ;;
+  *) if ! legacy_destinations; then
+       [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
+       HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
+       t err_legacy_store >&2; printf '\n' >&2; exit 65
+     fi ;;
+esac
 STATE=${HOSTBOOK_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hostbook}
 SSHCFG=${HOSTBOOK_SSH_CONFIG:-}   # test override for ~/.ssh/config
 IDX=$STATE/index.tsv; HIST=$STATE/history; ST=$STATE/status; FLASH=$STATE/flash
@@ -102,7 +133,13 @@ self_cmd(){ printf 'bash %q' "$SELF"; }
 clip_get(){ if have pbpaste; then pbpaste; elif have wl-paste; then wl-paste; elif have xclip; then xclip -o -selection clipboard; elif have xsel; then xsel -ob; else return 1; fi; }
 sha256(){ if have sha256sum; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 export GIT_OPTIONAL_LOCKS=0   # background git status must not contend for the index lock with another sync
-g(){ git -C "$DIR" "$@"; }
+g(){
+  case ${1:-} in
+    add|checkout|commit|fetch|merge|pull|push|read-tree|rebase|reset|revert|rm|update-ref|write-tree|-c)
+      legacy_destinations "$DIR/.git" || return 65;;
+  esac
+  git -C "$DIR" "$@"
+}
 revert_in_progress(){ g rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1; }
 sshx(){ if [ -n "$SSHCFG" ]; then ssh -F "$SSHCFG" "$@"; else ssh "$@"; fi; }
 scpx(){ if [ -n "$SSHCFG" ]; then scp -F "$SSHCFG" "$@"; else scp "$@"; fi; }
@@ -386,7 +423,7 @@ validate(){ local out; out=$(sshx -G hostbook-validate-probe 2>&1 >/dev/null) &&
 # groups.tsv may have an empty open-mode column; read with IFS=tab collapses adjacent tabs, so split manually
 group_line(){ local line=${1%$'\r'}; GN=${line%%"$TAB"*}; line=${line#*"$TAB"}; GM=${line%%"$TAB"*}; GH=${line#*"$TAB"}; }
 group_field(){ awk -F'\t' -v n="$1" -v c="$2" '{sub(/\r$/,"")} $1==n{print $c; exit}' "$GRP" 2>/dev/null; }
-set_group_mode(){ awk -F'\t' -v OFS='\t' -v n="$1" -v m="$2" '{sub(/\r$/,"")} $1==n{$2=m} {print}' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; }
+set_group_mode(){ legacy_destinations "$GRP.tmp" || return 65; awk -F'\t' -v OFS='\t' -v n="$1" -v m="$2" '{sub(/\r$/,"")} $1==n{$2=m} {print}' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"; }
 
 # ---------- fzf list ----------
 mode_label(){ case $1 in sync|split|tabs) t "mode_$1";; *) t mode_ask;; esac; }
@@ -660,6 +697,7 @@ footer_line(){ # row-type select-count list-width
 # This merger splits files into Host blocks (groups.tsv: rows keyed by group name), then performs a three-way merge by block:
 # only differing edits to the same server on both sides are real conflicts.
 merge_driver(){ # base ours theirs path
+  legacy_destinations "$2" || return 65
   local kind=conf rc; case ${4:-} in *.tsv) kind=tsv;; esac
   # The conflict markers carry a label in the user's own file: this one is data, written in the language in use when merging.
   awk -v kind="$kind" -v prefer="${HOSTBOOK_MERGE_PREFER:-}" -v lm="$(t merge_mine)" -v lt="$(t merge_theirs)" '
@@ -696,6 +734,7 @@ merge_driver(){ # base ours theirs path
   mv "$2.hbmerge" "$2"; return $rc
 }
 ensure_merge_setup(){ # register the merger for the data repo (git config is machine-local; .gitattributes is synced)
+  legacy_destinations || return 65
   [ -d "$DIR/.git" ] || return 0
   revert_in_progress && return 0   # a path-limited commit would clear the revert state
   g config merge.hostbook.name "hostbook: merge per server"   # git config in the user's repo (data, not screen text)
@@ -786,6 +825,7 @@ unlock(){
 # Commit all changes in ~/ssh-hosts if the config is valid.
 # Commit messages ("Gộp với kho", apply_change descriptions…) and the share-file header are data written into the user's repo and files, not screen text: they stay as they are.
 commit_all(){ local msg=$1 e
+  legacy_destinations "$DIR/.git" || return 65
   if revert_in_progress; then set_status invalid "$(t err_undo_restore)"; return 1; fi
   if ! e=$(validate); then set_status invalid "$(printf '%s' "$e" | head -1 | sed "s|$DIR/||")"; return 1; fi
   [ -z "$(g status --porcelain)" ] && return 0
@@ -802,6 +842,7 @@ sync_quiet(){
   return $rc
 }
 sync_locked(){
+  legacy_destinations "$DIR/.git" || return 65
   local before after behind ahead new branch remote_branch remote_head checkpoint e
   ensure_merge_setup || return 1
   commit_all "Sửa ngoài hostbook" || return 1
@@ -959,6 +1000,7 @@ recovery_new(){ od -An -N20 -tu1 /dev/urandom | awk 'BEGIN{s="0123456789ABCDEFGH
 recovery_fmt(){ echo "HB-$(printf '%s' "$1" | sed 's/..../&-/g; s/-$//')"; }
 recovery_norm(){ printf '%s' "$1" | tr 'a-z' 'A-Z' | sed 's/^HB-//' | tr -d ' -'; }
 vault_create(){ # master-password → create the vault and print the recovery code
+  legacy_destinations "$SEC"/* || return 65
   local pw=$1 id rc; [ ! -L "$SEC" ] || return 1; private_dir "$DIR" || return 1; private_dir "$SEC" || return 1
   id=$(age-keygen 2>/dev/null) || return 1
   printf '%s\n' "$id" | age-keygen -y > "$SEC/vault.pub" || return 1
@@ -990,6 +1032,7 @@ show_recovery(){ # code [finished-step line]: a plain text screen, not a frame, 
 }
 # Create the secret vault if absent. Print everything to stderr because this is often called inside $(...).
 vault_init(){
+  legacy_destinations "$SEC"/* || return 65
   [ ! -L "$SEC" ] || { err "$(t err_vault_partial)" >&2; return 1; }
   if vault_started; then
     [ -s "$SEC/vault.pub" ] && [ -s "$SEC/vault.key.age" ] && [ -s "$SEC/vault.recovery.age" ] && return 0
@@ -1007,6 +1050,7 @@ vault_init(){
   return 0
 }
 vault_passwd(){
+  legacy_destinations "$SEC"/* || return 65
   local id pw at0=$UI_AT; id=$(vault_identity) || return 1
   at "${at0:+$at0|}$(t vault_passwd_title)"
   pw=$(ask_new_pw "$(t vault_master_new)" 10) || { UI_AT=$at0; return 1; }
@@ -1014,9 +1058,11 @@ vault_passwd(){
   printf '%s\n' "$id" | age_pw_enc "$pw" > "$SEC/vault.key.age" && save_and_sync "$(t done_master_changed)" && ok "$(t ok_master_changed)"
 }
 vault_new_recovery(){ # identity via stdin → write and print a new code
+  legacy_destinations "$SEC/vault.recovery.age" || return 65
   local rc; rc=$(recovery_new) || return 1; age_pw_enc "$rc" > "$SEC/vault.recovery.age" && recovery_fmt "$rc"
 }
 vault_recover(){ # [code] [new password] (both arguments are for tests only)
+  legacy_destinations "$SEC"/* || return 65
   local code=${1:-} pw=${2:-} id new at0=$UI_AT
   at "${at0:+$at0|}$(t vault_recover_title)"
   [ -n "$code" ] || code=$(ui_field "$(t rec_label)" "" text "$(t rec_rule)"$'\n'"$(t example HB-XXXX-XXXX-XXXX-XXXX-XXXX)") || { UI_AT=$at0; return 1; }
@@ -1053,6 +1099,7 @@ key_prepare(){
   ssh-keygen -lf "$f" | awk '{ t=$NF; gsub(/[()]/,"",t); print $2 "\t" tolower(t) }'
 }
 secret_write_key(){ # name key-file fingerprint type [output-directory]
+  legacy_destinations "${5:-$SEC}/$1.age" "${5:-$SEC}/$1.pub" "${5:-$SEC}/$1.meta" || return 65
   local out=${5:-$SEC}
   ssh-keygen -y -f "$2" > "$out/$1.pub" && chmod 600 "$out/$1.pub" || return 1
   printf 'type=key\nfp=%s\nkeytype=%s\ncreated=%s\n' "$3" "$4" "$(date +%F)" > "$out/$1.meta" || return 1
@@ -1070,6 +1117,7 @@ ask_secret_name(){ # default [preview] [own name to leave out of the taken list]
 }
 # Add a key to the vault. Print the secret name to stdout (the existing name if the fingerprint is already stored).
 secret_add_key(){ # source(clip|gen|path) [name] [replace]
+  legacy_destinations "$SEC"/* || return 65
   local src=$1 name=${2:-} replace=${3:-} d f info fp kt dup def ext oldpub=""
   vault_init || return 1
   d=$(tmpd) || return 1; f=$d/key
@@ -1110,6 +1158,7 @@ secret_add_key(){ # source(clip|gen|path) [name] [replace]
   echo "$name"
 }
 secret_add_password(){ # [name] [password] → print the name
+  legacy_destinations "$SEC"/* || return 65
   local name=${1:-} pw=${2:-}
   vault_init || return 1
   if [ -n "$name" ]; then valid_secret_name "$name" && ! secret_exists "$name" || { err "$(t err_secret_bad "$name")" >&2; return 1; }
@@ -1168,6 +1217,7 @@ legacy_keys(){ # print "path<TAB>server count"
     [ -f "${k/#\~/$HOME}" ] && printf '%s\t%s\n' "$k" "$(awk -F'\t' -v k="$k" '$12=="" && $7==k' "$IDX" | grep -c .)"; done
 }
 migrate_keys_raw(){ # no prompts; print the number of migrated keys
+  legacy_destinations "$DIR"/*.conf "$SEC"/* || return 65
   local k c nm n=0 f full
   ensure_index
   while IFS="$TAB" read -r k c; do
@@ -1289,10 +1339,12 @@ cmd_lock(){
 
 # ---------- secret management ----------
 secret_set_password(){ # name [password]
+  legacy_destinations "$SEC/$1.age" || return 65
   local n=$1 pw=${2:-}; [ -n "$pw" ] || pw=$(ask_new_pw "$(t pw_new_for "$n")" 1) || return 1
   printf '%s\n' "$pw" | secret_enc > "$SEC/$n.age" && save_and_sync "$(t done_pw_changed "$n")" && ok "$(t ok_pw_changed "$n")"
 }
 secret_rename_raw(){ # old new
+  legacy_destinations "$SEC"/* "$DIR"/*.conf || return 65
   local o=$1 n=$2 f e; valid_secret_name "$n" && ! secret_exists "$n" || return 1
   for e in age meta pub; do
     [ ! -f "$SEC/$o.$e" ] || mv "$SEC/$o.$e" "$SEC/$n.$e" || return 1
@@ -1307,6 +1359,7 @@ secret_rename_raw(){ # old new
   return 0
 }
 secret_delete_raw(){ # name: delete the files and remove all login lines written by hostbook for this secret
+  legacy_destinations "$SEC"/* "$DIR"/*.conf || return 65
   local n=${1:?} f ispw="" e; [ "$(secret_meta "$n" type)" = password ] && ispw=1
   [ -f "$SEC/$n.pub" ] && ssh-add -q -d "$SEC/$n.pub" 2>/dev/null
   for f in "$DIR"/*.conf; do [ -f "$f" ] || continue
@@ -1715,8 +1768,10 @@ host_block(){ # name ip user port jump secret tags desc
 }
 # Change a server login method: remove the old login lines from its block and write new ones.
 set_host_secret(){ # server-name secret-name(empty = SSH handles it)
+  legacy_destinations "$DIR"/*.conf || return 65
   local n=$1 sc=${2:-} f l r old oldpw="" ll
   f=$(host_field "$n" 10); l=$(host_field "$n" 11); r=$(block_range "$n"); old=$(host_field "$n" 12)
+  legacy_destinations "$f" "$f.tmp" || return 65
   [ -n "$old" ] && [ "$(secret_meta "$old" type)" = password ] && oldpw=1
   ll=$(tmpd) || return 1; ll=$ll/ll; login_lines "$sc" > "$ll" || return 1
   awk -v s="${r% *}" -v e="${r#* }" -v l="$l" -v sc="$sc" -v oldpw="$oldpw" -v ll="$ll" '
@@ -1732,6 +1787,11 @@ set_host_secret(){ # server-name secret-name(empty = SSH handles it)
 }
 # Write a Host block to <project>.conf before the first wildcard block so SSH prefers server-specific values.
 write_host(){ # project block-file
+  if legacy_authority_present; then
+    [ -r "$LEGACY_GUARD_LIB" ] || return 65
+    command python3 -I -B -S "$LEGACY_GUARD_LIB" _legacy_write_host "$DIR" "$1" "$2" || return 65
+    return 0
+  fi
   local f=$DIR/$1.conf
   if [ -f "$f" ] && grep -qE '^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]].*[*?]' "$f"; then
     awk -v blk="$2" 'BEGIN{ while ((getline l < blk) > 0) b=b l "\n" } !done && /^[ \t]*[Hh][Oo][Ss][Tt][ \t].*[*?]/ { printf "%s\n", b; done=1 } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
@@ -1747,12 +1807,15 @@ block_range(){ local f l; f=$(host_field "$1" 10); l=$(host_field "$1" 11)
 host_shared(){ local f l; f=$(host_field "$1" 10); l=$(host_field "$1" 11); [ "$(awk -v l="$l" 'NR==l{print NF-1; exit}' "$f")" -gt 1 ]; }
 jump_users(){ awk -F'\t' -v n="$1" '{ m=split($6,a,","); for (i=1;i<=m;i++) if (a[i]==n) print $1 }' "$IDX" | tr '\n' ' '; }
 groups_rename(){ # old [new]: rename or remove a server in every group; remove groups left with no servers
+  legacy_destinations "$GRP" "$GRP.tmp" || return 65
   [ -f "$GRP" ] || return 0
   awk -F'\t' -v OFS='\t' -v o="$1" -v n="${2:-}" '{sub(/\r$/,"")} { m=split($3,a," "); out=""; for (i=1;i<=m;i++) { h=(a[i]==o?n:a[i]); if (h!="") out=out (out==""?"":" ") h } $3=out; if (out!="") print }' "$GRP" > "$GRP.tmp" && mv "$GRP.tmp" "$GRP"
 }
 delete_host_raw(){ # name [keep-groups]
+  legacy_destinations "$DIR"/*.conf "$GRP.tmp" || return 65
   local n=$1 f l r
   f=$(host_field "$n" 10); l=$(host_field "$n" 11)
+  legacy_destinations "$f" "$f.tmp" || return 65
   if host_shared "$n"; then
     awk -v l="$l" -v n="$n" 'NR==l { out=$1; for (i=2;i<=NF;i++) if ($i!=n) out=out " " $i; print out; next } { print }' "$f" > "$f.tmp" || return 1
   else r=$(block_range "$n")
@@ -1763,8 +1826,10 @@ delete_host_raw(){ # name [keep-groups]
   [ -n "${2:-}" ] || groups_rename "$n"
 }
 rename_host_raw(){ # old new: rename in the Host line, other servers ProxyJump entries, groups, and history
+  legacy_destinations "$DIR"/*.conf "$GRP.tmp" "$HIST.tmp" || return 65
   local o=$1 n=$2 f l c
   f=$(host_field "$o" 10); l=$(host_field "$o" 11)
+  legacy_destinations "$f" "$f.tmp" || return 65
   awk -v l="$l" -v o="$o" -v n="$n" 'NR==l { for (i=2;i<=NF;i++) if ($i==o) $i=n } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f" || return 1
   for c in "$DIR"/*.conf; do
     awk -v o="$o" -v n="$n" 'tolower($1)=="proxyjump" { m=split($2,a,","); v=""; for (i=1;i<=m;i++) v=v (i>1?",":"") (a[i]==o?n:a[i]); match($0,/^[ \t]*/); print substr($0,1,RLENGTH) $1 " " v; next } { print }' "$c" > "$c.tmp" || return 1
@@ -1775,6 +1840,7 @@ rename_host_raw(){ # old new: rename in the Host line, other servers ProxyJump e
 }
 effective(){ sshx -G "$1" 2>/dev/null | awk '$1=="hostname"||$1=="user"||$1=="port"||$1=="proxyjump" {print $1 " " $2} $1=="identityfile"&&!k {k=1; print $1 " " $2}'; }
 move_host_raw(){ # name project: move the entire block, then make values inherited from the old project wildcard explicit
+  legacy_destinations "$DIR"/*.conf "$DIR/$2.conf" "$DIR/$2.conf.extra" || return 65
   local n=$1 to=$2 f r blk before after line k v nf nl
   host_shared "$n" && { echo "shared"; return 1; }
   f=$(host_field "$n" 10); r=$(block_range "$n"); before=$(effective "$n")
@@ -1830,6 +1896,7 @@ change_paths(){ # command args... -> NUL-separated absolute paths
   for f in "${paths[@]}"; do printf '%s\0%s\0' "$f" "$f.tmp" || return 1; done
 }
 change_locked(){ # description command...; caller owns the sync lock
+  legacy_destinations "$DIR"/*.conf "${SEC:-$DIR/secrets}"/* || return 65
   local msg=$1 rollback f e i=0 failed=0 restore=0 idxfile; shift
   if ! e=$(validate); then err "$(t err_apply_broken)"; dim "$e"; return 1; fi
   ensure_index || return 1
@@ -1880,6 +1947,7 @@ host_where(){ # server → "file.conf line N · groups g1, g2" for previews
 # ---------- shared repository conflicts ----------
 # Merge rather than rebase to preserve nonconflicting changes from both sides.
 resolve_conflict(){ # [ours|theirs] for noninteractive operation (tests)
+  legacy_destinations "$DIR/.git" || return 65
   local how=${1:-} files e f ahead
   export GIT_SSH_COMMAND; GIT_SSH_COMMAND=$(git_ssh 8)
   lock 10 || { err "$(t sync_busy)"; [ -z "$how" ] && pause; return 1; }
@@ -2156,6 +2224,7 @@ suggest_group_name(){ # a name nobody uses yet, from suggest_group_base
   echo "$name"
 }
 save_group(){
+  legacy_destinations "$GRP.tmp" || return 65
   local hosts="$*" name d sug kind why prev
   at "$(t group_title)"; d=$(tmpd) || return 1; awk -F'\t' '{print $1}' "$GRP" > "$d/taken" 2>/dev/null
   kind=$(suggest_group_base "$@"); kind=${kind%%"$TAB"*}; sug=$(suggest_group_name "$@")
@@ -2427,10 +2496,12 @@ ensure_key(){ # ensure a key can log in to machine $1; otherwise create one and 
   ok "$(t ek_added "$m")"
 }
 restore_origin(){ # previous URL and upstream; caller owns the writer lock
+  legacy_destinations "$DIR/.git" || return 65
   if [ -n "$1" ]; then g remote set-url origin "$1"; else g remote remove origin; fi
   if [ -n "$2" ]; then g branch -q --set-upstream-to="$2" 2>/dev/null; else g branch --unset-upstream 2>/dev/null || :; fi
 }
 connect_kho(){ # connect ~/ssh-hosts to a repository on another machine
+  legacy_destinations || return 65
   local m url old_url old_upstream checkpoint e
   at "$(has_remote && t kho_title_change || t kho_title_connect)"
   m=$(pick_machine "$(t kho_where)" url "$(t kho_intro)") || return 1
@@ -2529,6 +2600,7 @@ undo_paths_clean(){
   [ -z "$untracked" ] && g diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none -- "${paths[@]}"
 }
 undo_locked(){ # caller owns the sync lock; print the translation key on failure
+  legacy_destinations "$DIR/.git" || return 65
   local id=$1 parent=$2 paths=$3 gitdir tree failure=err_undo
   shift 3
   [ "$(g rev-parse HEAD 2>/dev/null)" = "$id" ] || { echo err_undo_moved; return 1; }
@@ -2880,6 +2952,7 @@ check_deps(){ # report: print each item; otherwise return 1 and print instructio
   return 1
 }
 setup(){
+  legacy_destinations || return 65
   local rc_file
   title "$(t su_title)"
   mkdir -p "$HOME/.local/bin"; ln -sf "$SELF" "$HOME/.local/bin/hostbook"; ok "$(t su_cmd)"
@@ -2916,6 +2989,7 @@ update(){
   else dim "$(t up_nogit "$REPO_URL")"; fi
 }
 first_run(){ # ~/ssh-hosts does not exist yet
+  legacy_destinations || return 65
   local i m url initial= newcfg backup role
   set_language "$(t set_language)" || return 1
   at "$(t first_title)"

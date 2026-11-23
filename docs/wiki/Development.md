@@ -141,6 +141,15 @@ Registered list, preview and connect neither read nor rewrite those references.
 A registered selection cannot be used as a legacy group target or undo action.
 Changes to registered mutation and group workflows have their own admission path.
 
+On a device with an approved account, legacy data writers consult that
+account's checkout, Git and state directory identities even when a checkout's
+entire `.hostbook` directory is missing. A sourced helper checks the current
+destination again when it writes. The raw host-block writer uses the opened
+directory for its file update, including in an unrelated legacy repository.
+The guard reads the operating system account's approval independently of
+`HOME` and `HOSTBOOK_DIR`. Warm legacy preview, header, footer and list calls
+do not run this Python check.
+
 ### Change a connected shared store's sync mode
 
 Use `store-mode STORE_ID REGISTRATION CHECKOUT CONNECTION POLICY MODE` with
