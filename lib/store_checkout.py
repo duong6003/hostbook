@@ -1,13 +1,17 @@
 """Read and fast-forward a regular checkout through its approved directory descriptors."""
 from contextlib import ExitStack, contextmanager
+import ctypes
 import hashlib
+import json
 import os
 import re
 import shutil
 import stat
+import sys
 from uuid import uuid4
 
-from store_context import JSON_LIMIT, open_directory, read_file, require, staged_local_file, sync_local
+from store_context import (JSON_LIMIT, StoreContextError, open_directory, read_file, require,
+                           require_private_directory, sync_local)
 
 OID = re.compile(rb"(?:[a-f0-9]{40}|[a-f0-9]{64})")
 MAX_STORE_BYTES = 64 * 1024 * 1024
@@ -72,14 +76,17 @@ def check_index(stage, original, files, git):
     require(listed == files, "registered checkout has staged changes")
 
 
-def check_contents(parent, name, blob):
-    data = read_file(parent, name, JSON_LIMIT, unlinked)
+def check_contents(parent, name, blob, filemode=True):
+    def verify(fd, info):
+        unlinked(fd, info)
+        require(not filemode or not info.st_mode & stat.S_IXUSR, "registered checkout has a file mode change")
+    data = read_file(parent, name, JSON_LIMIT, verify)
     algorithm = "sha1" if len(blob) == 40 else "sha256"
     digest = hashlib.new(algorithm, b"blob " + str(len(data)).encode() + b"\0" + data)
     require(digest.hexdigest().encode() == blob, "registered checkout has local changes")
 
 
-def check_worktree(checkout_fd, files):
+def check_worktree(checkout_fd, files, filemode):
     seen = set()
     def fail(exc):
         raise exc
@@ -93,7 +100,7 @@ def check_worktree(checkout_fd, files):
         for name in names:
             full = prefix + name
             require(full in files, "registered checkout has untracked files")
-            check_contents(fd, name, files[full])
+            check_contents(fd, name, files[full], filemode)
             seen.add(full)
     require(seen == set(files), "registered checkout has missing files")
 
@@ -168,31 +175,112 @@ def locked_git_file(parent, name, contents):
                 os.unlink(lock, dir_fd=parent)
 
 
-def install_sources(checkout_fd, stage, changed, before):
-    for path in sorted(changed):
+def rename_guarded(source_fd, source, dest_fd, dest, *, exchange):
+    # Both kernels implement an atomic swap. A new destination instead requires exclusive creation.
+    libc = ctypes.CDLL(None, use_errno=True)
+    args = (source_fd, os.fsencode(source), dest_fd, os.fsencode(dest))
+    if sys.platform == "darwin":
+        result = libc.renameatx_np(*args, 2 if exchange else 4)
+    elif sys.platform.startswith("linux"):
+        flags = 2 if exchange else 1
+        if hasattr(libc, "renameat2"):
+            result = libc.renameat2(*args, flags)
+        else:
+            number = {"x86_64": 316, "aarch64": 276}.get(os.uname().machine)
+            require(number is not None, "atomic receive is unavailable on this platform")
+            result = libc.syscall(number, *args, flags)
+    else:
+        raise StoreContextError("atomic receive is unavailable on this platform")
+    if result != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, "atomic receive rename failed")
+
+
+def check_destinations(checkout_fd, changes, before, recovery_fd):
+    device = os.fstat(recovery_fd).st_dev
+    require(os.fstat(checkout_fd).st_dev == device, "receive recovery must share the checkout filesystem")
+    for path in changes:
+        parts = path.split("/")
+        with ExitStack() as stack:
+            parent = checkout_fd
+            for part in parts[:-1]:
+                try:
+                    parent = stack.enter_context(open_directory(parent, (part,)))
+                except FileNotFoundError:
+                    break
+                require(os.fstat(parent).st_dev == device, "receive recovery must share the source filesystem")
+            else:
+                if path not in before:
+                    try:
+                        os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    raise StoreContextError("incoming file collides with existing local data")
+
+
+def durable_file(parent, name, data):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        sync_local(fd)
+
+
+@contextmanager
+def prepare_receive_files(recovery_fd, checkout_fd, stage, changes, before, record):
+    check_destinations(checkout_fd, changes, before, recovery_fd)
+    with make_parents(recovery_fd, ("receives",)) as receipts:
+        require_private_directory(receipts, "receive recovery")
+        ident = record["recovery_id"]
+        os.mkdir(ident, 0o700, dir_fd=receipts)
+        sync_local(receipts)
+        with open_directory(receipts, (ident,)) as capture:
+            paths = sorted(changes, key=lambda path: (path == ".hostbook/identity.json", path))
+            durable_file(capture, "manifest.json", json.dumps(dict(record, paths=paths)).encode())
+            for i, path in enumerate(paths):
+                durable_file(capture, str(i), (stage / "validated" / path).read_bytes())
+            for probe in (".a", ".b"):
+                durable_file(capture, probe, b"")
+            rename_guarded(capture, ".a", capture, ".b", exchange=True)
+            for probe in (".a", ".b"):
+                os.unlink(probe, dir_fd=capture)
+            sync_local(capture)
+            yield capture, paths
+
+
+def install_sources(checkout_fd, capture, paths, before, filemode):
+    for i, path in enumerate(paths):
         parts = path.split("/")
         with make_parents(checkout_fd, parts[:-1]) as parent:
-            name = parts[-1]
-            data = (stage / "validated" / path).read_bytes()
-            with staged_local_file(parent, name, data) as staged:
-                fd = os.open(staged, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+            name, slot = parts[-1], str(i)
+            if path in before:
+                check_contents(parent, name, before[path], filemode)
+                mode = os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode & 0o777
+                fd = os.open(slot, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=capture)
                 try:
-                    if path in before:
-                        check_contents(parent, name, before[path])
-                        mode = os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode & 0o777
-                        os.fchmod(fd, mode)
+                    os.fchmod(fd, mode)
                     sync_local(fd)
                 finally:
                     os.close(fd)
-                if path in before:
-                    os.replace(staged, name, src_dir_fd=parent, dst_dir_fd=parent)
-                else:
-                    os.link(staged, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                rename_guarded(capture, slot, parent, name, exchange=True)
+                sync_local(capture)
+                sync_local(parent)
+                try:
+                    check_contents(capture, slot, before[path], filemode)
+                except (StoreContextError, OSError):
+                    # Restore the actual displaced editor save; the private slot retains the other inode.
+                    rename_guarded(capture, slot, parent, name, exchange=True)
+                    sync_local(capture)
+                    sync_local(parent)
+                    raise
+            else:
+                rename_guarded(capture, slot, parent, name, exchange=False)
+                sync_local(capture)
                 sync_local(parent)
 
 
-def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage, changed,
-                 before, after, verify_binding):
+def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage,
+                 before, after, verify_binding, filemode, capture, paths):
     candidate = (stage / "index").read_bytes()
     parts = ref.split("/")
     with make_parents(git_fd, parts[:-1]) as refs:
@@ -201,13 +289,13 @@ def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage, cha
                 verify_binding()
                 require(read_ref(git_fd, ref) == base and read_index(git_fd) == original_index,
                         "Git branch or index changed during receive")
-                check_worktree(checkout_fd, before)
+                check_worktree(checkout_fd, before, filemode)
                 install_git_pack(git_fd, stage)
                 verify_binding()
-                install_sources(checkout_fd, stage, changed, before)
+                install_sources(checkout_fd, capture, paths, before, filemode)
                 verify_binding()
                 set_index()
                 set_ref()
     require(read_ref(git_fd, ref) == tip and read_index(git_fd) == candidate, "received Git state differs")
-    check_worktree(checkout_fd, after)
+    check_worktree(checkout_fd, after, filemode)
     verify_binding()

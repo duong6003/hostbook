@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+from uuid import uuid4
 import pwd
 import re
 import shlex
@@ -22,7 +23,7 @@ from store_context import (
     resolved_store, staged_local_file, store_writer, sync_local, verify_path_isolation,
     verify_state_directory,
 )
-from store_checkout import OID, check_index, check_worktree, fast_forward, read_index, read_ref, tree
+from store_checkout import OID, check_index, check_worktree, fast_forward, prepare_receive_files, read_index, read_ref, tree
 from store_journal import require_idle
 from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
 
@@ -71,6 +72,7 @@ def plain_git(directory_fd, *, bare):
         b"user.name": None, b"user.email": None,
     }
     bare_setting = False
+    filemode = True
     for item in config.rstrip(b"\0").split(b"\0"):
         key, _, value = item.partition(b"\n")
         if re.fullmatch(rb"(?:remote\.[a-zA-Z0-9_-]+\.(?:url|fetch)|branch\.[^\x00-\x20]+\.(?:remote|merge))", key):
@@ -78,6 +80,8 @@ def plain_git(directory_fd, *, bare):
         require(key in permitted and (permitted[key] is None or value in permitted[key]),
                 "unsupported registered Git configuration")
         bare_setting |= key == b"core.bare"
+        if key == b"core.filemode":
+            filemode = value == b"true"
     require(bare_setting, "missing registered Git configuration")
     for name in ("commondir", "shallow", "objects/info/alternates", "objects/info/http-alternates",
                  "info/grafts", "info/attributes", "info/sparse-checkout", "MERGE_HEAD", "REVERT_HEAD",
@@ -93,6 +97,7 @@ def plain_git(directory_fd, *, bare):
             require(stat.S_ISDIR(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1),
                     "unsupported linked Git resource")
             require(not name.endswith(".lock"), "registered Git repository is busy")
+    return filemode
 
 
 def raise_walk_error(exc):
@@ -243,7 +248,7 @@ def receive(load_account, store_id, expected):
                     require((latest, bound, active) == (context, target, binding), "registered transport changed")
                     record = {"store_id": store_id, "target_id": context.target_id, "ref": context.ref,
                               "base": base, "incoming": tip, "connection_generation": expected.connection,
-                              "checkout_generation": expected.checkout}
+                              "checkout_generation": expected.checkout, "recovery_id": str(uuid4())}
 
                     def verify_binding(own_record=None):
                         require(load_account() == account and local_inputs(state_fd, store_id) == local,
@@ -260,18 +265,25 @@ def receive(load_account, store_id, expected):
                             info = os.fstat(checkout_fd)
                             require((info.st_dev, info.st_ino) == (binding.root.device, binding.root.inode),
                                     "registered checkout changed")
-                            plain_git(git_fd, bare=False)
+                            filemode = plain_git(git_fd, bare=False)
                             require(read_ref(git_fd, context.ref) == base and read_index(git_fd) == original_index,
                                     "Git branch or index changed during receive")
-                            check_worktree(checkout_fd, before)
+                            check_worktree(checkout_fd, before, filemode)
                             verify_binding()
                             if base != tip:
-                                publish_receive_marker(store_fd, record)
-                                verify_binding(record)
-                                fast_forward(checkout_fd, git_fd, context.ref, base, tip, original_index,
-                                             stage, changed, before, after, lambda: verify_binding(record))
-                                os.unlink("receive.pending", dir_fd=store_fd)
-                                sync_local(store_fd)
+                                with absolute_directory(account.recovery.path) as recovery:
+                                    info = os.fstat(recovery)
+                                    require((info.st_dev, info.st_ino) == (account.recovery.device, account.recovery.inode),
+                                            "receive recovery directory changed")
+                                    with prepare_receive_files(recovery, checkout_fd, stage, changed, before, record) as capture:
+                                        verify_binding()
+                                        publish_receive_marker(store_fd, record)
+                                        verify_binding(record)
+                                        fast_forward(checkout_fd, git_fd, context.ref, base, tip, original_index,
+                                                     stage, before, after, lambda: verify_binding(record),
+                                                     filemode, *capture)
+                                        os.unlink("receive.pending", dir_fd=store_fd)
+                                        sync_local(store_fd)
     return {"store_id": store_id, "received": tip}
 
 

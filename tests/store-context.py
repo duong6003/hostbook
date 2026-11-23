@@ -473,6 +473,64 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(result.returncode, 65, result.stderr)
         self.assertEqual(snapshot(f.store), before)
 
+    def test_receive_preserves_an_editor_save_between_validation_and_install(self):
+        import store_checkout
+        import store_receive
+        f = self.prepare_receive()
+        source = f.store / "team.conf"
+        human = b"Host db\n  HostName 192.0.2.99\n"
+        install, check = store_checkout.install_sources, store_checkout.check_contents
+        saved = False
+        def editor(fd, name, blob, *args, **kwargs):
+            nonlocal saved
+            result = check(fd, name, blob, *args, **kwargs)
+            if name == "team.conf" and not saved:
+                other = f.store / "editor-save"
+                other.write_bytes(human)
+                other.replace(source)
+                saved = True
+            return result
+        def interleaved(*args, **kwargs):
+            with patch.object(store_checkout, "check_contents", side_effect=editor):
+                return install(*args, **kwargs)
+        with patch.object(store_checkout, "install_sources", side_effect=interleaved):
+            with self.assertRaises(StoreContextError):
+                store_receive.receive(lambda: self.account, self.entries[1]["store_id"], self.generations)
+        self.assertTrue(saved)
+        self.assertEqual(source.read_bytes(), human)
+        self.assertEqual(f.git(f.store, "rev-parse", "HEAD"), f.base)
+        self.assertTrue((f.target.parent.parent.parent / "receive.pending").is_file())
+
+    def test_receive_preserves_filemode_change(self):
+        f = self.prepare_receive()
+        f.git(f.store, "config", "core.filemode", "true")
+        (f.store / "team.conf").chmod(0o755)
+        before = snapshot(f.store)
+        result = f.receive()
+        self.assertEqual(result.returncode, 65)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertFalse((f.target.parent.parent.parent / "receive.pending").exists())
+
+    def test_receive_refuses_untracked_empty_directory_incoming_file_collision(self):
+        f = self.prepare_receive()
+        extra = f.author / "other.conf"
+        extra.write_text("Host other\n  HostName 192.0.2.3\n")
+        manifest = f.author / ".hostbook/identity.json"
+        metadata = json.loads(manifest.read_bytes())
+        metadata["generation"] += 1
+        metadata["sources"].append(dict(path=extra.name, sha256=hashlib.sha256(extra.read_bytes()).hexdigest()))
+        metadata["hosts"].append(dict(host_id=new_id(), name="other", bindings=[
+            dict(path=extra.name, host_ordinal=1, token_ordinal=1)]))
+        manifest.write_text(json.dumps(metadata))
+        f.git(f.author, "add", ".")
+        f.git(f.author, "commit", "-qm", "New source")
+        f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
+        (f.store / extra.name).mkdir()
+        before = snapshot(f.store)
+        self.assertEqual(f.receive().returncode, 65)
+        self.assertEqual(snapshot(f.store), before)
+        self.assertFalse((f.target.parent.parent.parent / "receive.pending").exists())
+
     def test_receive_rejects_a_linked_tracked_file(self):
         f = self.prepare_receive()
         os.link(f.store / "secrets/vault.pub", self.root / "other-public-key")

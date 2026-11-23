@@ -172,6 +172,14 @@ Git constructs the candidate index and objects in private staging. Hostbook
 updates the verified checkout and Git directory through open descriptors under
 the store gate and native index and branch locks. The full resulting tree is
 limited to 4096 regular files, 4 MiB per file and 64 MiB overall.
+The checkout and its source directories must share a filesystem with the
+approved recovery root. Each receive exchanges changed files atomically with
+numbered files in the private recovery root at `receives/RECOVERY_ID/`.
+Its `manifest.json` maps those slots to the original paths and revisions.
+Original inodes are retained there even after success so an editor with an
+open file can finish its save. If an editor replaces a file during receive,
+Hostbook restores the displaced edit and keeps evidence for reconciliation.
+These local captures stay outside Git and require explicit retention review.
 This command currently handles host sources whose resulting paths and sidecar
 can all be validated. It requires a conventional non-shallow Git directory.
 
