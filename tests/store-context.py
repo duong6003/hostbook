@@ -3542,6 +3542,21 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
             for ctx in (v.source,v.destination):
                 require_idle(root,self.account,ctx.store_id)
             txn = self.recovery/"transactions"/ident
+            completion = txn/"completion.json"
+            transfer_sender = record["attempts"][0]
+            receipt = txn/"senders"/transfer_sender["attempt_id"]/"outcome.json"
+            latest_completion,latest_receipt = completion.read_bytes(),receipt.read_bytes()
+            short = {k:transfer_sender[k] for k in ("attempt_id","evidence_id","sender_state","outcome")}
+            receipt.write_text(json.dumps(short))
+            old = {"version":1,"transaction_id":ident,"sequence":record["sequence"],"payload_id":record["payload_id"],
+                   "effects":[row["evidence_id"] for row in record["effects"]],"attempts":[short["evidence_id"]]}
+            completion.write_text(json.dumps(old))
+            for ctx in (v.source,v.destination):
+                require_idle(root,self.account,ctx.store_id)
+            completion.write_bytes(latest_completion)
+            with self.assertRaises(StoreContextError):
+                require_idle(root,self.account,v.source.store_id)
+            receipt.write_bytes(latest_receipt)
             for retained in (txn/"payloads"/(record["payload_id"]+".age"),
                              txn/"recovery"/str(record["recovery_generation"])/"vault.recovery.age",
                              txn/"completion.json"):

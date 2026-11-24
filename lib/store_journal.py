@@ -160,11 +160,13 @@ def publication_receipt(stores, attempt):
     return dict(attempt,published_role=role)
 
 
-def completion_receipt(record):
-    return {"version":1,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
-            "payload_id":record["payload_id"],"effects":[row["evidence_id"] for row in record["effects"]],
-            "attempts":[row["evidence_id"] for row in record["attempts"]]}
-
+def completion_receipt(record, version=2):
+    receipt = {"version":version,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
+               "payload_id":record["payload_id"],"effects":[row["evidence_id"] for row in record["effects"]],
+               "attempts":[row["evidence_id"] for row in record["attempts"]]}
+    if version == 2:
+        receipt["publication"] = publication_receipt(record["stores"],record["attempts"][0])
+    return receipt
 
 def verified_completion(folder, record, prior):
     if (record["operation"] != "transfer" or not prior or prior["checkpoint"] != "source-confirmed"
@@ -192,8 +194,16 @@ def verified_completion(folder, record, prior):
                     return False
         with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
             require_private_directory(sender,"transfer sender")
-            return (private_json(folder,"completion.json") == completion_receipt(record) and
-                    private_json(sender,"outcome.json") == publication_receipt(record["stores"],attempt))
+            completion = private_json(folder,"completion.json")
+            observed = private_json(sender,"outcome.json")
+            full = publication_receipt(record["stores"],attempt)
+            if completion == completion_receipt(record):
+                return observed == full
+            if completion != completion_receipt(record,1):
+                return False
+            # Earlier format-1 completions used the brief receipt only for a destination send.
+            brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
+            return observed == full or (attempt["store_id"] == roles["destination"] and observed == brief)
     except (OSError,StoreContextError):
         return False
 
