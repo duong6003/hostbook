@@ -187,8 +187,26 @@ def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase,
                     require_private_directory(actual,"shared source exchange")
                     require(os.path.samestat(os.fstat(actual),os.fstat(slot)),"shared source exchange changed")
             verify_slot()
+            original_binding = manifest["source_evidence"].get("exchange")
+            if original_binding is None or (candidate.replaced_project and not manifest["destination_evidence"].get("exchange")):
+                files = [("source","verified-source",before[candidate.source_path]),("0","verified-0",before[IDENTITY])]
+                def originals():
+                    current()
+                    verify_slot()
+                    src,_ = exchange_files(slot,files,filemode,original_binding,retiring=original_binding is not None)
+                    dst = displaced_destination(plan,candidate,record,manifest)
+                    return original_binding or src,manifest["destination_evidence"].get("exchange") or dst
+                capture = originals()
+                def unchanged():
+                    require(originals() == capture,"original transfer retirement evidence changed")
+                record,manifest,proof = advance(tx,plan.account,record,manifest,record,
+                    dict(manifest,source_evidence=dict(manifest["source_evidence"],exchange=capture[0]),
+                         destination_evidence=dict(manifest["destination_evidence"],exchange=capture[1])),
+                    password,code,observe=unchanged)
+                verify(record)
+                proof()
             retire_displaced(slot,before[candidate.source_path],before[IDENTITY],filemode,current,verify_slot,
-                             manifest["source_evidence"].get("exchange"))
+                             manifest["source_evidence"]["exchange"])
         displaced_destination(plan,candidate,record,manifest,retire=True)
         record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="completed"),
             dict(manifest,next_effect="none"),password,code,observe=current)

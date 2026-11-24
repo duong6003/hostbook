@@ -3406,6 +3406,14 @@ pw,code=args['password'].encode(),args['code'].encode()
 mapping=stage_credential(load,CredentialRef(args['src'],g,args['original']),CredentialRef(args['dst'],g,args['mapped']),unlock)
 with prepare_candidate(load,plan,mapping) as candidate:
     ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda _:True)
+    if args['step']=='legacy-retire-partial':
+        import store_transfer_remove as removal
+        advance=removal.advance
+        def old_format(tx,account,record,manifest,next_record,next_manifest,*values,**options):
+            if next_record['checkpoint']=='source-removed-local':
+                next_manifest['source_evidence'].pop('exchange',None)
+            return advance(tx,account,record,manifest,next_record,next_manifest,*values,**options)
+        removal.advance=old_format
     if args['step']=='send-before-receipt':
         import store_transfer_publish
         native=store_transfer_publish.send
@@ -3421,10 +3429,10 @@ with prepare_candidate(load,plan,mapping) as candidate:
             apply=publish_destination if plan.destination.context.kind=='shared' else confirm_private_destination
             result=apply(load,ident,plan,candidate,mapping,unlock,pw,code)
             assert result['checkpoint']=='destination-confirmed'
-            if args['step'] == 'source-confirmed' or args['step'].startswith('retire-'):
+            if args['step'] == 'source-confirmed' or 'retire-' in args['step']:
                 remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
                 assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
-                if args['step'].startswith('retire-'):
+                if 'retire-' in args['step']:
                     import os,store_transfer_remove as removal,store_transfer_apply as effects
                     def pause():
                         print(ident,flush=True)
@@ -3433,7 +3441,7 @@ with prepare_candidate(load,plan,mapping) as candidate:
                     original_rename=effects.rename_guarded
                     def interrupted_rename(parent,source,target,name,**kwargs):
                         original_rename(parent,source,target,name,**kwargs)
-                        if name=='verified-source' and args['step']=='retire-partial':
+                        if name=='verified-source' and args['step'].endswith('retire-partial'):
                             pause()
                     effects.rename_guarded=interrupted_rename
                     removal.rename_guarded=interrupted_rename
@@ -3653,6 +3661,18 @@ with prepare_candidate(load,plan,mapping) as candidate:
         proc,ident,pw,code = self.interrupted_transfer_owner(f,"retire-finished")
         proc.stdin.close()
         self.assertEqual(proc.wait(timeout=10),0)
+        self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
+
+    def test_legacy_intact_exchange_is_durably_bound_before_first_retirement(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"legacy-retire-partial")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"source-confirmed")
+        self.assertTrue("exchange" in manifest["source_evidence"])
         self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
 
     def test_reconcile_original_exact_branch_after_send_without_receipt_before_source_removal(self):
