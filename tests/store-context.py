@@ -2846,6 +2846,39 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertNotEqual(endpoint(first), endpoint(dict(second,user="mixed")))
         self.assertNotEqual(endpoint(first), endpoint(dict(second,port="22")))
 
+    def test_transaction_vault_reopens_complete_manifest_from_either_independent_envelope(self):
+        from store_transfer_recovery import seal_payload, read_payload
+        from store_login import verified_age_tools
+        from store_checkout import durable_file
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        password, code = b"independent fixture password", b"independent fixture recovery"
+        manifest = b'{"credential":"synthetic private fixture","host":"source.invalid"}'
+        payload_id = new_id()
+        sealed = seal_payload(self.account, manifest, password, code)
+        before = snapshot(self.root)
+        with tempfile.TemporaryDirectory(dir=self.root) as scratch:
+            directory = os.open(scratch,store_context.DIRECTORY_FLAGS)
+            try:
+                for name, data in (("vault.pub",sealed.recipient), ("vault.key.age",sealed.password_envelope),
+                                   ("vault.recovery.age",sealed.recovery_envelope), (payload_id+".age",sealed.ciphertext)):
+                    durable_file(directory, name, data)
+                for phrase, recovery in ((password,False),(code,True)):
+                    self.assertTrue(read_payload(self.account,directory,directory,payload_id,phrase,
+                                                 recovery=recovery) == manifest)
+                with self.assertRaises(StoreContextError):
+                    read_payload(self.account,directory,directory,payload_id,f.unlock(f.src.store_id))
+                vault = VaultUnlockCache(verified_age_tools(self.account)[0])
+                for identity in f.identities.values():
+                    with self.assertRaises(StoreContextError):
+                        vault.open_secret(identity,sealed.ciphertext)
+                (Path(scratch)/(payload_id+".age")).write_bytes(sealed.ciphertext[:60])
+                with self.assertRaises(StoreContextError):
+                    read_payload(self.account,directory,directory,payload_id,password)
+            finally:
+                os.close(directory)
+        self.assertEqual(snapshot(self.root), before)
+
     def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
         library = Path(__file__).resolve().parents[1]/"lib"
         script = """

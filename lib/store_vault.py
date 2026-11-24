@@ -135,12 +135,29 @@ class VaultUnlockCache:
             raise StoreContextError("vault unlock failed") from None
         return result.stdout
 
-    def _decrypt(self, envelope, passphrase):
+    def _passphrase_operation(self, args, value, passphrase):
         require(isinstance(passphrase, bytes) and passphrase and b"\r" not in passphrase
                 and b"\n" not in passphrase and b"\0" not in passphrase,
                 "vault passphrase must be a nonempty line")
         with self._secret_pipe(passphrase) as reader:
-            return self._run("age", ("-d", "-j", "batchpass"), envelope, pass_fd=reader)
+            return self._run("age", args, value, pass_fd=reader)
+
+    def _decrypt(self, envelope, passphrase):
+        return self._passphrase_operation(("-d", "-j", "batchpass"), envelope, passphrase)
+
+    def generate_identity(self):
+        identity = self._run("age-keygen", (), b"")
+        return identity, self._run("age-keygen", ("-y",), identity)
+
+    def wrap_identity(self, identity, passphrase):
+        return self._passphrase_operation(("-a", "-e", "-j", "batchpass"), identity, passphrase)
+
+    def open_identity(self, envelope, passphrase, recipient):
+        identity = self._decrypt(envelope, passphrase)
+        emitted = self._run("age-keygen", ("-y",), identity)
+        require(re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}\n", recipient) and emitted == recipient,
+                "recovery vault identity mismatch")
+        return identity
 
     @staticmethod
     @contextmanager
