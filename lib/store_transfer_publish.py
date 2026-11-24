@@ -15,7 +15,7 @@ from store_receive import IDENTITY, git, plain_git, registered_target
 from store_transfer import writable_shared
 from store_transfer_apply import advance, check_source, displaced_destination, exchange_files, selected, transfer_gates
 from store_transfer_credentials import private_workspace
-from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
+from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, require_no_senders, token, wire
 
 
 def saved_checkout(load, plan, candidate, mapping, record, manifest):
@@ -155,6 +155,7 @@ def publish_shared(load, ident, plan, candidate, mapping, read_passphrase, passw
     attempt_id = token()
     with ExitStack() as transport:
         with transfer_gates(load,plan,record,manifest) as (tx,verify), writable_shared(plan,transfer=record) as remote:
+            require_no_senders(tx)
             checkout(load,plan,candidate,mapping,record,manifest)
             displaced_destination(plan,candidate,record,manifest)
             pinned_tx,pinned_remote = os.dup(tx),os.dup(remote)

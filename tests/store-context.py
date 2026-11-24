@@ -3945,11 +3945,16 @@ with prepare_candidate(load,plan,mapping) as candidate:
             return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
         root = self.recovery/"transactions"/ident
         (root/"senders").mkdir(mode=0o700)
-        (root/"senders"/new_id()).mkdir(mode=0o700)
+        orphan = root/"senders"/new_id()
+        orphan.mkdir(mode=0o700)
         with self.assertRaisesRegex(StoreContextError,"sender"):
             run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None)
         self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.shared.base)
-        shutil.rmtree(root/"senders")
+        orphan.rmdir()
+        (root/"senders").chmod(0o755)
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None)
+        (root/"senders").chmod(0o700)
         self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
         final,_ = reopen_intent(f.load,ident,code,recovery=True)
         self.assertEqual((final["checkpoint"],len(final["attempts"])),("completed",1))

@@ -15,7 +15,7 @@ from store_receive import fetch_from_fd, git
 from store_transfer import DestinationCandidate, ObservedStore, TransferPlan
 from store_transfer_apply import advance, check_source, displaced_destination, payload_pin, save_destination, transfer_gates, write_once
 from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCredential, private_workspace, read_mapping_end
-from store_transfer_intent import local_descriptors, reopen_intent, token, wire
+from store_transfer_intent import local_descriptors, reopen_intent, require_no_senders, token, wire
 from store_transfer_owner import new_owner
 from store_transfer_publish import confirm_private_destination, current_receiver, publish_destination, publish_source, publishable_source, saved_checkout, sender_lease
 from store_transfer_remove import finish_shared_source, remove_source
@@ -164,7 +164,7 @@ def cancel_prepared(load, ident, password, code, confirm):
             require(load() == plan.account,"transfer account approval changed")
             lease = os.stat("owner.lease",dir_fd=tx,follow_symlinks=False)
             require(manifest["lease"] == {"device":lease.st_dev,"inode":lease.st_ino},"transfer ownership lease changed")
-            require("senders" not in os.listdir(tx),"unrecorded transfer sender requires reconciliation")
+            require_no_senders(tx)
         unchanged()
         owner,start = new_owner()
         previous = {"owner":record["owner"],"native_start":manifest["native_start"],"sequence":record["sequence"]}
@@ -349,7 +349,7 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
                 require(not record["attempts"],"unexpected publication before shared source removal")
             def current():
                 if not record["attempts"]:
-                    require("senders" not in os.listdir(tx),"unrecorded transfer sender requires reconciliation")
+                    require_no_senders(tx)
                 if prepared:
                     for store in (plan.source,plan.destination):
                         row = next(r for r in record["stores"] if r["store_id"] == store.context.store_id)

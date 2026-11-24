@@ -144,6 +144,18 @@ def private_path(root, parts):
         yield parent
 
 
+def require_no_senders(tx):
+    try:
+        observed = os.stat("senders",dir_fd=tx,follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    with open_directory(tx,("senders",)) as folder:
+        require_private_directory(folder,"transfer senders")
+        require(not os.listdir(folder) and os.path.samestat(os.fstat(folder),observed)
+                and os.path.samestat(os.fstat(folder),os.stat("senders",dir_fd=tx,follow_symlinks=False)),
+                "unrecorded transfer sender requires reconciliation")
+
+
 @contextmanager
 def staged_transaction(recovery, record, contents, account, password, code):
     scratch = ".prepare-" + token()

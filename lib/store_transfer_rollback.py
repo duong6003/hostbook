@@ -8,7 +8,7 @@ from store_read import local_inputs
 from store_receive import IDENTITY, git, plain_git, prepare_adoption
 from store_transfer_apply import advance, check_source, displaced_destination, inode, transfer_gates
 from store_transfer_credentials import read_mapping_end, unlock_end
-from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
+from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, require_no_senders, token, wire
 from store_transfer_owner import new_owner
 from store_transfer_publish import current_receiver, saved_checkout
 from store_transfer_resume import decode, restored_candidate, restored_plan
@@ -61,7 +61,8 @@ def inverse_paths(candidate, before, after):
 
 
 def source_intact(load, plan, record, manifest, mapping, tx):
-    require(load() == plan.account and "senders" not in os.listdir(tx),"private compensation has an unverified sender")
+    require(load() == plan.account,"private compensation account changed")
+    require_no_senders(tx)
     original = next(r for r in record["stores"] if r["role"] == "source")
     check_source(plan.account,plan.source,manifest["snapshots"][original["snapshot_id"]])
     current_receiver(plan,plan.source.base)
