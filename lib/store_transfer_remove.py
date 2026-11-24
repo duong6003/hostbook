@@ -159,14 +159,21 @@ def retire_displaced(slot, source_blob, identity_blob, filemode, unchanged, veri
 
 
 def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
+    require(plan.source.context.kind == "shared","expected the original shared source")
+    return finish_removed_source(load,ident,plan,candidate,mapping,read_passphrase,password,code)
+
+
+def finish_removed_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
     record,manifest = reopen_intent(load,ident,password)
     src = plan.source
-    require(src.context.kind == "shared" and record["checkpoint"] == "source-confirmed"
-            and manifest["confirmed_source"] == candidate.source_proposed and manifest["next_effect"] == "complete"
-            and len(record["attempts"]) == 1 and len(record["effects"]) == 2,"shared source publication is unconfirmed")
+    role = "source" if src == plan.shared else "destination"
+    shared_tip = candidate.source_proposed if role == "source" else candidate.proposed
+    require(record["checkpoint"] == "source-confirmed" and manifest["confirmed_"+role] == shared_tip
+            and manifest["next_effect"] == "complete" and len(record["attempts"]) == 1 and len(record["effects"]) == 2,
+            "shared transfer publication is unconfirmed")
     attempt = record["attempts"][0]
     require(attempt["outcome"] == "accepted" and attempt["sender_state"] == "quiescent"
-            and attempt["store_id"] == src.context.store_id,"shared source acceptance is unsettled")
+            and attempt["store_id"] == plan.shared.context.store_id,"original transfer acceptance is unsettled")
     runtime = ("hostbook-transfer-v1",ident,record["effects"][1]["effect_id"])
     require(manifest["source_runtime"] == list(runtime),"shared source exchange binding changed")
     phrase = read_passphrase(mapping.destination.store_id)
@@ -176,7 +183,7 @@ def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase,
         filemode,_ = plain_git(repo,bare=False)
         def current():
             removed_checkout(load,plan,candidate,mapping,record,manifest)
-            current_receiver(plan,candidate.source_proposed)
+            current_receiver(plan,shared_tip)
             with open_directory(tx,("senders",attempt["attempt_id"])) as sender:
                 require(sender_receipt(sender) == manifest["publication_evidence"],
                         "original source acceptance evidence changed")

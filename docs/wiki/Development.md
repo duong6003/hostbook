@@ -477,3 +477,12 @@ If the private inverse has already reached its exact recorded tip, repeating
 `rollback` validates the original inverse bundle, index, tree and displaced
 inodes before selecting the terminal record. A partial inverse or changed
 captured file remains fenced and retains its protected evidence.
+
+When the source removal was observed locally, `resume` verifies the saved
+private destination, original shared branch and captured source files. It
+publishes an unattempted shared source removal once, or uses the original
+accepted destination receipt to finish a private source removal. After a
+definitive shared rejection, the original branch, private copy and recovery
+data remain available. Keep both checkouts and the device journal together.
+An unobserved or partially applied local effect requires reconciliation of its
+original ref, index, worktree and exchange files before release.

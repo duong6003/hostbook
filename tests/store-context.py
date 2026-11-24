@@ -3457,6 +3457,33 @@ with prepare_candidate(load,plan,mapping) as candidate:
                 effects.write_once=stopped_write
                 secret=lambda role:unlock(args['src'] if role=='source' else args['dst'])
                 inverse.rollback_private(load,ident,pw,code,secret,lambda _:True)
+            if args['step']=='private-completion-history':
+                import store_transfer_apply as effects
+                write=effects.write_once
+                seen=[]
+                def completed_write(*values):
+                    write(*values)
+                    if values[2]=='completion.json':
+                        seen.append(True)
+                    elif seen and values[2][0].isdigit():
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                effects.write_once=completed_write
+                remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+            if args['step']=='private-source-observed':
+                import store_transfer_remove as removal
+                advance=removal.advance
+                def observed_source(*values,**options):
+                    if values[4]['checkpoint']=='source-confirmed':
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                    return advance(*values,**options)
+                removal.advance=observed_source
+                remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+            if args['step']=='source-removed-local':
+                assert remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-removed-local'
             if args['step'] in ('source-confirmed','completion-history') or 'retire-' in args['step']:
                 remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
                 assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
@@ -4053,6 +4080,70 @@ with prepare_candidate(load,plan,mapping) as candidate:
         final,_ = reopen_intent(f.load,ident,code,recovery=True)
         self.assertEqual((final["checkpoint"],len(final["attempts"])),("completed",1))
         self.assertEqual(f.shared.git(dest,"rev-parse","HEAD"),manifest["proposed"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
+
+    def test_resume_saved_shared_source_removal_writes_only_its_original_branch(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"source-removed-local")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["attempts"],[])
+        self.assertEqual(f.shared.git(f.src.checkout,"rev-parse","HEAD"),manifest["source_proposed"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.v.unlock(f.dst.store_id)}[role]
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        final,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((final["checkpoint"],len(final["attempts"])),("completed",1))
+        self.assertEqual(final["attempts"][0]["store_id"],f.src.store_id)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),manifest["proposed"])
+
+    def test_resume_observed_private_source_removal_preserves_shared_destination_without_transport(self):
+        import store_transfer_publish
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"private-source-observed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"source-removed-local")
+        self.assertEqual(manifest["next_effect"],"confirm-private-source")
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        complete,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(complete["attempts"],record["attempts"])
+        self.assertEqual(complete["checkpoint"],"completed")
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
+        self.assertTrue((f.vaults.source.checkout/"stays.conf").is_file())
+
+    def test_recover_original_private_source_completion_uses_historical_shared_destination(self):
+        import store_transfer_publish
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"private-completion-history")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        before,manifest = reopen_intent(f.load,ident,pw)
+        root = self.recovery/"transactions"/ident
+        receipt = json.loads((root/"completion.json").read_bytes())
+        self.assertEqual((before["checkpoint"],receipt["publication"]["published_role"]),("source-confirmed","destination"))
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        completed,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((completed["checkpoint"],completed["payload_id"]),("completed",receipt["payload_id"]))
+        self.assertEqual(before["attempts"],completed["attempts"])
         self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):

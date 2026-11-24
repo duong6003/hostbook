@@ -18,7 +18,7 @@ from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCr
 from store_transfer_intent import local_descriptors, reopen_intent, require_no_senders, token, wire
 from store_transfer_owner import new_owner
 from store_transfer_publish import confirm_private_destination, current_receiver, publish_destination, publish_source, publishable_source, saved_checkout, sender_lease
-from store_transfer_remove import finish_shared_source, remove_source
+from store_transfer_remove import finish_removed_source, finish_shared_source, remove_source
 
 
 def decode(value):
@@ -311,17 +311,28 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
     plan = restored_plan(load(),record,manifest)
     finished_source = phase in ("source-removed-local","source-confirmed")
     shared_role = "source" if plan.source == plan.shared else "destination"
-    saved_unsent = phase == "destination-saved" and not record["attempts"]
-    upgrade = phase in ("destination-saved","source-removed-local") and not saved_unsent
+    count = len(record["attempts"])
     prepared = phase == "prepared"
-    require((prepared and not record["effects"] and not record["attempts"] and manifest["next_effect"] == "destination-save")
-            or (saved_unsent and len(record["effects"]) == 1 and
-                manifest["next_effect"] == ("destination-publication" if shared_role == "destination" else "confirm-private-destination"))
-            or (phase in ("destination-confirmed","destination-saved") and not saved_unsent and len(record["effects"]) == 1 and
-             ((not upgrade and manifest["next_effect"] == "source-removal") or
-              (upgrade and shared_role == "destination" and manifest["next_effect"] == "reconcile-destination")))
-            or (finished_source and shared_role == "source" and len(record["effects"]) == 2 and
-                manifest["next_effect"] == ("reconcile-source" if upgrade else "complete")),
+    saved_unsent = phase == "destination-saved" and count == 0
+    source_unsent = phase == "source-removed-local" and shared_role == "source" and count == 0
+    upgrade = phase in ("destination-saved","source-removed-local") and not saved_unsent and not source_unsent
+    if phase == "prepared":
+        next_effect,effects,attempts = "destination-save",0,0
+    elif phase == "destination-saved":
+        if shared_role == "source":
+            next_effect,effects,attempts = "confirm-private-destination",1,0
+        else:
+            next_effect,effects,attempts = ("destination-publication",1,0) if saved_unsent else ("reconcile-destination",1,1)
+    elif phase == "destination-confirmed":
+        next_effect,effects,attempts = "source-removal",1,int(shared_role == "destination")
+    elif phase == "source-removed-local":
+        if shared_role == "destination":
+            next_effect,effects,attempts = "confirm-private-source",2,1
+        else:
+            next_effect,effects,attempts = ("source-publication",2,0) if source_unsent else ("reconcile-source",2,1)
+    else:
+        next_effect,effects,attempts = "complete",2,1
+    require((manifest["next_effect"],len(record["effects"]),count) == (next_effect,effects,attempts),
             "transfer has incomplete local evidence")
     public = dict(manifest["comparison"])
     public.update(plan.comparison())
@@ -343,8 +354,8 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
         finishing = "completed" if phase == "source-confirmed" else None
         with transfer_gates(load,plan,record,manifest,recovery=True,finishing=finishing) as (tx,verify),ExitStack() as held:
             accepted = None
-            if not prepared and not saved_unsent and (finished_source or plan.destination == plan.shared):
-                proposed = candidate.source_proposed if finished_source else candidate.proposed
+            if record["attempts"]:
+                proposed = candidate.source_proposed if shared_role == "source" else candidate.proposed
                 accepted = held.enter_context(accepted_sender(tx,plan,record,manifest,proposed))
             else:
                 require(not record["attempts"],"unexpected publication before shared source removal")
@@ -363,7 +374,7 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
                 displaced_destination(plan,candidate,record,manifest)
                 if accepted is not None:
                     accepted()
-                elif saved_unsent:
+                elif saved_unsent or source_unsent:
                     current_receiver(plan,plan.shared.base,require_writes=True)
             current()
             if finishing and "completion.json" in os.listdir(tx):
@@ -387,15 +398,20 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             successor = dict(record,owner=owner)
             updated = dict(manifest,native_start=start,previous_owners=manifest.get("previous_owners",[])+[previous])
             if upgrade:
-                successor["checkpoint"] = shared_role+"-confirmed"
+                confirmed_role = "source" if finished_source else "destination"
+                successor["checkpoint"] = confirmed_role+"-confirmed"
                 updated["next_effect"] = "complete" if finished_source else "source-removal"
-                updated["confirmed_"+shared_role] = proposed
+                updated["confirmed_"+confirmed_role] = candidate.source_proposed if finished_source else candidate.proposed
             record,manifest,proof = advance(tx,plan.account,record,manifest,successor,updated,password,code,observe=current)
             verify(record)
             proof()
         args = load,ident,plan,candidate,mapping,unlock,password,code
         if finished_source:
-            return finish_shared_source(*args)
+            if source_unsent:
+                result = publish_source(*args)
+                if result["checkpoint"] != "source-confirmed":
+                    return result
+            return finish_removed_source(*args)
         if prepared:
             save_destination(*args)
         if prepared or saved_unsent:
