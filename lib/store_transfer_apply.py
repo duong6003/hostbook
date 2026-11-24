@@ -5,9 +5,9 @@ import os
 
 from store_checkout import (check_contents, check_destinations, check_worktree, durable_file, fast_forward,
                             install_sources, make_parents, read_index, read_ref, rename_guarded, tree)
-from store_context import (JSON_LIMIT, StoreContextError, open_directory, path_parts, read_file, require, require_approval_file, require_private_directory,
-                           resolved_store, staged_local_file, store_writer, sync_local, verify_state_directory)
-from store_journal import classify, completion_receipt, private_json, require_idle, rollback_receipt, transaction
+from store_context import (JSON_LIMIT, StoreContextError, open_directory, parse_json, path_parts, read_file, require, require_approval_file, require_private_directory,
+                           resolved_store, staged_local_file, store_writer, sync_local, valid_id, verify_state_directory)
+from store_journal import check_owner, classify, completion_receipt, private_json, require_idle, rollback_receipt, selected_transfer, transaction, verified_completion, verified_rollback
 from store_login import verified_age_tools
 from store_publish import recovery_root, sync_named
 from store_read import local_inputs
@@ -15,17 +15,15 @@ from store_receive import IDENTITY, git, plain_git, prepare_adoption
 from store_transfer import observe_store, writable_shared
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
 from store_transfer_owner import owner_lease
-from store_transfer_recovery import capture, verify_backup
+from store_transfer_recovery import capture, read_payload, verify_backup
 from store_vault import VaultUnlockCache, file_evidence
 
 
-def selected(tx, account, record):
+def selected(tx, account, record, *, finishing=None):
     classify(tx,account,record["transaction_id"],"transactions")
     selector = private_json(tx,"current.json")
-    seq = record["sequence"]
     with open_directory(tx,("records",)) as history:
-        require(selector["sequence"] == seq == len(os.listdir(history))
-                and private_json(history,f"{seq}.json") == record, "transfer selection changed")
+        require(selected_transfer(tx,history,selector,record,finishing),"transfer selection changed")
 
 
 def write_once(tx, dest, name, data):
@@ -55,6 +53,68 @@ def record_pin(tx, record):
         data = read_file(history,str(record["sequence"])+".json",JSON_LIMIT,check)
         require(data == wire(record),"selected transfer record changed")
         return data,stamps
+
+
+def adopt_terminal(tx, account, record, manifest, kind, password, code, observe):
+    """Select an already sealed terminal generation without minting a different receipt or record."""
+    require((record["checkpoint"],kind) in (("rollback-pending","rolled-back"),("source-confirmed","completed")),
+            "unexpected terminal recovery boundary")
+    receipt_name = "rollback.json" if kind == "rolled-back" else "completion.json"
+    try:
+        receipt = private_json(tx,receipt_name)
+        receipt_stamp = file_evidence(os.stat(receipt_name,dir_fd=tx,follow_symlinks=False))
+    except FileNotFoundError:
+        selected(tx,account,record)
+        return None
+    ident,seq = record["transaction_id"],record["sequence"]+1
+    require(receipt["sequence"] == seq and receipt["transaction_id"] == ident and valid_id(receipt["payload_id"]),
+            "original terminal receipt binding changed")
+    stub = dict(record,payload_id=receipt["payload_id"])
+    prior_pin,old_record,pin = payload_pin(tx,account,record),record_pin(tx,record),payload_pin(tx,account,stub)
+    with open_directory(tx,("recovery",str(record["recovery_generation"]))) as env,open_directory(tx,("payloads",)) as payloads:
+        verify_backup(account,env,payloads,record["payload_id"],password,code,wire(manifest))
+        raw = read_payload(account,env,payloads,stub["payload_id"],password)
+        verify_backup(account,env,payloads,stub["payload_id"],password,code,raw)
+    complete = parse_json(raw)
+    new = complete["record"]
+    expected = dict(record,checkpoint=kind,sequence=seq,previous_sequence=seq-1,payload_id=stub["payload_id"])
+    wanted = dict(manifest,record=new,next_effect="none")
+    if kind == "rolled-back":
+        evidence = receipt["compensation"]
+        require(valid_id(evidence),"invalid private compensation evidence")
+        expected["effects"] = [record["effects"][0],dict(record["effects"][1],outcome="observed",evidence_id=evidence)]
+        details = complete["rollback"]
+        check_owner(details["observer"])
+        require(isinstance(details["observer_start"],str) and details["observer_start"],"invalid terminal observer")
+        wanted["rollback"] = dict(manifest["rollback"],evidence_id=evidence,observer=details["observer"],observer_start=details["observer_start"])
+        validate = verified_rollback
+    else:
+        validate = verified_completion
+    require(new == expected and complete == wanted,"original terminal payload differs from its predecessor")
+    transaction(new,record)
+    def pinned():
+        selected(tx,account,record,finishing=kind)
+        require(payload_pin(tx,account,record) == prior_pin and record_pin(tx,record) == old_record
+                and payload_pin(tx,account,new) == pin and private_json(tx,receipt_name) == receipt
+                and file_evidence(os.stat(receipt_name,dir_fd=tx,follow_symlinks=False)) == receipt_stamp
+                and validate(tx,new,record),"original terminal generation or receipt changed")
+        observe()
+    pinned()
+    with open_directory(tx,("records",)) as history:
+        name = f"{seq}.json"
+        if name not in os.listdir(history):
+            write_once(tx,history,name,wire(new))
+        saved = record_pin(tx,new)
+    with staged_local_file(tx,"selector",wire({k:new[k] for k in ("version","transaction_id","sequence")})) as temp:
+        sync_named(tx,temp)
+        pinned()
+        require(record_pin(tx,new) == saved,"original terminal history changed")
+        os.replace(temp,"current.json",src_dir_fd=tx,dst_dir_fd=tx)
+        sync_local(tx)
+    selected(tx,account,new)
+    require(record_pin(tx,new) == saved and payload_pin(tx,account,new) == pin and validate(tx,new,record),
+            "selected terminal evidence changed")
+    return new
 
 
 def advance(tx, account, record, manifest, next_record, next_manifest, password, code, *, observe=None):
@@ -118,12 +178,12 @@ def advance(tx, account, record, manifest, next_record, next_manifest, password,
 
 
 @contextmanager
-def transfer_gates(load, plan, record, manifest, *, recovery=False):
+def transfer_gates(load, plan, record, manifest, *, recovery=False, finishing=None):
     account = plan.account
     ident = record["transaction_id"]
     with recovery_root(account) as root,open_directory(root,("transactions",ident)) as tx, ExitStack() as held:
         require_private_directory(tx,"transfer transaction")
-        selected(tx,account,record)
+        selected(tx,account,record,finishing=finishing)
         writers = {}
         for store in sorted((plan.source,plan.destination),key=lambda item:item.context.store_id):
             ctx = store.context
@@ -137,7 +197,7 @@ def transfer_gates(load, plan, record, manifest, *, recovery=False):
                 require(os.path.samestat(os.fstat(tx),os.fstat(named)) and
                         os.path.samestat(os.fstat(lease),os.stat("owner.lease",dir_fd=named,follow_symlinks=False)),
                         "transfer transaction or owner lease changed")
-                selected(named,account,current)
+                selected(named,account,current,finishing=finishing)
                 for store in (plan.source,plan.destination):
                     ctx = store.context
                     with resolved_store(account,ctx.store_id,ctx.generations) as (active,_,_,state):
@@ -145,7 +205,7 @@ def transfer_gates(load, plan, record, manifest, *, recovery=False):
                                 "transfer store or SSH settings changed")
                         verify_state_directory(state,path_parts(account.state.path,ctx.writer_lock),writers[ctx.store_id],
                                                "transfer store writer changed")
-                        require_idle(fresh,account,ctx.store_id,transfer=current)
+                        require_idle(fresh,account,ctx.store_id,transfer=current,finishing=finishing)
         verify(record)
         yield tx,verify
 

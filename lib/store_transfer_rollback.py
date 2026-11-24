@@ -6,7 +6,7 @@ from store_context import JSON_LIMIT, StoreContextError, open_directory, parse_j
 from store_login import verified_age_tools
 from store_read import local_inputs
 from store_receive import IDENTITY, git, plain_git, prepare_adoption
-from store_transfer_apply import advance, check_source, displaced_destination, inode, transfer_gates
+from store_transfer_apply import adopt_terminal, advance, check_source, displaced_destination, inode, transfer_gates
 from store_transfer_credentials import read_mapping_end, unlock_end
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, require_no_senders, token, wire
 from store_transfer_owner import new_owner
@@ -129,6 +129,10 @@ def finish_inverse(load, plan, candidate, mapping, record, manifest, tx, verify,
         unlock_end(VaultUnlockCache(tools[0]),tools,plan.account,load,mapping.destination,lambda _:destination_pass)
         if candidate.previous_credential:
             verify_credential(load,plan.account,*candidate.previous_credential,manifest["credentials"]["prior_destination"],destination_pass)
+        original = adopt_terminal(tx,plan.account,record,manifest,"rolled-back",password,code,observed)
+        if original is not None:
+            verify(original)
+            return
         evidence = token()
         effect = dict(record["effects"][1],outcome="observed",evidence_id=evidence)
         witness,start = new_owner()
@@ -183,7 +187,7 @@ def rollback_private(load, ident, password, code, secret, confirm):
         require((([answer] if isinstance(answer,str) else answer) == aliases) if aliases else answer is True,
                 "explicit rollback confirmation required")
         if pending:
-            with transfer_gates(load,plan,record,manifest,recovery=True) as (tx,verify):
+            with transfer_gates(load,plan,record,manifest,recovery=True,finishing="rolled-back") as (tx,verify):
                 finish_inverse(load,plan,candidate,mapping,record,manifest,tx,verify,before,after,(source_pass,destination_pass),password,code)
             return {"transaction_id":ident,"checkpoint":"rolled-back"}
         dest = plan.destination

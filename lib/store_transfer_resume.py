@@ -13,7 +13,7 @@ from store_publish import observe_original_ref, recovery_root
 from store_read import local_inputs
 from store_receive import fetch_from_fd, git
 from store_transfer import DestinationCandidate, ObservedStore, TransferPlan
-from store_transfer_apply import advance, check_source, displaced_destination, payload_pin, save_destination, transfer_gates, write_once
+from store_transfer_apply import adopt_terminal, advance, check_source, displaced_destination, payload_pin, save_destination, transfer_gates, write_once
 from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCredential, private_workspace, read_mapping_end
 from store_transfer_intent import local_descriptors, reopen_intent, require_no_senders, token, wire
 from store_transfer_owner import new_owner
@@ -340,7 +340,8 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             require(store == mapping.destination.store_id,"unexpected recovery vault")
             return phrase
         mapping.verify_decryption(load,unlock,saved=not prepared)
-        with transfer_gates(load,plan,record,manifest,recovery=True) as (tx,verify),ExitStack() as held:
+        finishing = "completed" if phase == "source-confirmed" else None
+        with transfer_gates(load,plan,record,manifest,recovery=True,finishing=finishing) as (tx,verify),ExitStack() as held:
             accepted = None
             if not prepared and not saved_unsent and (finished_source or plan.destination == plan.shared):
                 proposed = candidate.source_proposed if finished_source else candidate.proposed
@@ -365,6 +366,22 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
                 elif saved_unsent:
                     current_receiver(plan,plan.shared.base,require_writes=True)
             current()
+            if finishing and "completion.json" in os.listdir(tx):
+                def retired():
+                    current()
+                    slots = [(plan.source,manifest["source_runtime"],manifest["source_evidence"])]
+                    if candidate.replaced_project:
+                        slots.append((plan.destination,manifest["destination_runtime"],manifest["destination_evidence"]))
+                    for store,runtime,evidence in slots:
+                        with local_descriptors(plan.account,store) as (_,repo),open_directory(repo,runtime) as slot:
+                            require_private_directory(slot,"completed transfer exchange")
+                            info = os.fstat(slot)
+                            require(not os.listdir(slot) and evidence.get("exchange",{}).get("directory") == [info.st_dev,info.st_ino],
+                                    "transfer file retirement is incomplete")
+                done = adopt_terminal(tx,plan.account,record,manifest,"completed",password,code,retired)
+                require(done,"original completion receipt disappeared")
+                verify(done)
+                return {"transaction_id":ident,"checkpoint":"completed"}
             owner,start = new_owner()
             previous = {"owner":record["owner"],"native_start":manifest["native_start"],"sequence":record["sequence"]}
             successor = dict(record,owner=owner)

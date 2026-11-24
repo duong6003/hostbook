@@ -304,7 +304,21 @@ def classify(folder, account, ident, kind):
         return affected, terminal and not unsettled_terminal and selector["sequence"] == len(names)
 
 
-def require_idle(recovery_fd, account, store_id, transition=None, sender=None, *, transfer=None):
+def selected_transfer(folder, history, selector, record, finishing=None):
+    seq = record["sequence"]
+    if selector["sequence"] != seq or private_json(history,f"{seq}.json") != record:
+        return False
+    count = len(os.listdir(history))
+    if count == seq:
+        return True
+    if count != seq+1 or (record["checkpoint"],finishing) not in (("rollback-pending","rolled-back"),("source-confirmed","completed")):
+        return False
+    successor = private_json(history,f"{seq+1}.json")
+    verify = verified_rollback if finishing == "rolled-back" else verified_completion
+    return successor["checkpoint"] == finishing and verify(folder,successor,record)
+
+
+def require_idle(recovery_fd, account, store_id, transition=None, sender=None, *, transfer=None, finishing=None):
     for kind in ("transactions", "control"):
         try:
             container = os.open(kind, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery_fd)
@@ -326,9 +340,7 @@ def require_idle(recovery_fd, account, store_id, transition=None, sender=None, *
                             and scope == {row["store_id"] for row in transfer["stores"]}):
                         selected = private_json(folder,"current.json")
                         with open_directory(folder,("records",)) as history:
-                            seq = transfer["sequence"]
-                            own = (selected["sequence"] == seq == len(os.listdir(history))
-                                   and private_json(history,f"{seq}.json") == transfer)
+                            own = selected_transfer(folder,history,selected,transfer,finishing)
                     if (transition is not None and kind == "control" and ident == transition["record_id"]
                             and scope == {store_id} and transition["operation"] == "registration-transition"):
                         with open_directory(folder, ("records",)) as history:

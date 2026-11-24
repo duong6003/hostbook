@@ -3431,21 +3431,49 @@ with prepare_candidate(load,plan,mapping) as candidate:
             apply=publish_destination if plan.destination.context.kind=='shared' else confirm_private_destination
             result=apply(load,ident,plan,candidate,mapping,unlock,pw,code)
             assert result['checkpoint']=='destination-confirmed'
-            if args['step']=='inverse-applied':
+            if args['step'].startswith('inverse-'):
                 import store_transfer_rollback as inverse
                 advance=inverse.advance
                 def stopped(*values,**options):
-                    if values[4]['checkpoint']=='rolled-back':
+                    if values[4]['checkpoint']=='rolled-back' and args['step']=='inverse-applied':
                         print(ident,flush=True)
                         sys.stdin.readline()
                         raise SystemExit(0)
                     return advance(*values,**options)
                 inverse.advance=stopped
+                import store_transfer_apply as effects
+                write=effects.write_once
+                receipt_seen=[]
+                def stopped_write(*values):
+                    write(*values)
+                    name=values[2]
+                    if name=='rollback.json':
+                        receipt_seen.append(True)
+                    if receipt_seen and ((name=='rollback.json' and args['step']=='inverse-receipt') or
+                                         (name[0].isdigit() and args['step']=='inverse-history')):
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                effects.write_once=stopped_write
                 secret=lambda role:unlock(args['src'] if role=='source' else args['dst'])
                 inverse.rollback_private(load,ident,pw,code,secret,lambda _:True)
-            if args['step'] == 'source-confirmed' or 'retire-' in args['step']:
+            if args['step'] in ('source-confirmed','completion-history') or 'retire-' in args['step']:
                 remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
                 assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
+                if args['step']=='completion-history':
+                    import store_transfer_apply as effects,store_transfer_remove as removal
+                    write=effects.write_once
+                    seen=[]
+                    def stopped_write(*values):
+                        write(*values)
+                        if values[2]=='completion.json':
+                            seen.append(True)
+                        elif seen and values[2][0].isdigit():
+                            print(ident,flush=True)
+                            sys.stdin.readline()
+                            raise SystemExit(0)
+                    effects.write_once=stopped_write
+                    removal.finish_shared_source(load,ident,plan,candidate,mapping,unlock,pw,code)
                 if 'retire-' in args['step']:
                     import os,store_transfer_remove as removal,store_transfer_apply as effects
                     def pause():
@@ -3929,6 +3957,72 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual(proof["rollback"]["tip"],inverse)
         self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),inverse)
         self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+
+    def recover_prior_terminal(self, step):
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,step)
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,original = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"rollback-pending")
+        root = self.recovery/"transactions"/ident
+        receipt = json.loads((root/"rollback.json").read_bytes())
+        self.assertEqual(receipt["sequence"],record["sequence"]+1)
+        history = root/"records"/(str(receipt["sequence"])+".json")
+        exists = history.exists()
+        self.assertEqual(exists,step=="inverse-history")
+        saved = history.read_bytes() if exists else None
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        original_receipt = (root/"rollback.json").read_bytes()
+        (root/"rollback.json").write_text(json.dumps(dict(receipt,compensation=new_id())))
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(json.loads((root/"current.json").read_bytes())["sequence"],record["sequence"])
+        self.assertEqual(history.exists(),exists)
+        (root/"rollback.json").write_bytes(original_receipt)
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None),0)
+        complete,opened = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(complete["checkpoint"],"rolled-back")
+        self.assertEqual(complete["payload_id"],receipt["payload_id"])
+        self.assertEqual(complete["effects"][1]["evidence_id"],receipt["compensation"])
+        self.assertEqual(complete["sequence"],receipt["sequence"])
+        self.assertEqual(json.loads((root/"rollback.json").read_bytes()),receipt)
+        if exists:
+            self.assertEqual(history.read_bytes(),saved)
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),original["rollback"]["tip"])
+        self.assertEqual(opened["rollback"]["tip"],original["rollback"]["tip"])
+
+    def test_recover_original_rollback_receipt_before_terminal_history(self):
+        self.recover_prior_terminal("inverse-receipt")
+
+    def test_recover_original_rollback_history_before_terminal_selector(self):
+        self.recover_prior_terminal("inverse-history")
+
+    def test_recover_original_completed_history_before_selector_without_receipt_or_send_replay(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"completion-history")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        selected,manifest = reopen_intent(f.load,ident,pw)
+        root = self.recovery/"transactions"/ident
+        completion = json.loads((root/"completion.json").read_bytes())
+        history = root/"records"/(str(completion["sequence"])+".json")
+        exact = history.read_bytes()
+        self.assertEqual(selected["checkpoint"],"source-confirmed")
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.v.unlock(f.dst.store_id)}[role]
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        done,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(done["checkpoint"],"completed")
+        self.assertEqual(done["payload_id"],completion["payload_id"])
+        self.assertEqual(done["attempts"],selected["attempts"])
+        self.assertEqual(history.read_bytes(),exact)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
 
     def test_resume_original_saved_destination_before_first_shared_send(self):
         from store_transfer_intent import reopen_intent
