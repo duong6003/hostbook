@@ -120,7 +120,7 @@ class StoreContextTest(unittest.TestCase):
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
                          "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
                          "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
-                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py"):
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -3760,6 +3760,60 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual(completed["checkpoint"],"completed")
         self.assertEqual(completed["attempts"][0]["attempt_id"],original["attempts"][0]["attempt_id"])
         self.assertEqual(shared.git(shared.remote,"rev-parse",ref),manifest["proposed"])
+
+    def test_rollback_confirmed_private_destination_appends_verified_inverse_preserving_shared_source(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        f = self.reverse_transfer_case()
+        prior_sources = snapshot(f.src.checkout)
+        original_identity = json.loads((f.dst.checkout/".hostbook/identity.json").read_bytes())
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        dest = f.dst.checkout
+        committed = f.shared.git(dest,"rev-parse","HEAD")
+        before = snapshot(dest)
+        events = []
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        def confirm(row):
+            self.assertEqual(row["action"],"rollback")
+            self.assertEqual(row["transaction_id"],ident)
+            self.assertEqual((row["credential"],row["keep_credential"]),("db-credential",False))
+            self.assertEqual(row["destination"]["revision"],committed)
+            return True
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:False,events.append)
+        self.assertEqual(snapshot(dest),before)
+        (dest/"team.conf").write_bytes((dest/"team.conf").read_bytes()+b"# unrelated editor save\n")
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"rollback",ident,secret,confirm,events.append)
+        self.assertTrue((dest/"team.conf").read_bytes().endswith(b"# unrelated editor save\n"))
+        (dest/"team.conf").write_bytes(f.shared.git(dest,"show","HEAD:team.conf").encode()+b"\n")
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,confirm,events.append),0)
+        self.assertEqual(events[-1],{"transaction_id":ident,"checkpoint":"rolled-back"})
+        self.assertEqual(f.shared.git(dest,"rev-parse","HEAD^"),committed)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+        self.assertEqual(snapshot(f.src.checkout),prior_sources)
+        self.assertFalse((f.dst.vault/"db-credential.age").exists())
+        recovered = json.loads((dest/".hostbook/identity.json").read_bytes())
+        self.assertGreater(recovered["generation"],original_identity["generation"]+1)
+        self.assertEqual(dict(recovered,generation=original_identity["generation"]),original_identity)
+        self.assertEqual(f.shared.git(dest,"status","--porcelain"),"")
+        final,payload = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(final["attempts"],[])
+        self.assertEqual(payload["rollback"]["tip"],f.shared.git(dest,"rev-parse","HEAD"))
+        with recovery_root(f.load()) as root:
+            for store in final["stores"]:
+                require_idle(root,f.load(),store["store_id"])
+            receipt = self.recovery/"transactions"/ident/"rollback.json"
+            receipt.rename(self.root/"withheld-rollback.json")
+            with self.assertRaises(StoreContextError):
+                require_idle(root,f.load(),f.dst.store_id)
+            require_idle(root,f.load(),self.entries[2]["store_id"])
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

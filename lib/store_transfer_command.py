@@ -136,7 +136,7 @@ def review_arguments(details):
 
 def run_recovery(load, action, ident, secret, confirm, emit):
     from store_transfer_resume import cancel_prepared, resume_confirmed, settle_transfer, transfer_status
-    require(action in ("status","resume","cancel","settle"),"unknown transfer recovery action")
+    require(action in ("status","resume","cancel","settle","rollback"),"unknown transfer recovery action")
     status = transfer_status(load,ident)
     emit(status)
     if action == "status":
@@ -147,17 +147,20 @@ def run_recovery(load, action, ident, secret, confirm, emit):
         result = settle_transfer(load,ident,password,code)
         emit(result)
         return 0 if result["outcome"] != "uncertain" else 75
-    if action == "cancel":
+    if action == "rollback":
+        from store_transfer_rollback import rollback_private
+        result = rollback_private(load,ident,password,code,secret,confirm)
+    elif action == "cancel":
         result = cancel_prepared(load,ident,password,code,confirm)
     else:
         result = resume_confirmed(load,ident,password,code,lambda _:secret("destination"),confirm)
     emit(result)
-    return 0 if result["checkpoint"] in ("completed","cancelled") else 75
+    return 0 if result["checkpoint"] in ("completed","cancelled","rolled-back") else 75
 
 
 def transfer_command(args, *, recovery=False):
     if recovery:
-        require(len(args) == 2 and args[1] in ("status","cancel","resume","settle"),"provide the original transaction ID and status, cancel, settle or resume")
+        require(len(args) == 2 and args[1] in ("status","cancel","resume","settle","rollback"),"provide the original transaction ID and recovery action")
     else:
         require(len(args) in (14,15,18),"provide both registered selections, destination alias, credential name and create or reuse")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
@@ -196,7 +199,12 @@ def transfer_command(args, *, recovery=False):
         (tools/"fzf").symlink_to(binary[0]/"fzf")
         def confirm(details):
             require(picker() == binary and load() == account,"transfer confirmation context changed")
-            if details.get("action") == "cancel":
+            if details.get("action") == "rollback":
+                src,dst = details["source"],details["destination"]
+                review = ["_store_transfer_rollback",details["transaction_id"],src["name"],src["store_id"],dst["alias"],
+                          dst["store_id"],dst["host_id"],dst["ref"],dst["revision"],dst["inverse"],",".join(details["required_aliases"]),
+                          details["credential"],"keep" if details["keep_credential"] else "remove"]
+            elif details.get("action") == "cancel":
                 review = ["_store_transfer_cancel",details["transaction_id"],details["source"],details["destination"]]
             else:
                 review = review_arguments(details)
@@ -205,7 +213,7 @@ def transfer_command(args, *, recovery=False):
             proc = subprocess.run([*command,*review],env=terminal_env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
-            if details.get("requires_typed_alias"):
+            if details.get("requires_typed_alias") or details.get("required_aliases"):
                 return proc.stdout.decode().splitlines()
             return not proc.stdout
         if recovery:

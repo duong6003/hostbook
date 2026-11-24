@@ -181,6 +181,48 @@ def completion_receipt(record, version=2):
         receipt["publication"] = publication_receipt(record["stores"],record["attempts"][0])
     return receipt
 
+def retained_envelopes(folder, record):
+    from store_transfer_recovery import capture
+    with open_directory(folder,("recovery",)) as generations,open_directory(folder,("payloads",)) as payloads:
+        require_private_directory(generations,"transfer recovery generations")
+        with open_directory(generations,(str(record["recovery_generation"]),)) as envelopes:
+            files,_ = capture(envelopes,payloads,record["payload_id"],("vault.key.age","vault.recovery.age"))
+            if not re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}\n",files.pop("vault.pub")):
+                return False
+            if not all(data.startswith(b"-----BEGIN AGE ENCRYPTED FILE-----\n")
+                       and data.endswith(b"-----END AGE ENCRYPTED FILE-----\n") for data in files.values()):
+                return False
+    return True
+
+
+def rollback_receipt(record):
+    return {"version":1,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
+            "payload_id":record["payload_id"],"destination_effect":record["effects"][0]["evidence_id"],
+            "compensation":record["effects"][1]["evidence_id"]}
+
+
+def verified_rollback(folder, record, prior):
+    if (record["operation"] != "transfer" or not prior or prior["checkpoint"] != "rollback-pending"
+            or record["attempts"] or prior["attempts"] or record["sequence"] < 3):
+        return False
+    dst = next(row["store_id"] for row in record["stores"] if row["role"] == "destination")
+    effects = record["effects"]
+    if (len(effects) != 2 or len(prior["effects"]) != 2 or prior["effects"][0] != effects[0]
+            or any(e["store_id"] != dst or e["outcome"] != "observed" or not valid_id(e["evidence_id"]) for e in effects)
+            or prior["effects"][1] != dict(effects[1],outcome="intended",evidence_id=None)
+            or any(record[key] != prior[key] for key in ("stores","hosts","owner","collection"))
+            or record["collection"] != {"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}):
+        return False
+    try:
+        with open_directory(folder,("records",)) as history:
+            original = private_json(history,str(prior["previous_sequence"])+".json")
+            return (original["checkpoint"] == "destination-confirmed" and original["effects"] == effects[:1] and not original["attempts"]
+                    and all(original[k] == record[k] for k in ("hosts","stores"))
+                    and private_json(folder,"rollback.json") == rollback_receipt(record) and retained_envelopes(folder,record))
+    except (OSError,StoreContextError):
+        return False
+
+
 def verified_completion(folder, record, prior):
     if (record["operation"] != "transfer" or not prior or prior["checkpoint"] != "source-confirmed"
             or any(prior[key] != record[key] for key in ("stores","hosts","owner","effects","attempts","collection"))):
@@ -195,16 +237,8 @@ def verified_completion(folder, record, prior):
         return False
     attempt = attempts[0]
     try:
-        from store_transfer_recovery import capture
-        with open_directory(folder,("recovery",)) as generations,open_directory(folder,("payloads",)) as payloads:
-            require_private_directory(generations,"transfer recovery generations")
-            with open_directory(generations,(str(record["recovery_generation"]),)) as envelopes:
-                files,_ = capture(envelopes,payloads,record["payload_id"],("vault.key.age","vault.recovery.age"))
-                if not re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}\n",files.pop("vault.pub")):
-                    return False
-                if not all(data.startswith(b"-----BEGIN AGE ENCRYPTED FILE-----\n")
-                           and data.endswith(b"-----END AGE ENCRYPTED FILE-----\n") for data in files.values()):
-                    return False
+        if not retained_envelopes(folder,record):
+            return False
         with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
             require_private_directory(sender,"transfer sender")
             completion = private_json(folder,"completion.json")
@@ -246,6 +280,8 @@ def classify(folder, account, ident, kind):
             scope, terminal = (control if kind == "control" else transaction)(record, prior)
             if kind == "transactions" and record["checkpoint"] == "completed":
                 terminal = verified_completion(folder,record,prior)
+            if kind == "transactions" and record["checkpoint"] == "rolled-back":
+                terminal = verified_rollback(folder,record,prior)
             if kind == "transactions" and record["checkpoint"] in TERMINAL and not terminal:
                 unsettled_terminal = True
                 if scope is None:

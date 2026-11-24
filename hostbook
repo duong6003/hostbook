@@ -3164,6 +3164,26 @@ fi
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
+  _store_transfer_rollback)
+    [ "$#" -eq 13 ] || exit 65
+    at "$(t transfer_title)"
+    head="$(t transfer_rollback_source "$2" "$3" "$4")$NL$(t transfer_rollback_destination "$5" "$6")"
+    {
+      t transfer_destination_key "$7" "$8" "$9"; echo
+      t transfer_rollback_inverse "${10}"; echo
+      case ${13} in keep) t transfer_rollback_reuse "${12}";; remove) t transfer_rollback_remove "${12}";; *) exit 65;; esac; echo
+    } | ui_fzf "$(ui_head "$head")" --no-input --wrap --prompt='› ' \
+          --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")" --bind 'esc:abort' >/dev/null || exit 1
+    if [ -n "${11}" ]; then
+      IFS=, read -r -a required <<< "${11}"
+      for alias in "${required[@]}"; do
+        typed=$(UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t transfer_title)" "" "equals:$alias" "$(t delete_type_rule "$alias")" "" "$head") || exit 1
+        [ "$typed" = "$alias" ] || exit 1
+        printf '%s\n' "$typed"
+      done
+    else
+      UI_HEAD=$head ui_confirm --danger --default=false --affirmative "$(t key_confirm)" --negative "$(t cancel)" "$(t transfer_rollback_question)"
+    fi;;
   _store_transfer_cancel)
     [ "$#" -eq 4 ] || exit 65
     at "$(t transfer_title)"
