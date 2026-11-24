@@ -3501,6 +3501,31 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
             self.assertEqual(record["checkpoint"],"destination-confirmed")
             self.assertEqual(record["effects"][-1]["outcome"],"intended")
 
+    def test_transfer_prompt_uses_saved_language_and_first_trusted_compatible_picker(self):
+        import store_transfer_command as command
+        settings = self.root/"preferences"/"hostbook"
+        settings.mkdir(parents=True)
+        (settings/"config").write_text("# lang = en\nlang = en\nlang = vi  # selected\n")
+        environment = {"XDG_CONFIG_HOME":str(settings.parent),"LANG":"en_US.UTF-8"}
+        self.assertEqual(command.operator_language(environment,self.root),"vi")
+        self.assertEqual(command.operator_language(dict(environment,HOSTBOOK_LANG="en"),self.root),"en")
+        paths = []
+        for version in ("0.44.0","0.63.1"):
+            folder = self.root/version
+            folder.mkdir()
+            program = folder/"fzf"
+            program.write_text("#!/bin/sh\nprintf '%s\\n' "+version+"\n")
+            program.chmod(0o700)
+            paths.append((folder,None))
+        def verified(account,location,programs,reason):
+            self.assertEqual(account,self.account)
+            self.assertEqual(programs,("fzf",))
+            return location[0][0],("fixture-identity",)
+        with patch.object(command,"verified_programs",side_effect=verified):
+            self.assertEqual(command.compatible_picker(self.account,paths,"0.63")[0],paths[1][0])
+            with self.assertRaisesRegex(StoreContextError,"approved fzf"):
+                command.compatible_picker(self.account,paths[:1],"0.63")
+
     def test_explicit_transfer_command_runs_reviewed_move_and_emits_only_public_results(self):
         from store_transfer_command import run_transfer
         f = self.transfer_case(shared_credential=True)

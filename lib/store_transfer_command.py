@@ -3,9 +3,11 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import subprocess
 
-from store_context import Generations, load_approved_account, require
+from store_context import Generations, StoreContextError, load_approved_account, read_file, require
+from store_receive import absolute_directory
 from store_read import SECRET_NAME
 from store_login import age_installations, prompt_passphrase, verified_programs
 from store_transfer import interruptible_preview, prepare_candidate, preview
@@ -54,6 +56,43 @@ def run_transfer(load, args, secret, confirm, emit):
     return 0
 
 
+def operator_language(env, home):
+    language = env.get("HOSTBOOK_LANG","")
+    if not language:
+        configured = Path(env.get("XDG_CONFIG_HOME") or Path(env.get("HOME") or home)/".config")/"hostbook"
+        if configured.is_absolute():
+            try:
+                with absolute_directory(configured) as directory:
+                    data = read_file(directory,"config",65536)
+                for line in data.split(b"\n"):
+                    key,sep,value = line.partition(b"=")
+                    if sep and key.strip() == b"lang":
+                        language = re.split(rb"[ \t]# ",value,maxsplit=1)[0].strip().decode("ascii",errors="replace")
+            except (OSError,StoreContextError):
+                pass
+    if language in ("vi","en"):
+        return language
+    locale = env.get("LC_ALL") or env.get("LC_MESSAGES") or env.get("LANG","")
+    return "vi" if locale.startswith("vi") else "en"
+
+
+def compatible_picker(account, locations, minimum):
+    require(re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}",minimum),"invalid installed fzf requirement")
+    required = tuple(int(v) for v in minimum.split("."))
+    reason = "registered transfer confirmation requires an approved fzf "+minimum+" or later"
+    for location in locations:
+        try:
+            binary = verified_programs(account,(location,),("fzf",),reason)
+            result = subprocess.run([binary[0]/"fzf","--version"],env={"PATH":"/usr/bin:/bin"},stdin=subprocess.DEVNULL,
+                                    capture_output=True,timeout=5)
+            version = re.match(rb"([0-9]+(?:\.[0-9]+){1,2})(?:[ \r\n]|$)",result.stdout)
+            if result.returncode == 0 and version and tuple(map(int,version[1].split(b"."))) >= required:
+                return binary
+        except (OSError,subprocess.SubprocessError,StoreContextError):
+            continue
+    raise StoreContextError(reason)
+
+
 def transfer_command(args):
     require(len(args) == 14,"provide both registered selections, destination alias, credential name and create or reuse")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
@@ -61,18 +100,14 @@ def transfer_command(args):
         return load_approved_account(home)
     account = load()
     locations = [(directory,cellar.with_name("fzf") if cellar else None) for directory,cellar in age_installations()]
-    def picker():
-        return verified_programs(account,locations,("fzf",),"registered transfer confirmation requires an approved fzf")
-    binary = picker()
     hostbook = Path(__file__).resolve().parents[1]/"hostbook"
     roles = ("source","destination","backup","backup-repeat","recovery","recovery-repeat")
     with interruptible_preview(), private_workspace() as (scratch,_):
         tools = scratch/"bin"
         tools.mkdir(mode=0o700)
-        (tools/"fzf").symlink_to(binary[0]/"fzf")
         env = {"HOME":str(scratch),"PATH":str(tools)+":/usr/bin:/bin","SHELL":"/bin/bash",
                "TERM":os.environ.get("TERM","xterm-256color"),"LANG":os.environ.get("LANG","en_US.UTF-8"),
-               "HOSTBOOK_LANG":os.environ.get("HOSTBOOK_LANG",""),"HOSTBOOK_DIR":str(scratch/"view"),
+               "HOSTBOOK_LANG":operator_language(os.environ,home),"HOSTBOOK_DIR":str(scratch/"view"),
                "HOSTBOOK_STATE":str(scratch/"state"),"HOSTBOOK_SSH_CONFIG":str(scratch/"ssh.config"),
                "XDG_CONFIG_HOME":str(scratch/"settings")}
         command = ["/bin/bash",str(hostbook)]
@@ -80,8 +115,12 @@ def transfer_command(args):
                                stdout=subprocess.PIPE,timeout=10)
         require(texts.returncode == 0,"registered transfer prompt translations are unavailable")
         texts = texts.stdout.decode().splitlines()
-        require(len(texts) == len(roles) and all(texts),"registered transfer prompt translations are unavailable")
-        labels = dict(zip(roles,texts))
+        require(len(texts) == 1+len(roles) and all(texts),"registered transfer prompt translations are unavailable")
+        def picker():
+            return compatible_picker(account,locations,texts[0])
+        binary = picker()
+        (tools/"fzf").symlink_to(binary[0]/"fzf")
+        labels = dict(zip(roles,texts[1:]))
         def secret(role):
             return prompt_passphrase(labels[role]+" ")
         def confirm(details):
