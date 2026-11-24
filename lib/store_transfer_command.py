@@ -98,6 +98,17 @@ def operator_language(env, home):
     return "vi" if locale.startswith("vi") else "en"
 
 
+def operator_environment(scratch,home):
+    tools = scratch/"bin"
+    tools.mkdir(mode=0o700)
+    env = {"HOME":str(scratch),"PATH":str(tools)+":/usr/bin:/bin","SHELL":"/bin/bash",
+           "TERM":os.environ.get("TERM","xterm-256color"),"LANG":os.environ.get("LANG","en_US.UTF-8"),
+           "HOSTBOOK_LANG":operator_language(os.environ,home),"HOSTBOOK_DIR":str(scratch/"view"),
+           "HOSTBOOK_STATE":str(scratch/"state"),"HOSTBOOK_SSH_CONFIG":str(scratch/"ssh.config"),
+           "XDG_CONFIG_HOME":str(scratch/"settings")}
+    return tools,env
+
+
 def compatible_picker(account, locations, minimum):
     require(re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}",minimum),"invalid installed fzf requirement")
     required = tuple(int(v) for v in minimum.split("."))
@@ -181,13 +192,7 @@ def transfer_command(args, *, recovery=False):
     hostbook = Path(__file__).resolve().parents[1]/"hostbook"
     roles = ("source","destination","backup","backup-repeat","recovery","recovery-repeat")
     with interruptible_preview(), private_workspace() as (scratch,_):
-        tools = scratch/"bin"
-        tools.mkdir(mode=0o700)
-        env = {"HOME":str(scratch),"PATH":str(tools)+":/usr/bin:/bin","SHELL":"/bin/bash",
-               "TERM":os.environ.get("TERM","xterm-256color"),"LANG":os.environ.get("LANG","en_US.UTF-8"),
-               "HOSTBOOK_LANG":operator_language(os.environ,home),"HOSTBOOK_DIR":str(scratch/"view"),
-               "HOSTBOOK_STATE":str(scratch/"state"),"HOSTBOOK_SSH_CONFIG":str(scratch/"ssh.config"),
-               "XDG_CONFIG_HOME":str(scratch/"settings")}
+        tools,env = operator_environment(scratch,home)
         command = ["/bin/bash",str(hostbook)]
         texts = subprocess.run([*command,"_store_transfer_labels","recover" if recovery else "create"],env=env,stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE,timeout=10)

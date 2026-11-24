@@ -9,6 +9,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import subprocess
 from uuid import uuid4
 
 from store_checkout import direct_ref, tree
@@ -22,6 +23,21 @@ from store_receive import IDENTITY, absolute_directory, fetch_direct, git, oid, 
 from store_transfer_credentials import private_workspace
 
 ANCHORS = ("secrets/vault.pub","secrets/vault.key.age","secrets/vault.recovery.age")
+
+
+def selected_prod(lines,alias):
+    tagged = False
+    for raw in lines:
+        line = raw.decode().strip()
+        if annotation := re.fullmatch(r"#[ \t]*tags[ \t]*:[ \t]*(.*)",line,re.I):
+            tagged = "prod" in annotation[1].lower().split()
+        elif directive := DIRECTIVE.fullmatch(line):
+            if directive[1].lower() == "host" and directive[2].split("#",1)[0].strip().lower() == alias.lower():
+                return tagged
+            tagged = False
+        elif line and not line.startswith("#"):
+            tagged = False
+    return False
 
 
 def selected_version(stage,rev,files,store,host,local):
@@ -42,7 +58,7 @@ def selected_version(stage,rev,files,store,host,local):
     alias,_,_,credential = signature
     require(INDEX_NAME.fullmatch(alias),"unsupported conflict alias")
     route = routes[host]
-    return dict(alias=alias,address=address,credential=credential,user=route["user"],port=route["port"],
+    return dict(alias=alias,address=address,credential=credential,prod=selected_prod(lines,alias),user=route["user"],port=route["port"],
                 effective_address=route["hostname"],proxyjump=route["proxyjump"],settings=dict(route["settings"])),signature
 
 
@@ -79,9 +95,13 @@ def compare_versions(stage,store,candidate,tip,local):
         kind = "same-host-edit"
     else:
         kind = "compatible"
-    return dict(store_id=store,host_id=host,attempt_id=candidate["attempt_id"],ref=candidate["ref"],
+    required_aliases = sorted({view["alias"] for view,_ in sides if view is not None and view["prod"]})
+    report = dict(store_id=store,host_id=host,attempt_id=candidate["attempt_id"],ref=candidate["ref"],required_aliases=required_aliases,
                 base_revision=base,candidate_revision=draft,remote_revision=tip,kind=kind,
                 credential_conflicts=collisions,changed_bound_credentials=sorted(set(changed_bindings)|(selected-names)),**summary)
+
+    report["review_id"] = hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    return report
 
 
 @contextmanager
@@ -138,12 +158,12 @@ def compare(load,store,expected,ident):
         return report
 
 
-def resolve(load,store,expected,ident,action,draft,tip):
+def resolve(load,store,expected,ident,action,draft,tip,review_id,*,confirm_prod=None):
     require(action == "use-candidate-address","select an explicit supported conflict decision")
     with comparison(load,store,expected,ident) as (report,stage,current,inputs), ExitStack() as opened:
         account,ctx,target,remote,binding,recovery,local = inputs
         host = report["host_id"]
-        require((report["candidate_revision"],report["remote_revision"]) == (draft,tip)
+        require((report["candidate_revision"],report["remote_revision"],report["review_id"]) == (draft,tip,review_id)
                 and report["kind"] in ("same-host-edit","compatible"),"conflict decision differs from the reviewed versions")
         require(all(report[side] is not None for side in ("base","candidate","remote")),
                 "address resolution needs the same existing host on both branches")
@@ -152,11 +172,10 @@ def resolve(load,store,expected,ident,action,draft,tip):
                 all(report[side]["credential"] == report["remote"]["credential"] for side in ("candidate","base")),
                 "review the changed credential binding separately")
         versions = [record_at(stage,oid,store,host) for oid in (report["base_revision"],draft,tip)]
-        # The current operator route supports ordinary targets. PROD needs terminal alias confirmation.
-        for version,revision in zip(versions,(report["base_revision"],draft,tip)):
-            source = git(stage,"show",revision+":"+version[1])
-            require(not any(b"prod" in line.split(b":",1)[1].lower().split() for line in source.split(b"\n")
-                            if re.match(rb"^[ \t]*#[ \t]*tags[ \t]*:",line,re.I)),"PROD conflict needs terminal alias confirmation")
+        if report["required_aliases"]:
+            require(confirm_prod and confirm_prod(account,report,action) == report["required_aliases"],
+                    "type the exact affected PROD host aliases to confirm")
+            current()
         require_plain_receiver(remote)
         attempt = str(uuid4())
         proposed = prepare_proposal(stage,tip,tip,store,host,chosen,attempt,versions[2][4])
@@ -174,7 +193,7 @@ def resolve(load,store,expected,ident,action,draft,tip):
                 identity,_ = index_rows(work,store,files)
                 selected = stanza(identity,files.__getitem__,store,host)[4]
                 require(selected in (versions[0][4],versions[2][4]),"local host changed during conflict resolution")
-            link = dict(action=action,original_attempt=ident,original_base=report["base_revision"],original_proposal=draft)
+            link = dict(action=action,original_attempt=ident,original_base=report["base_revision"],original_proposal=draft,review_id=review_id)
             reservation = reserve_edit(opened,recovery,account,ctx,target,host,tip,proposed,bundle,
                                        attempt,str(uuid4()),resolution=link)
         result = launch_reserved(load,account,recovery,ctx,expected,stage,remote,reservation)
@@ -182,14 +201,34 @@ def resolve(load,store,expected,ident,action,draft,tip):
         return result
 
 
+def confirm_aliases(account,report,action):
+    from store_login import age_installations
+    from store_transfer_command import compatible_picker, operator_environment
+    app = Path(__file__).resolve().parents[1]/"hostbook"
+    home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    with private_workspace() as (folder,_):
+        tools,env = operator_environment(folder,home)
+        labels = subprocess.run(["/bin/bash",str(app),"_store_transfer_labels","create"],env=env,
+                                stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,timeout=8,check=True).stdout.splitlines()
+        require(labels,"missing installed picker version")
+        locations = [(path,cellar.with_name("fzf") if cellar else None) for path,cellar in age_installations()]
+        picker = compatible_picker(account,locations,labels[0].decode())
+        (tools/"fzf").symlink_to(picker[0]/"fzf")
+        command = ["/bin/bash",str(app),"_store_conflict_confirm",report["store_id"],report["ref"],
+                   report["candidate_revision"],report["remote_revision"],action,",".join(report["required_aliases"]),
+                   (report["candidate"] or {}).get("address","—"),(report["remote"] or {}).get("address","—")]
+        approved = subprocess.run(command,env=env,stdout=subprocess.PIPE)
+        return approved.stdout.decode().splitlines() if approved.returncode == 0 else []
+
+
 def conflict_command(args):
-    require(len(args) in (6,9),"provide store ID, four generations and original attempt, then optional decision and reviewed candidate/remote revisions")
+    require(len(args) in (6,10),"provide store ID, four generations and original attempt, then optional decision, reviewed candidate/remote revisions and review ID")
     store,expected,ident = args[0],Generations(*(int(v) for v in args[1:5])),args[5]
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
     from store_transfer import interruptible_preview
     with interruptible_preview():
         def load():
             return load_approved_account(home)
-        result = compare(load,store,expected,ident) if len(args)==6 else resolve(load,store,expected,ident,*args[6:])
+        result = compare(load,store,expected,ident) if len(args)==6 else resolve(load,store,expected,ident,*args[6:],confirm_prod=confirm_aliases)
     print(json.dumps(result))
     return 0 if result.get("outcome","accepted") == "accepted" else 75

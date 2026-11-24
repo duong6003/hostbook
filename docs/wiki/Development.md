@@ -555,7 +555,7 @@ both versions and the retained attempt. An unavailable or changed binding
 requires fresh observation.
 
 For an ordinary same-host address conflict, append
-`use-candidate-address CANDIDATE_OID REMOTE_OID` using the displayed revisions.
+`use-candidate-address CANDIDATE_OID REMOTE_OID REVIEW_ID` using the displayed revisions and comparison ID.
 The new conditional commit changes the address on top of the observed remote
 version and preserves its other settings. A changed ref requires a new review.
 A rejected resolution leaves the original candidate available, and an

@@ -55,7 +55,10 @@ def control(record, prior):
            (" resolution" if "resolution" in detail else ""))
     if "resolution" in detail:
         link = detail["resolution"]
-        fields(link,"action original_attempt original_base original_proposal")
+        fields(link,"action original_attempt original_base original_proposal"+(" review_id" if "review_id" in link else ""))
+        if "review_id" in link:
+            require(isinstance(link["review_id"],str) and re.fullmatch(r"[a-f0-9]{64}",link["review_id"]),
+                    "invalid confirmed conflict comparison")
         require(link["action"] == "use-candidate-address" and valid_id(link["original_attempt"])
                 and link["original_attempt"] != detail["attempt_id"] and all(
                     isinstance(link[k],str) and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})",link[k])

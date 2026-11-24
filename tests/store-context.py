@@ -1830,22 +1830,22 @@ class StoreContextTest(unittest.TestCase):
         remote = f.git(f.remote,"rev-parse","refs/heads/main")
         other = snapshot(self.root/"shared b")
         with self.assertRaises(StoreContextError):
-            store_conflict.resolve(*args,view["base_revision"])
+            store_conflict.resolve(*args,view["base_revision"],view["review_id"])
         with patch.object(store_publish,"send",return_value="not-accepted"):
-            rejected = store_conflict.resolve(*args,remote)
+            rejected = store_conflict.resolve(*args,remote,view["review_id"])
         self.assertEqual(rejected["outcome"],"not-accepted")
         self.assertNotEqual(rejected["attempt_id"],ident)
         self.assertEqual(store_mode.change_mode(load,store,self.generations,"two-way")["pending"],[ident])
         self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main"),remote)
         self.assertEqual((self.recovery/"edits"/ident/"proposal.bundle").read_bytes(),original_bundle)
-        done = store_conflict.resolve(*args,remote)
+        done = store_conflict.resolve(*args,remote,view["review_id"])
         self.assertEqual(done["outcome"],"accepted")
         self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main^"),remote)
         self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),"Host db\n  HostName 192.0.2.88\n  Port 2222")
         self.assertNotIn("pending",store_mode.change_mode(load,store,self.generations,"two-way"))
         self.assertEqual(snapshot(self.root/"shared b"),other)
         with self.assertRaises(StoreContextError):
-            store_conflict.resolve(*args,remote)
+            store_conflict.resolve(*args,remote,view["review_id"])
 
     def test_address_resolution_preserves_rejected_edit_when_bound_credential_bytes_rotate(self):
         import store_conflict,store_publish,store_read
@@ -1874,9 +1874,36 @@ class StoreContextTest(unittest.TestCase):
         view = store_conflict.compare(load,store,self.generations,ident)
         before = snapshot(f.remote),snapshot(self.recovery)
         with self.assertRaises(StoreContextError):
-            store_conflict.resolve(load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"],view["remote_revision"])
+            store_conflict.resolve(load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"],view["remote_revision"],view["review_id"])
         self.assertEqual((snapshot(f.remote),snapshot(self.recovery)),before)
         self.assertNotIn("synthetic rotated value",json.dumps(view))
+
+    def test_conflict_decision_binds_local_effective_user_and_only_selected_prod_alias(self):
+        import store_conflict,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("Host db\n  HostName 192.0.2.33\n# tags: prod\nHost web\n  HostName 192.0.2.77\n",add_host=True)
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(view["required_aliases"],[])
+        ssh = self.state/"stores/v1"/store/"ssh"
+        ssh.mkdir(mode=0o700)
+        (ssh/"config").write_text("Host db\n  User another-operator\n")
+        (ssh/"config").chmod(0o600)
+        args = load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"],view["remote_revision"]
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,view["review_id"])
+        current = store_conflict.compare(load,store,self.generations,ident)
+        self.assertNotEqual(view["review_id"],current["review_id"])
+        self.assertEqual(current["remote"]["user"],"another-operator")
+        publish("# tags: prod\n\nHost db\n  HostName 192.0.2.33\nHost web\n  HostName 192.0.2.77\n")
+        prod = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(prod["required_aliases"],["db"])
+        args = (*args[:-1],prod["remote_revision"],prod["review_id"])
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,confirm_prod=lambda *_:["web"])
+        self.assertEqual(store_conflict.resolve(*args,confirm_prod=lambda *_:["db"])["outcome"],"accepted")
 
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
