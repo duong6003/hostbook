@@ -3715,7 +3715,7 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual(proc.wait(timeout=10),0)
         shared,ref = f.shared,f.plan.shared.ref
         self.assertEqual(shared.git(shared.remote,"rev-parse",ref),manifest["proposed"])
-        shared.git(shared.remote,"update-ref",ref,f.plan.destination.base,manifest["proposed"])
+        shared.git(shared.remote,"update-ref","-d",ref,manifest["proposed"])
         events = []
         def secret(role):
             return {"destination":f.vaults.unlock(f.vaults.dst.store_id),"backup":pw,"recovery":code}[role]
@@ -3723,6 +3723,24 @@ with prepare_candidate(load,plan,mapping) as candidate:
             self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),75)
             self.assertEqual(events[-1]["outcome"],"uncertain")
             self.assertEqual(snapshot(f.vaults.source.checkout),before)
+            observed,_ = reopen_intent(f.load,ident,pw)
+            self.assertEqual((observed["attempts"][0]["outcome"],observed["attempts"][0]["sender_state"]),("uncertain","quiescent"))
+            sender = self.recovery/"transactions"/ident/"senders"/original["attempts"][0]["attempt_id"]
+            for name in ("outcome.json","send-started"):
+                withheld = self.root/"withheld-original"
+                (sender/name).rename(withheld)
+                with self.assertRaises((OSError,StoreContextError)):
+                    run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append)
+                self.assertFalse((sender/name).exists())
+                withheld.rename(sender/name)
+            original_receipt = (sender/"outcome.json").read_bytes()
+            altered = dict(json.loads(original_receipt),evidence_id=new_id())
+            (sender/"outcome.json").write_text(json.dumps(altered))
+            with self.assertRaises(StoreContextError):
+                run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append)
+            (sender/"outcome.json").write_bytes(original_receipt)
+            shared.git(shared.remote,"update-ref",ref,f.plan.destination.base)
+            self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),75)
             shared.git(shared.remote,"update-ref",ref,manifest["proposed"],f.plan.destination.base)
             self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),0)
             self.assertEqual(events[-1]["outcome"],"accepted")

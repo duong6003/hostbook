@@ -1,6 +1,7 @@
 """Reopen the original authenticated transfer after its verified owner exits."""
 import base64
 import os
+import subprocess
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
 
@@ -215,7 +216,8 @@ def accepted_sender(tx, plan, record, manifest, proposed):
     with original_sender(tx,plan,record,manifest,proposed) as (sender,pinned):
         def check():
             pinned()
-            require(sender_receipt(sender) == receipt,"original acceptance receipt changed")
+            require(sender_receipt(sender) == receipt and (not manifest.get("original_publication_evidence") or
+                    private_json(sender,"outcome.json") == manifest["original_publication_evidence"]),"original acceptance receipt changed")
             current_receiver(plan,proposed)
         check()
         yield check
@@ -245,9 +247,19 @@ def settle_transfer(load, ident, password, code):
             candidate = dict(attempt,outcome=receipt.get("outcome"),evidence_id=receipt.get("evidence_id"),sender_state="quiescent")
             require(candidate["outcome"] in ("accepted","not-accepted","uncertain") and valid_id(candidate["evidence_id"])
                     and receipt == publication_receipt(record["stores"],candidate),"sender receipt differs from admitted attempt")
-        if attempt["outcome"] in ("accepted","not-accepted"):
-            require(receipt == manifest["publication_evidence"] == publication_receipt(record["stores"],attempt),
-                    "settled sender receipt changed")
+        def recorded_lineage():
+            if attempt["outcome"] == "uncertain":
+                require(private_json(sender,"outcome.json") == manifest["publication_evidence"] == publication_receipt(record["stores"],attempt),
+                        "recorded uncertainty receipt changed")
+                require(read_file(sender,"send-started",64,require_approval_file) == attempt["attempt_id"].encode(),
+                        "recorded uncertainty lacks its original start marker")
+            if manifest.get("original_publication_evidence") is not None:
+                require(private_json(sender,"outcome.json") == manifest["original_publication_evidence"],
+                        "historical sender receipt changed")
+            if attempt["outcome"] in ("accepted","not-accepted"):
+                require(receipt == manifest["publication_evidence"] == publication_receipt(record["stores"],attempt),
+                        "settled sender receipt changed")
+        recorded_lineage()
         try:
             marker = read_file(sender,"send-started",64,require_approval_file)
         except FileNotFoundError:
@@ -259,7 +271,10 @@ def settle_transfer(load, ident, password, code):
         elif receipt is not None and receipt["outcome"] != "uncertain":
             result = receipt["outcome"]
         else:
-            result = observe_original_ref(plan.account,plan.shared.target,plan.shared.ref,plan.shared.base,proposed)
+            try:
+                result = observe_original_ref(plan.account,plan.shared.target,plan.shared.ref,plan.shared.base,proposed)
+            except (OSError,StoreContextError,subprocess.SubprocessError):
+                result = "uncertain"
         if receipt is None or result != receipt["outcome"]:
             settled = dict(attempt,outcome=result,sender_state="quiescent",evidence_id=token())
             evidence = publication_receipt(record["stores"],settled)
@@ -271,11 +286,15 @@ def settle_transfer(load, ident, password, code):
         else:
             settled,evidence = candidate,receipt
         def observed():
+            recorded_lineage()
             pinned()
             require(sender_receipt(sender) == evidence,"original sender settlement changed")
         if settled != attempt:
+            updated = dict(manifest,next_effect="reconcile-"+role,publication_evidence=evidence)
+            if result == "accepted" and (receipt != evidence and receipt is not None or attempt["outcome"] == "uncertain"):
+                updated["original_publication_evidence"] = private_json(sender,"outcome.json")
             next_record,_,proof = advance(tx,plan.account,record,manifest,dict(record,attempts=[settled]),
-                dict(manifest,next_effect="reconcile-"+role,publication_evidence=evidence),password,code,observe=observed)
+                updated,password,code,observe=observed)
             verify(next_record)
             proof()
         observed()
