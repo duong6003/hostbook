@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from store_checkout import MAX_STORE_FILES, durable_file, rename_guarded
 from store_context import (FILE_FLAGS, JSON_LIMIT, fields, open_directory, parse_json, require,
-                           require_private_directory, sync_local, valid_id)
+                           read_file, require_private_directory, sync_local, valid_id)
 from store_login import ToolScope, verified_age_tools
 from store_migration import inspect_legacy, vault_condition
 from store_receive import absolute_directory, git, plain_git
@@ -186,7 +186,15 @@ def scope(*stamps):
     return ToolScope(frozenset(row[:2] for row in stamps))
 
 
-def materialize(stage,records):
+def write_stage_bytes(fd,data):
+    with os.fdopen(os.dup(fd),"wb") as stream:
+        stream.write(data)
+        stream.flush()
+
+
+def materialize(stage,records,created=None):
+    if created is None:
+        created = {}
     require(isinstance(records,dict) and len(records) <= MAX_STORE_FILES and all(role in records for role in ROLES),
             "incomplete legacy recovery manifest")
     ordered = []
@@ -201,8 +209,18 @@ def materialize(stage,records):
         with open_directory(stage,parts[:-1]) as parent:
             if folder:
                 os.mkdir(parts[-1],0o700,dir_fd=parent)
+                info = os.stat(parts[-1],dir_fd=parent,follow_symlinks=False)
+                created[key] = (info.st_dev,info.st_ino,True)
             else:
-                durable_file(parent,parts[-1],base64.b64decode(row["data"],validate=True))
+                fd = os.open(parts[-1],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=parent)
+                try:
+                    info = os.fstat(fd)
+                    created[key] = (info.st_dev,info.st_ino,False)
+                    write_stage_bytes(fd,base64.b64decode(row["data"],validate=True))
+                    created[key] = (info.st_dev,info.st_ino,True)
+                    sync_local(fd)
+                finally:
+                    os.close(fd)
         ordered.append((parts,row))
     for parts,row in reversed(ordered):
         with open_directory(stage,parts[:-1]) as parent:
@@ -219,15 +237,14 @@ def restored_snapshot(root_fd):
     return snapshot({role:Path("/")/role for role in ROLES},root_fd)[0]
 
 
-def verify_history(checkout, *, private_copy=None):
+def verify_history(checkout, *, restored=False):
     if ".git" not in os.listdir(checkout):
         return
     with open_directory(checkout,(".git",)) as repo:
         plain_git(repo,bare=False)
-        if private_copy is not None:
-            require(os.path.samestat(private_copy.stat(),os.fstat(checkout)),"private Git restore changed")
-            git(private_copy,"fsck","--full","--strict","--cache","--no-dangling")
-            index = git(private_copy,"ls-files","--stage","-z")
+        if restored:
+            git(repo,"--git-dir=.","fsck","--full","--strict","--cache","--no-dangling")
+            index = git(repo,"--git-dir=.","ls-files","--stage","-z")
             require(not any(row.startswith(b"160000 ") for row in index.split(b"\0")),
                     "external Git submodule requires separate recovery")
 
@@ -285,13 +302,13 @@ def backup(paths,output,password,code,*,vault_access=None):
             names = ("vault.key.age","vault.recovery.age")
             original = capture(pending,pending,ident,names)
             verify_backup(tools,pending,pending,ident,password,code,manifest)
-            with private_workspace() as (scratch,stage):
+            with private_workspace() as (_,stage):
                 materialize(stage,records)
                 restored = restored_snapshot(stage)
                 require(restored == records,"staged legacy restore differs")
                 prove_vault(restored,tools,vault_access)
                 with open_directory(stage,("checkout",)) as checkout:
-                    verify_history(checkout,private_copy=scratch/"checkout")
+                    verify_history(checkout,restored=True)
             require(snapshot(paths) == (records,stamps) and inspect_legacy(paths["checkout"]) == report,
                     "legacy source changed during backup")
             current()
@@ -305,7 +322,7 @@ def backup(paths,output,password,code,*,vault_access=None):
 
 
 @contextmanager
-def restore_staging(target,temp,records):
+def restore_staging(target,temp,records,created):
     os.mkdir(temp,0o700,dir_fd=target)
     with open_directory(target,(temp,)) as stage:
         try:
@@ -321,19 +338,30 @@ def restore_staging(target,temp,records):
                 retired = ".cleanup-"+str(uuid4())
                 rename_guarded(target,temp,target,retired,exchange=False)
                 if os.path.samestat(os.stat(retired,dir_fd=target,follow_symlinks=False),os.fstat(stage)):
-                    for key in sorted(records,key=lambda p:p.count("/"),reverse=True):
+                    for key in sorted(created,key=lambda p:p.count("/"),reverse=True):
                         parts = key.split("/")
                         try:
                             with open_directory(stage,parts[:-1]) as parent:
                                 info = os.stat(parts[-1],dir_fd=parent,follow_symlinks=False)
+                                device,inode,complete = created[key]
+                                require((info.st_dev,info.st_ino) == (device,inode),"changed restore entry retained")
                                 row = records[key]
-                                if row["directory"] and stat.S_ISDIR(info.st_mode):
+                                if row["directory"]:
                                     os.rmdir(parts[-1],dir_fd=parent)
-                                elif not row["directory"] and stat.S_ISREG(info.st_mode):
-                                    from store_context import read_file
-                                    require(read_file(parent,parts[-1],JSON_LIMIT) == base64.b64decode(row["data"],validate=True),
-                                            "edited staging file retained in private recovery directory")
-                                    os.unlink(parts[-1],dir_fd=parent)
+                                else:
+                                    displaced = ".file-"+str(uuid4())
+                                    rename_guarded(parent,parts[-1],stage,displaced,exchange=False)
+                                    def same_file(_fd,seen):
+                                        require((seen.st_dev,seen.st_ino) == (device,inode),"changed restore file retained")
+                                    try:
+                                        value = read_file(stage,displaced,JSON_LIMIT,same_file)
+                                        expected = base64.b64decode(row["data"],validate=True)
+                                        require(value == expected or not complete and expected.startswith(value),
+                                                "edited restore file retained")
+                                    except BaseException:
+                                        rename_guarded(stage,displaced,parent,parts[-1],exchange=False)
+                                        raise
+                                    os.unlink(displaced,dir_fd=stage)
                         except FileNotFoundError:
                             continue
                     os.rmdir(retired,dir_fd=target)
@@ -358,8 +386,11 @@ def restore(output,ident,destination,phrase,*,recovery=False):
                     "restore into a separate private directory")
             require(ident not in os.listdir(target),"restored directory already exists")
             temp = ".restore-"+str(uuid4())
-            with restore_staging(target,temp,manifest["entries"]) as stage:
-                materialize(stage,manifest["entries"])
+            created = {}
+            with restore_staging(target,temp,manifest["entries"],created) as stage:
+                materialize(stage,manifest["entries"],created)
+                with open_directory(stage,("checkout",)) as checkout:
+                    verify_history(checkout,restored=True)
                 require(restored_snapshot(stage) == manifest["entries"],"restored recovery set differs")
                 current()
                 require_private_directory(saved,"retained backup")

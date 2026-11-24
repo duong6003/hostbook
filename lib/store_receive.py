@@ -37,7 +37,12 @@ IDENTITY = ".hostbook/identity.json"
 def git_result(cwd, *args, data=b"", pass_fds=()):
     cmd = [GIT, "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
            "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "fetch.fsckObjects=true", *args]
-    with subprocess.Popen(cmd, cwd=cwd, env=SAFE_ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    directory_fd = cwd if isinstance(cwd,int) else None
+    if directory_fd is not None:
+        pass_fds = (*pass_fds,directory_fd)
+    with subprocess.Popen(cmd, cwd=cwd if directory_fd is None else None, env=SAFE_ENV,
+                          preexec_fn=None if directory_fd is None else lambda: os.fchdir(directory_fd),
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, pass_fds=pass_fds) as child:
         try:
             out, _ = child.communicate(data, timeout=30)

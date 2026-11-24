@@ -289,7 +289,15 @@ class StoreContextTest(unittest.TestCase):
             migration.backup(*args)
         self.assertEqual(snapshot(f.legacy),baseline)
         self.assertFalse(any(not p.name.startswith(".") for p in output.iterdir()))
+        # Draft backups pre-dating the Git preflight could retain an external pointer only.
+        with patch.object(migration,"verify_history"):
+            incomplete = migration.backup(*args)
+        with self.assertRaises(StoreContextError):
+            migration.restore(output,incomplete,target,args[2])
+        self.assertEqual(list(target.iterdir()),[])
         shutil.rmtree(objects); alternate.rename(objects)
+        separate = self.root/"prior-archive"
+        (output/incomplete).rename(separate)
         materialize = migration.materialize
         def detach(*inputs,**options):
             result = materialize(*inputs,**options)
@@ -304,6 +312,14 @@ class StoreContextTest(unittest.TestCase):
             materialize(*inputs,**options)
             raise StoreContextError("fixture interruption")
         with patch.object(migration,"materialize",side_effect=interrupted), self.assertRaises(StoreContextError):
+            migration.restore(output,ident,target,args[2])
+        self.assertEqual(list(target.iterdir()),[])
+        def full_disk(fd,value):
+            if value.startswith(b"Host original"):
+                os.write(fd,value[:8])
+                raise OSError(28,"synthetic full disk")
+            os.write(fd,value)
+        with patch.object(migration,"write_stage_bytes",create=True,side_effect=full_disk), self.assertRaises(OSError):
             migration.restore(output,ident,target,args[2])
         self.assertEqual(list(target.iterdir()),[])
 
