@@ -543,3 +543,13 @@ direct filesystem access. The migration still needs separately verified
 quiescence and delegated service authority for those identities. A shared
 cutover also needs effective server policy for the exact branch. Keep the
 original registration and both recovery credentials when evidence is missing.
+
+## Shared edit conflict comparison
+
+Run `hostbook store-conflict STORE REGISTRATION CHECKOUT CONNECTION POLICY ATTEMPT`
+to compare a definitively rejected edit with the current direct branch. The
+comparison binds the original candidate bundle to its store, host, connection
+and base. Its output shows the base, candidate and remote literal host settings,
+including credential names and the exact revisions. It preserves the checkout,
+both versions and the retained attempt. An unavailable or changed binding
+requires fresh observation.

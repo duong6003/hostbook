@@ -120,7 +120,7 @@ class StoreContextTest(unittest.TestCase):
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
                          "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
                          "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
-                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py", "store_migration_backup.py", "store_migration_writers.py"):
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py", "store_migration_backup.py", "store_migration_writers.py", "store_conflict.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -1741,6 +1741,40 @@ class StoreContextTest(unittest.TestCase):
             f.git(f.author, "commit", "-qam", "Independent remote fixture change")
             f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
         return f, edit, publish
+
+    def test_two_existing_hosts_edited_at_same_base_compose_on_exact_branch(self):
+        import store_read,store_publish
+        f, _, publish = self.prepare_edit()
+        first = "Host db\n  HostName 192.0.2.2\nHost web\n  HostName 192.0.2.44\n"
+        publish(first,add_host=True)
+        self.assertEqual(f.receive().returncode,0)
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        rows = store_read.refresh_routes(load,store,self.generations).strip().splitlines()
+        row, = [line.split("\t") for line in rows if line.split("\t")[2] == "db"]
+        publish(first.replace("192.0.2.44","192.0.2.45"))
+        origin = f.git(f.remote,"rev-parse","refs/heads/main")
+        result = store_publish.publish_address(load,store,self.generations,row[1],row[3],"192.0.2.88")
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main^"),origin)
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),
+                         first.strip().replace("192.0.2.2","192.0.2.88").replace("192.0.2.44","192.0.2.45"))
+
+    def test_conflict_review_uses_exact_rejected_edit_and_fresh_same_host_version(self):
+        import store_conflict,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("# synthetic-private-comment\nHost db\n  HostName 192.0.2.33\n")
+        before = snapshot(f.store),snapshot(f.remote),snapshot(self.root/"shared b"),snapshot(self.recovery)
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(view["kind"],"same-host-edit")
+        self.assertEqual([view[k]["address"] for k in ("base","candidate","remote")],
+                         ["192.0.2.2","192.0.2.88","192.0.2.33"])
+        self.assertEqual(view["remote_revision"],f.git(f.remote,"rev-parse","refs/heads/main"))
+        self.assertEqual(view["attempt_id"],ident)
+        self.assertNotIn("synthetic-private-comment",json.dumps(view))
+        self.assertEqual((snapshot(f.store),snapshot(f.remote),snapshot(self.root/"shared b"),snapshot(self.recovery)),before)
 
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
