@@ -189,8 +189,9 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   start; wait_for shop-api; k C-o; wait_for "$L_tools_title"; menu_pick "$L_act_secrets"; wait_for "$L_login_add_vault"; menu_pick "$L_login_add_vault"; wait_for "$L_act_key_file"; k Down Down Down Enter
   wait_for "esc $L_key_cancel"; check password-prompt; fin
   start; wait_for shop-api; k C-a; wait_for "$L_add_addr_label"; typ 'deploy@10.0.9.9'; k Enter; wait_for "$(fmt "$L_add_step" 2 4)"; typ newbox; k Enter; wait_for "$(fmt "$L_add_step" 3 4)"; k Enter; wait_for "$(fmt "$L_add_step" 4 4)"
-  wait_for "$L_act_no_login"; menu_pick "$L_act_no_login"; wait_for "$L_act_add_edit"; menu_pick "$L_act_add_edit"; wait_for "$L_f_tags"; menu_pick "$L_f_tags"
-  wait_for "$L_tags_head"; check tag-picker; fin
+  wait_for "$L_act_no_login"; menu_pick "$L_act_no_login"; wait_for "$L_act_add_edit"; menu_pick "$L_act_add_edit"
+  wait_for "$L_add_edit_head"; wait_for "$L_f_jump"; typ "$L_f_tags"; gone "$L_f_jump"; k Enter
+  wait_for "$L_tags_other"; wait_for "$L_tags_head"; check tag-picker; fin
   summary 'ô mật khẩu và chọn tag (S1 S2 S3 S7 S10)'
 
   # ---- file picker: send a file
