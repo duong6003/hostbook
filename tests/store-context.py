@@ -2822,6 +2822,17 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         f.git(dst.checkout,"push","-q",str(f.remote),"HEAD:refs/heads/main")
         self.assertNotEqual(existing_key, source_id)
         self.assertEqual(observe("separate")["matches"][0]["reasons"], ["stable-id","endpoint"])
+        import store_transfer
+        original = store_transfer.effective
+        def change_mode(config, alias):
+            route = original(config, alias)
+            if alias == "db":
+                self.entries[1]["policy_generation"] += 1
+                self.save_registry()
+            return route
+        with patch.object(store_transfer, "effective", side_effect=change_mode):
+            with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+                observe()
 
     def test_transfer_endpoint_compares_literal_ip_and_exact_login(self):
         from store_read import effective, ssh_view
@@ -2834,6 +2845,32 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertEqual(endpoint(dict(first,hostname="2001:0db8:0:0:0:0:0:1")), endpoint(second))
         self.assertNotEqual(endpoint(first), endpoint(dict(second,user="mixed")))
         self.assertNotEqual(endpoint(first), endpoint(dict(second,port="22")))
+
+    def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
+        library = Path(__file__).resolve().parents[1]/"lib"
+        script = """
+import signal, sys
+sys.path.insert(0,sys.argv[1])
+import store_transfer
+from store_read import ssh_view
+def wait(*_):
+    with ssh_view([b'# fixture note\\nHost fixture\\n HostName 192.0.2.7\\n'], (None,None,None)) as config:
+        print(config.parent,flush=True)
+        signal.pause()
+store_transfer.preview = wait
+store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2','3','4'])
+"""
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with subprocess.Popen([sys.executable,"-I","-B","-c",script,str(library)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True) as child:
+                self.assertTrue(select.select([child.stdout],[],[],5)[0])
+                folder = Path(child.stdout.readline().strip())
+                self.assertEqual(folder.parent.resolve(), Path("/tmp").resolve())
+                self.assertTrue(folder.name.startswith("hb-route-"))
+                self.addCleanup(shutil.rmtree, folder, True)
+                child.send_signal(sig)
+                child.wait(timeout=5)
+                self.assertFalse(folder.exists())
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential

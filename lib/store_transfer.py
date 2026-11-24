@@ -1,10 +1,12 @@
 """Compare one selected host across two registered stores before a transfer decision."""
+from contextlib import contextmanager
 from dataclasses import dataclass
 import ipaddress
 import json
 import os
 from pathlib import Path
 import pwd
+import signal
 from typing import Optional
 
 from store_checkout import direct_ref, read_ref
@@ -25,7 +27,13 @@ class ObservedStore:
     identity: dict
     files: dict
     local: tuple
-    hosts: dict
+
+    def routes(self):
+        rows = self.identity["hosts"]
+        inputs, credentials = managed_credentials(self.files, rows)
+        with ssh_view(inputs, self.local) as config:
+            return {row["host_id"]: dict(effective(config, row["name"]), name=row["name"], host_id=row["host_id"],
+                                        credential=credentials.get(row["name"].lower())) for row in rows}
 
 
 def observe_store(account, store_id, expected):
@@ -51,11 +59,7 @@ def observe_store(account, store_id, expected):
             require((ctx, binding) == (verified, actual), "registered transfer binding changed")
             plain_git(remote, bare=True)
             tip = direct_ref(remote, ref)
-    inputs, credentials = managed_credentials(files, identity["hosts"])
-    with ssh_view(inputs, local) as config:
-        hosts = {row["host_id"]: dict(effective(config, row["name"]), name=row["name"], host_id=row["host_id"],
-                                      credential=credentials.get(row["name"].lower())) for row in identity["hosts"]}
-    return ObservedStore(ctx, ref, base, target, tip, identity, files, local, hosts)
+    return ObservedStore(ctx, ref, base, target, tip, identity, files, local)
 
 
 def endpoint(host):
@@ -74,12 +78,21 @@ class TransferPlan:
     destination: ObservedStore
     host_id: str
     alias: str
+    source_hosts: dict
+    destination_hosts: dict
+
+    def revalidate(self, load):
+        account = load()
+        require(account == self.account, "transfer account approval changed")
+        for prior in (self.source, self.destination):
+            require(observe_store(account, prior.context.store_id, prior.context.generations) == prior,
+                    "transfer inputs changed since comparison")
 
     def comparison(self):
         src, dst = self.source, self.destination
-        host = src.hosts[self.host_id]
+        host = self.source_hosts[self.host_id]
         matches = []
-        for key, candidate in dst.hosts.items():
+        for key, candidate in self.destination_hosts.items():
             reasons = []
             if key == self.host_id:
                 reasons.append("stable-id")
@@ -90,7 +103,7 @@ class TransferPlan:
             if reasons:
                 matches.append(dict(candidate, reasons=reasons))
         shared, effect = (src, "source-removal") if src.context.kind == "shared" else (dst, "destination-save")
-        users = [row["host_id"] for key, row in src.hosts.items() if key != self.host_id
+        users = [row["host_id"] for key, row in self.source_hosts.items() if key != self.host_id
                  and host["credential"] and row["credential"] == host["credential"]]
         return {
             "source":dict(host, store_id=src.context.store_id, kind=src.context.kind),
@@ -108,19 +121,36 @@ def preview(load, source, source_generations, host_id, destination, destination_
     src = observe_store(account, source, source_generations)
     dst = observe_store(account, destination, destination_generations)
     require({src.context.kind, dst.context.kind} == {"private","shared"}, "select one private and one shared store")
-    require(host_id in src.hosts, "selected transfer host is missing")
+    source_hosts, destination_hosts = src.routes(), dst.routes()
+    require(host_id in source_hosts, "selected transfer host is missing")
     if alias is None:
-        alias = src.hosts[host_id]["name"]
+        alias = source_hosts[host_id]["name"]
     require(isinstance(alias,str) and 0 < len(alias) <= 255 and not alias.startswith("-")
             and INDEX_NAME.fullmatch(alias), "invalid proposed transfer alias")
-    require(load() == account, "transfer account approval changed")
-    return TransferPlan(account, src, dst, host_id, alias)
+    plan = TransferPlan(account, src, dst, host_id, alias, source_hosts, destination_hosts)
+    plan.revalidate(load)
+    return plan
+
+
+@contextmanager
+def interruptible_preview():
+    def stop(signum, _frame):
+        raise SystemExit(128 + signum)
+    saved = {}
+    try:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            saved[sig] = signal.signal(sig, stop)
+        yield
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
 
 
 def preview_command(args):
     require(len(args) in (11,12), "source store and generations, host ID, destination store and generations are required")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
-    plan = preview(lambda: load_approved_account(home), args[0], Generations(*(int(x) for x in args[1:5])),
-                   args[5], args[6], Generations(*(int(x) for x in args[7:11])), args[11] if len(args)==12 else None)
-    print(json.dumps(plan.comparison()))
+    with interruptible_preview():
+        plan = preview(lambda: load_approved_account(home), args[0], Generations(*(int(x) for x in args[1:5])),
+                       args[5], args[6], Generations(*(int(x) for x in args[7:11])), args[11] if len(args)==12 else None)
+        print(json.dumps(plan.comparison()))
     return 0
