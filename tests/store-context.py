@@ -2936,6 +2936,12 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
             ciphertext = git(repo,"show",proposed+":secrets/team-login.age")
             self.assertTrue(VaultUnlockCache(vaults.tools).open_secret(vaults.identities[vaults.dst.store_id],
                                                                        ciphertext) == b"fixture mapped password")
+            removal = candidate.source_proposed
+            self.assertEqual(git(candidate.source_stage,"rev-parse",removal+"^").decode().strip(),f.plan.source.base)
+            remaining = json.loads(git(candidate.source_stage,"show",removal+":.hostbook/identity.json"))
+            self.assertFalse(any(row["host_id"] == f.host for row in remaining["hosts"]))
+            removed = git(candidate.source_stage,"diff-tree","--no-commit-id","--name-only","--no-renames","-r",removal)
+            self.assertEqual(set(removed.decode().splitlines()),{".hostbook/identity.json",candidate.source_path})
         self.assertEqual(snapshot(self.root), before)
 
     def test_transfer_candidate_requires_the_fetched_vault_and_reused_credential(self):
@@ -3263,6 +3269,49 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
         self.assertEqual(record["attempts"][0]["sender_state"],"quiescent")
         self.assertEqual(record["attempts"][0]["outcome"],"accepted")
         self.assertEqual(record["checkpoint"],"destination-confirmed")
+
+    def check_transfer_send_failure(self, lost_reply):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publisher
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"transaction failure fixture",b"independent recovery fixture"
+        original = snapshot(v.source.checkout)
+        send = publisher.send
+        expected = []
+        def changed(*args):
+            if lost_reply:
+                self.assertEqual(send(*args),"accepted")
+                expected.append(args[5])
+                raise StoreContextError("fixture lost reply")
+            (f.shared.author/"independent").write_text("fixture independent update")
+            f.shared.git(f.shared.author,"add","independent")
+            f.shared.git(f.shared.author,"commit","-qm","Independent fixture update")
+            f.shared.git(f.shared.author,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+            expected.append(f.shared.git(f.shared.author,"rev-parse","HEAD"))
+            return send(*args)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            with patch.object(publisher,"send",side_effect=changed):
+                result = publisher.publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+        outcome = "uncertain" if lost_reply else "not-accepted"
+        self.assertEqual(result["outcome"],outcome)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),expected[0])
+        record,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["checkpoint"],"destination-saved")
+        self.assertEqual(record["attempts"][0]["outcome"],outcome)
+        self.assertEqual(snapshot(v.source.checkout),original)
+
+    def test_transfer_rejected_native_destination_send_preserves_source_and_independent_remote_work(self):
+        self.check_transfer_send_failure(False)
+
+    def test_transfer_lost_destination_ack_keeps_source_and_uncertain_original_attempt(self):
+        self.check_transfer_send_failure(True)
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential

@@ -215,13 +215,18 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
             "index":encoded(observed[1]),"identity":encoded(observed[2]),"files":{k:encoded(v) for k,v in store.files.items()},
             "local":[encoded(v) if v is not None else None for v in store.local],"groups":None,"tracked":{
             path:oid.decode() for path,oid in observed[0].items()}}
-    git(candidate.stage,"update-ref","refs/hostbook/transfer",candidate.proposed)
-    bundle = candidate.stage/"transfer.bundle"
-    git(candidate.stage,"bundle","create",str(bundle),"refs/hostbook/transfer","^"+plan.destination.base)
-    require(bundle.stat().st_size <= JSON_LIMIT, "transfer proposal exceeds recovery size limit")
+    def bundle(stage, proposed, base):
+        git(stage,"update-ref","refs/hostbook/transfer",proposed)
+        path = stage/"transfer.bundle"
+        git(stage,"bundle","create",str(path),"refs/hostbook/transfer","^"+base)
+        require(path.stat().st_size <= JSON_LIMIT,"transfer proposal exceeds recovery size limit")
+        return encoded(path.read_bytes())
     contents = {"record":record,"native_start":start,"comparison":comparison,"snapshots":snapshots,"source_path":candidate.source_path,
                      "destination_ref":plan.destination.ref,"target":asdict(plan.destination.target),
-                     "destination_base":plan.destination.base,"proposed":candidate.proposed,"bundle":encoded(bundle.read_bytes()),
+                     "destination_base":plan.destination.base,"proposed":candidate.proposed,
+                     "bundle":bundle(candidate.stage,candidate.proposed,plan.destination.base),
+                     "source_proposed":candidate.source_proposed,"source_identity":encoded(candidate.source_identity),
+                     "source_bundle":bundle(candidate.source_stage,candidate.source_proposed,plan.source.base),
                      "changes":{path:encoded(data) for path,data in candidate.changes.items()},
                      "credentials":credentials,"next_effect":"destination-save"}
     with recovery_root(plan.account) as root, staged_transaction(root,record,contents,plan.account,password,code) as staged:

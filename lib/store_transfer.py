@@ -19,7 +19,7 @@ from store_context import (Account, DirectoryBinding, Generations, INDEX_NAME, S
 from store_publish import require_plain_receiver
 from store_read import (DIRECTIVE, MAX_ROUTE_BYTES, SECRET_COMMENT, effective, jump_fields, local_inputs,
                         managed_credentials, render_jumps, ssh_view)
-from store_receive import IDENTITY, fetch_direct, git, plain_git, receive_binding
+from store_receive import IDENTITY, fetch_direct, fetch_from_fd, git, plain_git, receive_binding
 from store_transfer_credentials import CredentialRef, private_workspace
 
 
@@ -170,6 +170,9 @@ class DestinationCandidate:
     source_path: str
     plan: TransferPlan
     mapping: object
+    source_stage: Path
+    source_proposed: str
+    source_identity: bytes
 
 
 def standalone_document(plan, mapping):
@@ -273,6 +276,31 @@ def writable_destination(plan, *, transfer=None):
         yield remote
 
 
+def source_proposal(plan, folder, source_path, after):
+    src = plan.source
+    stage = folder/"source.git"
+    stage.mkdir(mode=0o700)
+    git(stage,"init","-q","--bare","--template=")
+    with resolved_store(plan.account,src.context.store_id,src.context.generations) as (ctx,binding,root,_):
+        with bound_directory(root,path_parts(plan.account.root.path,binding.git_dir.path),binding.git_dir,
+                             "source Git binding changed") as repo:
+            require(ctx == src.context and read_ref(repo,src.ref) == src.base
+                    and fetch_from_fd(stage,repo,src.ref,"refs/hostbook/base") == src.base,"source Git branch changed")
+    before = tree(stage,src.base,git)
+    require(parse_json(git(stage,"cat-file","blob",before[IDENTITY].decode())) == src.identity
+            and all(path in before and git(stage,"cat-file","blob",before[path].decode()) == data
+                    for path,data in src.files.items()), "source differs from its accepted revision")
+    identity = json.dumps(after,separators=(",",":")).encode()+b"\n"
+    git(stage,"read-tree",src.base)
+    blob = git(stage,"hash-object","-w","--stdin",data=identity).strip()
+    git(stage,"update-index","-z","--index-info",data=b"0 " + b"0"*len(src.base) + b"\t"+source_path.encode()+b"\0"
+        + b"100644 "+blob+b"\t"+IDENTITY.encode()+b"\0")
+    root = git(stage,"write-tree").strip().decode()
+    commit = git(stage,"-c","user.name=Hostbook","-c","user.email=hostbook@localhost",
+                 "commit-tree",root,"-p",src.base,"-m","Remove transferred host").strip().decode()
+    return stage,commit,identity
+
+
 @contextmanager
 def prepare_candidate(load, plan, mapping):
     """Build a destination-only regular Git commit in private staging and verify its SSH effects."""
@@ -292,6 +320,7 @@ def prepare_candidate(load, plan, mapping):
     plan.revalidate(load)
     source_path, document = standalone_document(plan,mapping)
     source_after = copy.deepcopy(src.identity)
+    source_after["generation"] += 1
     source_after["hosts"] = [r for r in source_after["hosts"] if r["host_id"] != plan.host_id]
     source_after["sources"] = [r for r in source_after["sources"] if r["path"] != source_path]
     source_files = dict(src.files)
@@ -358,8 +387,9 @@ def prepare_candidate(load, plan, mapping):
         proposed = git(stage,"-c","user.name=Hostbook","-c","user.email=hostbook@localhost",
                        "commit-tree",root,"-p",dst.base,"-m","Transfer registered host").strip().decode()
         tree(stage,proposed,git)
+        source_stage,removal,source_identity = source_proposal(plan,folder,source_path,source_after)
         plan.revalidate(load)
         if mapping:
             mapping.check_current(load)
         with writable_destination(plan):
-            yield DestinationCandidate(stage,proposed,changes,source_path,plan,mapping)
+            yield DestinationCandidate(stage,proposed,changes,source_path,plan,mapping,source_stage,removal,source_identity)
