@@ -154,6 +154,10 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
                 sender = held.enter_context(open_directory(tx,("senders",attempt["attempt_id"])))
                 lease = held.enter_context(sender_lease(sender,binding["lease"]))
                 expected_receipt = publication_receipt(record["stores"],attempt)
+                if "decision" not in manifest["comparison"] and not manifest["comparison"]["matches"] and plan.decision == "new":
+                    brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
+                    if manifest["publication_evidence"] == brief:
+                        expected_receipt = brief
                 require(manifest["publication_evidence"] == expected_receipt,"original acceptance receipt differs from the attempt")
             else:
                 require(not record["attempts"],"unexpected publication before shared source removal")

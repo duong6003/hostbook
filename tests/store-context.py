@@ -3383,6 +3383,20 @@ from store_transfer_intent import prepare_intent
 from store_transfer_apply import save_destination
 from store_transfer_publish import publish_destination
 args=json.loads(sys.stdin.readline())
+if args['step'] == 'legacy-destination-confirmed':
+    import store_transfer_publish
+    from store_transfer import TransferPlan
+    store_transfer_publish.publication_receipt=lambda stores,attempt:{k:attempt[k] for k in ('attempt_id','evidence_id','sender_state','outcome')}
+    current=TransferPlan.comparison
+    def legacy(plan):
+        result=current(plan)
+        for k in ('decision','chosen_destination_id','choices','connection_changes'):
+            result.pop(k)
+        for role in ('source','destination'):
+            for k in ('revision','ref'):
+                result[role].pop(k,None)
+        return result
+    TransferPlan.comparison=legacy
 load=lambda:load_approved_account(Path(sys.argv[2]))
 g=Generations(*args['generations'])
 plan=preview(load,args['src'],g,args['host'],args['dst'],g,'moved')
@@ -3450,6 +3464,27 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),dest)
         self.assertFalse((source/"team.conf").exists())
         self.assertTrue((source/"stays.conf").is_file())
+
+    def test_resume_prior_forward_receipt_keeps_original_evidence_and_releases_completed_fences(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        f = self.transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"legacy-destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        first,original = reopen_intent(f.load,ident,pw)
+        prior = original["publication_evidence"]
+        self.assertEqual(set(prior),{"attempt_id","evidence_id","sender_state","outcome"})
+        result = resume_confirmed(f.load,ident,pw,code,f.vaults.unlock,lambda _:True)
+        self.assertEqual(result["checkpoint"],"completed")
+        last,recovered = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(last["attempts"],first["attempts"])
+        self.assertEqual(recovered["publication_evidence"],prior)
+        with recovery_root(f.load()) as root:
+            for row in last["stores"]:
+                require_idle(root,f.load(),row["store_id"])
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

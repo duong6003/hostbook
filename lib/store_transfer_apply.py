@@ -86,7 +86,14 @@ def advance(tx, account, record, manifest, next_record, next_manifest, password,
     selected(tx,account,record)
     verified_generations()
     if new["checkpoint"] == "completed":
-        write_once(tx,tx,"completion.json",wire(completion_receipt(new)))
+        # Preserve the verified old forward receipt without rewriting historical sender evidence.
+        attempt = new["attempts"][0]
+        brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
+        legacy = ("decision" not in manifest["comparison"] and not manifest["comparison"]["matches"]
+                  and manifest.get("previous_owners") and any(row["role"] == "destination" and
+                  row["store_id"] == attempt["store_id"] for row in new["stores"])
+                  and manifest["publication_evidence"] == brief)
+        write_once(tx,tx,"completion.json",wire(completion_receipt(new,1 if legacy else 2)))
     with open_directory(tx,("records",)) as history:
         write_once(tx,history,f"{seq}.json",wire(new))
     try:
