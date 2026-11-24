@@ -206,6 +206,9 @@ class StoreContextTest(unittest.TestCase):
         f.git("push","-qu","origin","main")
         def observed():
             return f.inspect("--inspect-local",str(bare),"refs/heads/main")
+        f.git("config","remote.origin.pushurl",bare.as_uri())
+        loose = next(p for p in (bare/"objects").glob("??/*") if p.is_file())
+        os.link(loose,self.root/"shared immutable Git object")
         empty = observed()
         self.assertEqual((empty["remote_vault"],empty["vault_decision"]),("absent","both-absent-unapproved"))
         shutil.copytree(v.destination.vault,f.legacy/"secrets")

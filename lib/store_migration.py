@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import tempfile
 
 from store_checkout import MAX_STORE_FILES, OID, count_file, direct_ref, read_ref, unlinked
@@ -205,7 +206,6 @@ def review_target(config, report, target, ref):
     urls = values(key+b".url")
     upstream = b"branch."+report["ref"].removeprefix("refs/heads/").encode()
     require(len(urls) == 1 and urls[0] in (os.fsencode(target),target.as_uri().encode())
-            and not values(key+b".pushurl") and not any(k.startswith(b"url.") for k,_ in pairs)
             and values(upstream+b".remote") in ([],[name])
             and values(upstream+b".merge") in ([],[ref.encode()]),"selected remote or branch differs")
 
@@ -233,7 +233,15 @@ def snapshot_objects(repo, stage):
                         require(re.fullmatch("[0-9a-f]{38}",name),"unrecognized Git object")
                     count += 1
                     require(count <= MAX_STORE_FILES,"legacy object database is too large")
-                    data = read_file(source,name,JSON_LIMIT,unlinked)
+                    fd = os.open(name,os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,dir_fd=source)
+                    with os.fdopen(fd,"rb") as stream:
+                        info = os.fstat(fd)
+                        require(stat.S_ISREG(info.st_mode) and
+                                (info.st_nlink == 1 or not info.st_mode & 0o222),"unsupported linked Git object")
+                        data = stream.read(JSON_LIMIT+1)
+                        require(file_evidence(os.fstat(fd)) == file_evidence(info)
+                                and os.path.samestat(info,os.stat(name,dir_fd=source,follow_symlinks=False)),
+                                "Git object changed during copy")
                     total = count_file(total,len(data))
                     (folder/name).write_bytes(data)
 
