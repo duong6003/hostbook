@@ -175,11 +175,21 @@ def verified_completion(folder, record, prior):
         return False
     attempt = attempts[0]
     try:
+        from store_transfer_recovery import capture
+        with open_directory(folder,("recovery",)) as generations,open_directory(folder,("payloads",)) as payloads:
+            require_private_directory(generations,"transfer recovery generations")
+            with open_directory(generations,(str(record["recovery_generation"]),)) as envelopes:
+                files,_ = capture(envelopes,payloads,record["payload_id"],("vault.key.age","vault.recovery.age"))
+                if not re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}\n",files.pop("vault.pub")):
+                    return False
+                if not all(data.startswith(b"-----BEGIN AGE ENCRYPTED FILE-----\n")
+                           and data.endswith(b"-----END AGE ENCRYPTED FILE-----\n") for data in files.values()):
+                    return False
         with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
             require_private_directory(sender,"transfer sender")
             return (private_json(folder,"completion.json") == completion_receipt(record) and
                     private_json(sender,"outcome.json") == {k:attempt[k] for k in ("attempt_id","evidence_id","sender_state","outcome")})
-    except FileNotFoundError:
+    except (OSError,StoreContextError):
         return False
 
 

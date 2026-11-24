@@ -3405,11 +3405,17 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
         with recovery_root(self.account) as root:
             for ctx in (v.source,v.destination):
                 require_idle(root,self.account,ctx.store_id)
-            (self.recovery/"transactions"/ident/"completion.json").unlink()
-            for ctx in (v.source,v.destination):
-                with self.assertRaises(StoreContextError):
-                    require_idle(root,self.account,ctx.store_id)
-            require_idle(root,self.account,self.entries[2]["store_id"])
+            txn = self.recovery/"transactions"/ident
+            for retained in (txn/"payloads"/(record["payload_id"]+".age"),
+                             txn/"recovery"/str(record["recovery_generation"])/"vault.recovery.age",
+                             txn/"completion.json"):
+                displaced = retained.with_name("displaced")
+                retained.rename(displaced)
+                for ctx in (v.source,v.destination):
+                    with self.assertRaises(StoreContextError):
+                        require_idle(root,self.account,ctx.store_id)
+                require_idle(root,self.account,self.entries[2]["store_id"])
+                displaced.rename(retained)
 
     def test_transfer_preserves_concurrent_private_editor_save_during_source_removal(self):
         from store_transfer import prepare_candidate
