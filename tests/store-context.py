@@ -3431,6 +3431,18 @@ with prepare_candidate(load,plan,mapping) as candidate:
             apply=publish_destination if plan.destination.context.kind=='shared' else confirm_private_destination
             result=apply(load,ident,plan,candidate,mapping,unlock,pw,code)
             assert result['checkpoint']=='destination-confirmed'
+            if args['step']=='inverse-applied':
+                import store_transfer_rollback as inverse
+                advance=inverse.advance
+                def stopped(*values,**options):
+                    if values[4]['checkpoint']=='rolled-back':
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                    return advance(*values,**options)
+                inverse.advance=stopped
+                secret=lambda role:unlock(args['src'] if role=='source' else args['dst'])
+                inverse.rollback_private(load,ident,pw,code,secret,lambda _:True)
             if args['step'] == 'source-confirmed' or 'retire-' in args['step']:
                 remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
                 assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
@@ -3887,6 +3899,36 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual((f.dst.vault/"login.age").read_bytes(),old_cipher)
         self.assertFalse((f.dst.vault/"db-credential.age").exists())
         self.assertEqual(f.shared.git(dest,"status","--porcelain"),"")
+
+    def test_rollback_recovers_after_inverse_applied_before_terminal_record_without_second_commit(self):
+        import store_transfer_rollback as rollback
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"inverse-applied")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,protected = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"rollback-pending")
+        inverse = protected["rollback"]["tip"]
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),inverse)
+        slot = f.dst.checkout/".git"/Path(*protected["rollback"]["exchange"])
+        displaced = slot/"removed-0"
+        original = displaced.read_bytes()
+        displaced.write_bytes(original+b"# late editor save\n")
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        with patch.object(rollback,"fast_forward",side_effect=AssertionError("replayed private inverse")):
+            with self.assertRaises(StoreContextError):
+                run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+            self.assertEqual(displaced.read_bytes(),original+b"# late editor save\n")
+            displaced.write_bytes(original)
+            self.assertEqual(run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None),0)
+        done,proof = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(done["checkpoint"],"rolled-back")
+        self.assertEqual(proof["rollback"]["tip"],inverse)
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),inverse)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

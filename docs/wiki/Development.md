@@ -473,3 +473,7 @@ original encrypted snapshots and the displaced inodes in the private checkout.
 For an explicit update, rollback restores the selected prior destination stanza,
 stable ID, group memberships and verified previous credential. A PROD rollback
 requires typing the private alias it will change.
+If the private inverse has already reached its exact recorded tip, repeating
+`rollback` validates the original inverse bundle, index, tree and displaced
+inodes before selecting the terminal record. A partial inverse or changed
+captured file remains fenced and retains its protected evidence.

@@ -215,7 +215,15 @@ def verified_rollback(folder, record, prior):
         return False
     try:
         with open_directory(folder,("records",)) as history:
-            original = private_json(history,str(prior["previous_sequence"])+".json")
+            for seq in range(prior["previous_sequence"],0,-1):
+                original = private_json(history,str(seq)+".json")
+                if original["sequence"] != seq or original["previous_sequence"] != seq-1:
+                    return False
+                if original["checkpoint"] != "rollback-pending":
+                    break
+                if (original["effects"] != prior["effects"] or original["attempts"] or any(original[k] != prior[k]
+                        for k in ("hosts","stores","owner","collection"))):
+                    return False
             return (original["checkpoint"] == "destination-confirmed" and original["effects"] == effects[:1] and not original["attempts"]
                     and all(original[k] == record[k] for k in ("hosts","stores"))
                     and private_json(folder,"rollback.json") == rollback_receipt(record) and retained_envelopes(folder,record))
