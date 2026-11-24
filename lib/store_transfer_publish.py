@@ -19,6 +19,14 @@ from store_transfer_intent import encoded, local_descriptors, private_path, reop
 
 def saved_checkout(load, plan, candidate, mapping, record, manifest):
     src, dst = plan.source,plan.destination
+    source_snapshot = next(row["snapshot_id"] for row in record["stores"] if row["role"] == "source")
+    check_source(plan.account,src,manifest["snapshots"][source_snapshot])
+    require(observe_store(plan.account,src.context.store_id,src.context.generations) == src,"transfer source changed")
+    destination_checkout(load,plan,candidate,mapping,record,manifest)
+
+
+def destination_checkout(load, plan, candidate, mapping, record, manifest):
+    src, dst = plan.source,plan.destination
     require(plan.account == load() and candidate.plan is plan and candidate.mapping is mapping
             and manifest["proposed"] == candidate.proposed and manifest["destination_ref"] == dst.ref
             and manifest["destination_base"] == dst.base and wire(manifest["target"]) == wire(asdict(dst.target))
@@ -26,9 +34,6 @@ def saved_checkout(load, plan, candidate, mapping, record, manifest):
             "publication requires the exact saved transfer candidate")
     require(record["hosts"] == [{"store_id":end.context.store_id,"host_id":plan.host_id} for end in (src,dst)],
             "transfer host binding changed")
-    source_snapshot = next(row["snapshot_id"] for row in record["stores"] if row["role"] == "source")
-    check_source(plan.account,src,manifest["snapshots"][source_snapshot])
-    require(observe_store(plan.account,src.context.store_id,src.context.generations) == src,"transfer source changed")
     with resolved_store(plan.account,dst.context.store_id,dst.context.generations) as (active,_,_,state):
         require(active == dst.context and local_inputs(state,active.store_id) == dst.local,
                 "destination registration or SSH settings changed")

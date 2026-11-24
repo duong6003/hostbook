@@ -2896,12 +2896,22 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 os.close(directory)
         self.assertEqual(snapshot(self.root), before)
 
-    def transfer_case(self):
+    def transfer_case(self, *, shared_credential=False):
         from store_transfer import preview
         vaults = self.transfer_vaults()
         host = new_id()
         self.write_route(0, host, "# secret: login\nHost source-one\n  HostName 192.0.2.61\n"
                          "  User fixture\n  Port 2210\n  ProxyJump relay.example\n", name="source-one")
+        if shared_credential:
+            other = b"# secret: login\nHost stays\n  HostName 192.0.2.77\n"
+            folder = vaults.source.checkout
+            (folder/"stays.conf").write_bytes(other)
+            sidecar = folder/".hostbook/identity.json"
+            data = json.loads(sidecar.read_bytes())
+            data["sources"].append({"path":"stays.conf","sha256":hashlib.sha256(other).hexdigest()})
+            data["hosts"].append({"host_id":new_id(),"name":"stays","bindings":[
+                {"path":"stays.conf","host_ordinal":1,"token_ordinal":1}]})
+            sidecar.write_text(json.dumps(data))
         (vaults.source.vault/"login.age").write_bytes(vaults.seal(vaults.source,b"fixture mapped password"))
         (vaults.source.vault/"login.meta").write_bytes(b"type=password\n")
         shared = self.prepare_receive()
@@ -3356,6 +3366,83 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
 
     def test_transfer_confirmation_requires_currently_named_registered_receiver(self):
         self.check_transfer_remote_changes_after_ack(True)
+
+    def test_private_source_removal_finishes_only_after_destination_acceptance_and_keeps_shared_credential(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        from store_transfer_publish import publish_destination
+        from store_transfer_remove import finish_private_source
+        from store_publish import recovery_root
+        from store_journal import require_idle
+        f = self.transfer_case(shared_credential=True)
+        v = f.vaults
+        mapping = stage_credential(f.load,v.src,v.dst,v.unlock)
+        pw,code = b"operator backup fixture",b"operator recovery fixture"
+        vault_before = snapshot(v.source.vault)
+        with prepare_candidate(f.load,f.plan,mapping) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            before = snapshot(v.source.checkout)
+            with self.assertRaisesRegex(StoreContextError,"confirmed destination"):
+                finish_private_source(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            self.assertEqual(snapshot(v.source.checkout),before)
+            published = publish_destination(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            self.assertEqual(published["checkpoint"],"destination-confirmed")
+            result = finish_private_source(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            self.assertEqual(result["checkpoint"],"completed")
+            self.assertEqual(f.shared.git(v.source.checkout,"rev-parse","HEAD"),candidate.source_proposed)
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","main"),candidate.proposed)
+            self.assertFalse((v.source.checkout/candidate.source_path).exists())
+        self.assertEqual(f.shared.git(v.source.checkout,"status","--porcelain"),"")
+        self.assertEqual(snapshot(v.source.vault),vault_before)
+        rows = json.loads((v.source.checkout/".hostbook/identity.json").read_bytes())["hosts"]
+        self.assertEqual([row["name"] for row in rows],["stays"])
+        record,recovered = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["checkpoint"],"completed")
+        self.assertIn("source_bundle",recovered)
+        with recovery_root(self.account) as root:
+            for ctx in (v.source,v.destination):
+                require_idle(root,self.account,ctx.store_id)
+            (self.recovery/"transactions"/ident/"completion.json").unlink()
+            for ctx in (v.source,v.destination):
+                with self.assertRaises(StoreContextError):
+                    require_idle(root,self.account,ctx.store_id)
+            require_idle(root,self.account,self.entries[2]["store_id"])
+
+    def test_transfer_preserves_concurrent_private_editor_save_during_source_removal(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        from store_transfer_publish import publish_destination
+        import store_transfer_remove as removal
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        pw,code = b"operator backup fixture",b"operator recovery fixture"
+        updated = b"# independently saved source\nHost source-one\n  HostName 192.0.2.8\n"
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,pw,code)
+            publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,pw,code)
+            source_file = v.source.checkout/candidate.source_path
+            original = removal.rename_guarded
+            def concurrent(src,name,dst,slot,**options):
+                if slot == "source":
+                    editor = source_file.with_suffix(".saving")
+                    editor.write_bytes(updated)
+                    os.replace(editor,source_file)
+                return original(src,name,dst,slot,**options)
+            with patch.object(removal,"rename_guarded",side_effect=concurrent),self.assertRaisesRegex(StoreContextError,"editor changes"):
+                removal.finish_private_source(f.load,ident,f.plan,candidate,mapped,v.unlock,pw,code)
+            self.assertEqual(source_file.read_bytes(),updated)
+            self.assertEqual(f.shared.git(v.source.checkout,"rev-parse","HEAD"),f.plan.source.base)
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),candidate.proposed)
+            record,_ = reopen_intent(f.load,ident,code,recovery=True)
+            self.assertEqual(record["checkpoint"],"destination-confirmed")
+            self.assertEqual(record["effects"][-1]["outcome"],"intended")
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential

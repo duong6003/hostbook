@@ -7,7 +7,7 @@ from store_checkout import (check_contents, check_destinations, check_worktree, 
                             install_sources, make_parents, read_index, read_ref, rename_guarded, tree)
 from store_context import (JSON_LIMIT, StoreContextError, open_directory, path_parts, read_file, require, require_approval_file, require_private_directory,
                            resolved_store, staged_local_file, store_writer, sync_local, verify_state_directory)
-from store_journal import classify, private_json, require_idle, transaction
+from store_journal import classify, completion_receipt, private_json, require_idle, transaction
 from store_login import verified_age_tools
 from store_publish import recovery_root, sync_named
 from store_read import local_inputs
@@ -85,6 +85,8 @@ def advance(tx, account, record, manifest, next_record, next_manifest, password,
             observe()
     selected(tx,account,record)
     verified_generations()
+    if new["checkpoint"] == "completed":
+        write_once(tx,tx,"completion.json",wire(completion_receipt(new)))
     with open_directory(tx,("records",)) as history:
         write_once(tx,history,f"{seq}.json",wire(new))
     try:

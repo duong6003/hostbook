@@ -155,6 +155,34 @@ def transaction(record, prior):
     return (None if op == "migration" and not complete else stores), complete
 
 
+def completion_receipt(record):
+    return {"version":1,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
+            "payload_id":record["payload_id"],"effects":[row["evidence_id"] for row in record["effects"]],
+            "attempts":[row["evidence_id"] for row in record["attempts"]]}
+
+
+def verified_completion(folder, record, prior):
+    if (record["operation"] != "transfer" or not prior or prior["checkpoint"] != "source-confirmed"
+            or any(prior[key] != record[key] for key in ("stores","hosts","owner","effects","attempts","collection"))):
+        return False
+    roles = {s["role"]:s["store_id"] for s in record["stores"]}
+    effects,attempts = record["effects"],record["attempts"]
+    if (len(effects) != 2 or [e["store_id"] for e in effects] != [roles["destination"],roles["source"]]
+            or any(e["outcome"] != "observed" or not valid_id(e["evidence_id"]) for e in effects)
+            or len(attempts) != 1 or attempts[0]["store_id"] != roles["destination"]
+            or attempts[0]["outcome"] != "accepted" or attempts[0]["sender_state"] != "quiescent"
+            or record["collection"] != {"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}):
+        return False
+    attempt = attempts[0]
+    try:
+        with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
+            require_private_directory(sender,"transfer sender")
+            return (private_json(folder,"completion.json") == completion_receipt(record) and
+                    private_json(sender,"outcome.json") == {k:attempt[k] for k in ("attempt_id","evidence_id","sender_state","outcome")})
+    except FileNotFoundError:
+        return False
+
+
 def classify(folder, account, ident, kind):
     key = "record_id" if kind == "control" else "transaction_id"
     selector = private_json(folder, "current.json")
@@ -178,6 +206,8 @@ def classify(folder, account, ident, kind):
                     "invalid recovery revision")
             check_owner(record["owner"])
             scope, terminal = (control if kind == "control" else transaction)(record, prior)
+            if kind == "transactions" and record["checkpoint"] == "completed":
+                terminal = verified_completion(folder,record,prior)
             if kind == "transactions" and record["checkpoint"] in TERMINAL and not terminal:
                 unsettled_terminal = True
                 if scope is None:
