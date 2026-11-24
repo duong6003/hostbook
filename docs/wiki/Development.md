@@ -526,3 +526,11 @@ that proof on the isolated restore. A key record must match its stored public
 key. The encrypted archive keeps the original ciphertext and envelopes. Local
 Git history must be self-contained. Restore verification runs native Git
 integrity checks against the private copy, including staged objects.
+
+Run `hostbook store-migration-backup CHECKOUT STATE SETTINGS SSH_CONFIG BACKUPS`
+with absolute original locations and a separate existing owner-only directory
+for encrypted backups. Keep the returned backup ID. To stage a private copy
+after a restart, run
+`hostbook store-migration-restore BACKUPS BACKUP_ID PRIVATE_PARENT code`.
+Use `password` for the other envelope. Hostbook requests credentials on the
+terminal. The restore appears under the backup ID inside the private parent.

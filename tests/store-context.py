@@ -120,7 +120,7 @@ class StoreContextTest(unittest.TestCase):
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
                          "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
                          "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
-                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py"):
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py", "store_migration_backup.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -306,6 +306,71 @@ class StoreContextTest(unittest.TestCase):
         with patch.object(migration,"materialize",side_effect=interrupted), self.assertRaises(StoreContextError):
             migration.restore(output,ident,target,args[2])
         self.assertEqual(list(target.iterdir()),[])
+
+    def test_installed_migration_backup_and_new_restore_prompt_use_private_terminal(self):
+        import pty
+        f = self.migration_case()
+        if not os.environ.get("HOSTBOOK_TEST_INSTALLED"):
+            source = Path(__file__).resolve().parents[1]
+            shutil.copytree(source/"lang",f.app.resolve().parent/"lang",dirs_exist_ok=True)
+            # A missing command on an older launcher can enter its legacy guard.
+            # Keep that fallback in this synthetic account on native test hosts.
+            home = Path(f.env["HOME"]); home.mkdir(mode=0o700)
+            launcher = f.app.resolve()
+            launcher.write_text(launcher.read_text().replace("local authority_home=~",'local authority_home="$HOME"')
+                                .replace("unset HOME","HOME="+str(home)))
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700); settings.mkdir(mode=0o700); ssh.write_text("# synthetic\n")
+        backup = self.root/"sealed"; backup.mkdir(mode=0o700)
+        restored = self.root/"private restore parent"; restored.mkdir(mode=0o700)
+        password,code = b"fixture-private-phrase",b"fixture-original-code"
+        def terminal(args,answers):
+            pid,fd = pty.fork()
+            if pid == 0:
+                os.execve(str(f.app),[str(f.app),*(str(arg) for arg in args)],dict(f.env,HOSTBOOK_LANG="en"))
+            complete = False
+            try:
+                output = bytearray()
+                for expected,answer in answers:
+                    seen = len(output)
+                    deadline = time.monotonic()+20
+                    while expected not in output[seen:]:
+                        self.assertTrue(select.select([fd],[],[],max(0,deadline-time.monotonic()))[0],"missing terminal prompt")
+                        chunk = os.read(fd,65536)
+                        self.assertTrue(chunk,"operator command ended before prompt")
+                        output.extend(chunk)
+                    os.write(fd,answer+b"\n")
+                while True:
+                    self.assertTrue(select.select([fd],[],[],25)[0],"operator command did not finish")
+                    try:
+                        chunk = os.read(fd,65536)
+                    except OSError as exc:
+                        if exc.errno == 5:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                _,status = os.waitpid(pid,0)
+                complete = True
+                self.assertEqual(status,0)
+                self.assertNotIn(password,output); self.assertNotIn(code,output)
+                return json.loads(bytes(output).splitlines()[-1])
+            finally:
+                if not complete:
+                    if os.waitpid(pid,os.WNOHANG) == (0,0):
+                        try: os.kill(pid,signal.SIGKILL)
+                        except ProcessLookupError: pass
+                        os.waitpid(pid,0)
+                os.close(fd)
+        row = terminal(["store-migration-backup",f.legacy,state,settings,ssh,backup],
+                       [(b"New migration backup password",password),(b"Repeat the migration backup password",password),
+                        (b"New migration recovery code",code),(b"Repeat the migration recovery code",code)])
+        self.assertEqual(row["checkpoint"],"backup-verified")
+        row = terminal(["store-migration-restore",backup,row["backup_id"],restored,"code"],
+                       [(b"Original migration recovery code",code)])
+        self.assertEqual(row["checkpoint"],"restored-private-copy")
+        self.assertEqual(snapshot(restored/row["backup_id"]/"checkout"),snapshot(f.legacy))
 
     def test_migration_backup_checks_original_vault_envelopes_and_restored_credential(self):
         from store_migration_backup import backup, restore

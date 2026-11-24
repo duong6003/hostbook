@@ -83,7 +83,7 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  store-migration-inspect|store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
+  store-migration-inspect|store-migration-backup|store-migration-restore|store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       guard_python_path || exit 64
       exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" "$@"
@@ -113,6 +113,11 @@ IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; e
 private_dir(){ legacy_destinations "$1" && mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 case ${1:-} in
+  _store_migration_labels)
+    [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
+    HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-en} lang_load
+    for key in migration_backup_pw migration_backup_repeat migration_code migration_code_repeat migration_original_pw migration_original_code migration_vault_pw migration_vault_code; do t "$key"; printf '\n'; done
+    exit 0;;
   _store_transfer_labels)
     [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
     HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load

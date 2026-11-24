@@ -372,3 +372,45 @@ def restore(output,ident,destination,phrase,*,recovery=False):
                 sync_local(target)
                 check_target()
     return destination/ident
+
+
+def backup_command(args,*,reopen=False):
+    import json
+    import pwd
+    import subprocess
+    from store_login import prompt_passphrase
+    from store_transfer import interruptible_preview
+    from store_transfer_command import operator_language
+
+    if reopen:
+        require(len(args) == 4 and valid_id(args[1]) and args[3] in ("password","code"),
+                "provide backup directory, backup ID, private restore directory and password or code")
+    else:
+        require(len(args) == 5,"provide original checkout, state, settings, SSH config and private backup directory")
+    lang = operator_language(os.environ,Path(pwd.getpwuid(os.geteuid()).pw_dir))
+    app = Path(__file__).resolve().parents[1]/"hostbook"
+    labels = subprocess.run(["/bin/bash",str(app),"_store_migration_labels"],env={"PATH":"/usr/bin:/bin",
+                            "HOME":"/","HOSTBOOK_LANG":lang},stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,timeout=8)
+    text = labels.stdout.decode().splitlines()
+    require(labels.returncode == 0 and len(text) == 8 and all(s and "‹" not in s for s in text),
+            "migration prompt translations are unavailable")
+    def secret(index):
+        return prompt_passphrase(text[index]+" ")
+    with interruptible_preview():
+        if reopen:
+            code = args[3] == "code"
+            restore(Path(args[0]),args[1],Path(args[2]),secret(5 if code else 4),recovery=code)
+            print(json.dumps(dict(checkpoint="restored-private-copy",backup_id=args[1])))
+        else:
+            paths = dict(zip(ROLES,map(Path,args[:4])))
+            report = inspect_legacy(paths["checkout"])
+            require(report["role"] == "private-default" and report["vault"] in ("absent","locked-unverified"),
+                    "resolve the legacy classification or damaged vault before backup")
+            access = (secret(6),secret(7)) if report["vault"] != "absent" else None
+            password = secret(0)
+            require(password and secret(1) == password,"migration backup passwords differ")
+            code = secret(2)
+            require(code and secret(3) == code and code != password,"migration backup recovery codes differ")
+            ident = backup(paths,Path(args[4]),password,code,vault_access=access)
+            print(json.dumps(dict(checkpoint="backup-verified",backup_id=ident)))
+    return 0
