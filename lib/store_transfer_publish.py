@@ -8,9 +8,9 @@ import subprocess
 from store_checkout import check_worktree, direct_ref, durable_file, read_index, read_ref, tree
 from store_context import (StoreContextError, open_directory, require, require_approval_file, require_private_directory,
                            resolved_store, sync_local)
-from store_publish import send
+from store_publish import require_plain_receiver, send
 from store_read import local_inputs
-from store_receive import git, plain_git, receive_binding
+from store_receive import git, plain_git, registered_target
 from store_transfer import observe_store, writable_destination
 from store_transfer_apply import advance, check_source, selected, transfer_gates
 from store_transfer_credentials import private_workspace
@@ -95,7 +95,6 @@ def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, 
                        "intent":attempt["intent_id"],"store":dst.context.store_id}
             def ready():
                 saved_checkout(load,plan,candidate,mapping,record,manifest)
-                from store_publish import require_plain_receiver
                 require_plain_receiver(pinned_remote)
                 require(direct_ref(pinned_remote,dst.ref) == dst.base, "destination remote base changed")
             record,manifest,proof = advance(pinned_tx,account,record,manifest,dict(record,attempts=[attempt]),
@@ -120,31 +119,38 @@ def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, 
             result = "uncertain" if started else "not-accepted"
         finally:
             lease.close()
+        historical = False
         try:
-            with sender_lease(attempt_folder,lease_bytes), transfer_gates(load,plan,record,manifest) as (tx,verify):
-                proof()
+            with sender_lease(attempt_folder,lease_bytes), open_directory(pinned_tx,("senders",attempt_id)) as named:
+                require(os.path.samestat(os.fstat(named),os.fstat(attempt_folder)) and
+                        os.stat("lease",dir_fd=named,follow_symlinks=False).st_ino == lease_bytes["inode"],
+                        "original transfer sender binding changed")
                 ack = token()
-                settled = dict(attempt,outcome=result,evidence_id=ack,sender_state="quiescent")
-                def confirmed():
-                    saved_checkout(load,plan,candidate,mapping,record,manifest)
-                    require(direct_ref(pinned_remote,dst.ref) == candidate.proposed,
-                            "destination publication requires reconciliation")
-                current = False
-                if result == "accepted":
-                    try:
-                        with receive_binding(account,dst.context.store_id,dst.context.generations,transfer=record) as (ctx,target,actual,_,_):
-                            require((ctx,target) == (dst.context,dst.target) and
-                                    os.path.samestat(os.fstat(pinned_remote),os.fstat(actual)),"published destination changed")
-                            confirmed()
-                            current = True
-                    except (OSError,StoreContextError):
-                        pass
-                checkpoint = "destination-confirmed" if current else "destination-saved"
-                record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint=checkpoint,attempts=[settled]),
-                    dict(manifest,next_effect="source-removal" if current else "reconcile-destination",
-                         publication_evidence={"evidence_id":ack,"outcome":result,"fresh_tip":candidate.proposed if current else None}),
-                    password,code,observe=confirmed if current else None)
-                verify(record)
+                receipt = {"attempt_id":attempt_id,"evidence_id":ack,"sender_state":"quiescent","outcome":result}
+                durable_file(named,"outcome.json",wire(receipt))
+                sync_local(named)
+                with transfer_gates(load,plan,record,manifest) as (tx,verify):
+                    proof()
+                    settled = dict(attempt,outcome=result,evidence_id=ack,sender_state="quiescent")
+                    record,manifest,proof = advance(tx,account,record,manifest,dict(record,attempts=[settled]),
+                        dict(manifest,next_effect="reconcile-destination",publication_evidence=receipt),password,code)
+                    historical = True
+                    verify(record)
+                    if result == "accepted":
+                        def confirmed():
+                            saved_checkout(load,plan,candidate,mapping,record,manifest)
+                            with resolved_store(account,dst.context.store_id,dst.context.generations) as (ctx,_,root,state):
+                                require(ctx == dst.context,"destination registration changed")
+                                with registered_target(account,ctx,root,state) as (target,actual):
+                                    require(target == dst.target and os.path.samestat(os.fstat(pinned_remote),os.fstat(actual))
+                                            and direct_ref(actual,dst.ref) == candidate.proposed,
+                                            "destination publication requires reconciliation")
+                        confirmed()
+                        record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="destination-confirmed"),
+                            dict(manifest,next_effect="source-removal",confirmed_destination=candidate.proposed),
+                            password,code,observe=confirmed)
+                        verify(record)
         except (OSError,StoreContextError):
-            return {"transaction_id":ident,"attempt_id":attempt_id,"checkpoint":"destination-saved","outcome":"uncertain"}
+            return {"transaction_id":ident,"attempt_id":attempt_id,"checkpoint":"destination-saved",
+                    "outcome":result if historical else "uncertain"}
     return {"transaction_id":ident,"attempt_id":attempt_id,"checkpoint":record["checkpoint"],"outcome":result}

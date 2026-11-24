@@ -149,26 +149,33 @@ def receive_binding(account, store_id, expected, own_record=None, *, transfer=No
         with bound_directory(root_fd, path_parts(account.root.path, account.recovery.path), account.recovery,
                              "invalid recovery root") as recovery_fd:
             require_idle(recovery_fd, account, store_id, transfer=transfer)
-        parts = path_parts(account.state.path, context.status.parent)
-        with open_directory(state_fd, parts) as settings:
-            require_private_directory(settings, "connection settings")
-            record = parse_json(read_file(settings, "target.json", 16384, require_approval_file))
-            fields(record, "version store_id target_id connection_generation ref uid bare_repository")
-            require(type(record["version"]) is int and record["version"] == 1 and record["store_id"] == store_id
-                    and record["target_id"] == context.target_id and record["ref"] == context.ref
-                    and type(record["connection_generation"]) is int
-                    and record["connection_generation"] == expected.connection and type(record["uid"]) is int
-                    and record["uid"] == os.geteuid(), "registered transport binding mismatch")
-            target = parse_directory_binding(record["bare_repository"])
-            groups = [(target,), (account.state,), (account.recovery,)]
-            groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
-            verify_path_isolation(root_fd, account.root.path, groups)
-            with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
-                                 "registered transport changed") as target_fd:
-                with open_directory(state_fd, parts[:3]) as store_fd:
-                    require_private_directory(store_fd, "store state")
-                    require_no_receive_pending(store_fd, own_record)
-                    yield context, target, target_fd, store_fd, checkout
+        with registered_target(account,context,root_fd,state_fd) as (target,target_fd):
+            with open_directory(state_fd,("stores","v1",store_id)) as store_fd:
+                require_private_directory(store_fd, "store state")
+                require_no_receive_pending(store_fd, own_record)
+                yield context, target, target_fd, store_fd, checkout
+
+
+@contextmanager
+def registered_target(account,context,root_fd,state_fd):
+    """Open the currently named transport target from a freshly resolved registration."""
+    parts = path_parts(account.state.path, context.status.parent)
+    with open_directory(state_fd, parts) as settings:
+        require_private_directory(settings, "connection settings")
+        record = parse_json(read_file(settings, "target.json", 16384, require_approval_file))
+        fields(record, "version store_id target_id connection_generation ref uid bare_repository")
+        require(type(record["version"]) is int and record["version"] == 1 and record["store_id"] == context.store_id
+                and record["target_id"] == context.target_id and record["ref"] == context.ref
+                and type(record["connection_generation"]) is int
+                and record["connection_generation"] == context.generations.connection and type(record["uid"]) is int
+                and record["uid"] == os.geteuid(), "registered transport binding mismatch")
+        target = parse_directory_binding(record["bare_repository"])
+        groups = [(target,), (account.state,), (account.recovery,)]
+        groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
+        verify_path_isolation(root_fd, account.root.path, groups)
+        with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
+                             "registered transport changed") as target_fd:
+            yield target, target_fd
 
 
 @contextmanager

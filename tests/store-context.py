@@ -3313,6 +3313,50 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
     def test_transfer_lost_destination_ack_keeps_source_and_uncertain_original_attempt(self):
         self.check_transfer_send_failure(True)
 
+    def check_transfer_remote_changes_after_ack(self, replaced):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publisher
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"fixture transaction password",b"fixture transaction recovery"
+        original = snapshot(v.source.checkout)
+        advance = publisher.advance
+        def remote_advances(tx,account,record,manifest,new,*args,**kwargs):
+            if new["checkpoint"] == "destination-confirmed":
+                if replaced:
+                    retired = self.root/"earlier-target"
+                    f.shared.remote.rename(retired)
+                    f.shared.git(self.root,"clone","--bare","--no-local",str(retired),str(f.shared.remote))
+                else:
+                    author = f.shared.author
+                    f.shared.git(author,"pull","--ff-only",str(f.shared.remote),"main")
+                    (author/"independent").write_text("fixture later work")
+                    f.shared.git(author,"add","independent")
+                    f.shared.git(author,"commit","-qm","Remote advanced after transfer acceptance")
+                    f.shared.git(author,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+            return advance(tx,account,record,manifest,new,*args,**kwargs)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            with patch.object(publisher,"advance",side_effect=remote_advances):
+                result = publisher.publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+        record,_ = reopen_intent(f.load,ident,password)
+        self.assertEqual(record["checkpoint"],"destination-saved")
+        self.assertEqual(record["attempts"][0]["outcome"],"accepted")
+        self.assertEqual(record["attempts"][0]["sender_state"],"quiescent")
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertEqual(snapshot(v.source.checkout),original)
+
+    def test_transfer_keeps_exact_historical_acceptance_after_remote_advances_during_confirmation(self):
+        self.check_transfer_remote_changes_after_ack(False)
+
+    def test_transfer_confirmation_requires_currently_named_registered_receiver(self):
+        self.check_transfer_remote_changes_after_ack(True)
+
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
         f = self.transfer_vaults()
