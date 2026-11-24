@@ -498,3 +498,13 @@ multiple remotes require a decision before migration can continue. The command
 reads the original files without contacting a remote, assigning IDs, creating
 a vault or changing the checkout. A locked vault still requires independent
 unlock and validation. No inspection result authorizes cutover.
+
+To inspect an explicitly selected regular local bare repository, append
+`--inspect-local /absolute/path/to/repository.git refs/heads/main`. Its path
+must match the selected checkout's one configured remote URL. Inspection
+copies bounded SHA-1 Git objects into a private temporary repository and
+checks the original direct branch. It reports whether the remote vault is
+absent, structurally complete or requires reconciliation. Independently
+created vaults and different envelopes remain separate. A missing branch or
+unavailable remote leaves discovery unresolved. Remote history remains
+accessible to prior recipients after any later local migration.

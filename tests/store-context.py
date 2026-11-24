@@ -157,7 +157,7 @@ class StoreContextTest(unittest.TestCase):
         app = self.installed_launcher()
         def inspect(*args):
             return json.loads(subprocess.check_output([app,"store-migration-inspect",str(legacy),*args],cwd=self.root,env=env,stderr=subprocess.PIPE))
-        return SimpleNamespace(legacy=legacy,env=env,git=git,inspect=inspect)
+        return SimpleNamespace(legacy=legacy,env=env,git=git,inspect=inspect,app=app)
 
     def test_installed_migration_inspection_keeps_private_or_configured_shared_source_pristine(self):
         f = self.migration_case()
@@ -180,11 +180,53 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual((unresolved["role"],unresolved["remote_count"]),("shared",1))
         self.assertIn("inspect-original-git-configuration",unresolved["blockers"])
         (f.legacy/".git/packed-refs").unlink()
+        child = f.legacy/"nested"
+        child.mkdir()
+        nested = json.loads(subprocess.check_output([f.app,"store-migration-inspect",str(child)],env=f.env))
+        self.assertEqual(nested["role"],"ambiguous")
+        self.assertIn("select-original-checkout-root",nested["blockers"])
+        f.git("config","branch.main.remote","missing")
+        self.assertIn("choose-exact-remote",f.inspect()["blockers"])
+        f.git("config","--unset","branch.main.remote")
+        f.git("config","--add","remote.origin.pushurl","https://separate.invalid")
+        self.assertIn("choose-exact-remote",f.inspect()["blockers"])
+        f.git("config","--unset","remote.origin.pushurl")
         f.git("remote","add","second","file:///not-selected")
         self.assertIn("choose-exact-remote",f.inspect()["blockers"])
         f.git("remote","remove","origin"); f.git("remote","remove","second")
         f.git("config","include.path","unresolved-policy.conf")
         self.assertEqual(f.inspect()["role"],"ambiguous")
+
+    def test_migration_observes_only_selected_local_bare_branch_before_deciding_vault(self):
+        v = self.transfer_vaults()
+        f = self.migration_case()
+        bare = self.root/"synthetic shared.git"
+        f.git("init","-q","--bare","--template=",str(bare))
+        f.git("remote","add","origin",bare.as_uri())
+        f.git("push","-qu","origin","main")
+        def observed():
+            return f.inspect("--inspect-local",str(bare),"refs/heads/main")
+        empty = observed()
+        self.assertEqual((empty["remote_vault"],empty["vault_decision"]),("absent","both-absent-unapproved"))
+        shutil.copytree(v.destination.vault,f.legacy/"secrets")
+        f.git("add","secrets")
+        f.git("commit","-qm","Synthetic shared vault")
+        f.git("push","-q","origin","main")
+        shutil.rmtree(f.legacy/"secrets")
+        before = snapshot(bare),snapshot(f.legacy)
+        existing = observed()
+        self.assertEqual((existing["remote_vault"],existing["vault_decision"]),("locked-unverified","unlock-existing-shared"))
+        self.assertEqual(existing["remote_revision"],f.git("rev-parse","HEAD").decode())
+        self.assertEqual((snapshot(bare),snapshot(f.legacy)),before)
+        shutil.copytree(v.source.vault,f.legacy/"secrets")
+        self.assertEqual(observed()["vault_decision"],"preserve-independent-vaults")
+        shutil.copyfile(v.destination.vault/"vault.pub",f.legacy/"secrets/vault.pub")
+        self.assertEqual(observed()["vault_decision"],"reconcile-vault-envelopes")
+        (bare/"refs/heads/main").unlink()
+        failed = observed()
+        self.assertEqual((failed["role"],failed["remote_observation"],failed["vault_decision"]),
+                         ("shared","unresolved","preserve-and-rediscover"))
+        self.assertFalse(failed["cutover_ready"])
 
     def test_migration_inspection_distinguishes_locked_partial_and_damaged_vault_without_prompts(self):
         v = self.transfer_vaults()
@@ -192,6 +234,12 @@ class StoreContextTest(unittest.TestCase):
         vault = f.legacy/"secrets"
         shutil.copytree(v.source.vault,vault)
         self.assertEqual(f.inspect()["vault"],"locked-unverified")
+        (vault/"synthetic.meta").write_bytes(b"type=key\n")
+        (vault/"synthetic.age").write_bytes(v.seal(v.source,b"synthetic opaque key"))
+        (vault/"synthetic.pub").write_bytes(b"ssh-ed25519 aGVsbG8=\n")
+        self.assertEqual(f.inspect()["vault"],"damaged")
+        for suffix in ("meta","age","pub"):
+            (vault/("synthetic."+suffix)).unlink()
         ciphertext = (vault/"vault.key.age").read_bytes()
         (vault/"vault.recovery.age").rename(self.root/"withheld-recovery")
         self.assertEqual(f.inspect()["vault"],"partial")
