@@ -176,18 +176,26 @@ def managed_credentials(files, hosts):
     return snapshots, credentials
 
 
-def local_inputs(state_fd, store_id):
+def local_inputs(state_fd, store_id, evidence=None):
     try:
         with open_directory(state_fd, ("stores", "v1", store_id, "ssh")) as fd:
             require_private_directory(fd, "approved SSH inputs")
             selected = []
+            def verify(fd, info):
+                require_approval_file(fd, info)
+                if evidence is not None:
+                    evidence.append([info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns])
             for name in ("config", "known_hosts", "global_known_hosts"):
                 try:
-                    selected.append(read_file(fd, name, JSON_LIMIT, require_approval_file))
+                    selected.append(read_file(fd, name, JSON_LIMIT, verify))
                 except FileNotFoundError:
                     selected.append(None)
+                    if evidence is not None:
+                        evidence.append(None)
             return tuple(selected)
     except FileNotFoundError:
+        if evidence is not None:
+            evidence.extend([None]*3)
         return None, None, None
 
 

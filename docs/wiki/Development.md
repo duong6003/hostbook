@@ -567,3 +567,15 @@ comparison ID. It retires the exact private candidate through the store control
 journal, including when the remote deleted the host. It leaves the branch and
 checkout byte-for-byte intact. `cancel` preserves the candidate for later.
 Use the returned policy generation for subsequent store operations.
+
+After a verified remote deletion, `restore-candidate CANDIDATE_OID REMOTE_OID REVIEW_ID`
+can publish the edited host with its original stable ID. This supports a standalone
+host without a credential or jump, an absent or unoccupied original project, and
+no existing jump routes or group membership involving the selection. Hostbook
+checks the effective SSH settings of the restored host and the other hosts before
+publishing. An unsupported restoration leaves the original candidate available.
+
+Keeping the remote version rechecks the exact registered local bare branch and
+the reviewed local SSH inputs when recording the final decision. If either
+changes during an interrupted decision, cancel the outstanding mode transition
+with the current policy generation and review the retained edit again.

@@ -11,12 +11,13 @@ import re
 import shutil
 import subprocess
 from uuid import uuid4
+from types import SimpleNamespace
 
 from store_checkout import direct_ref, tree
 from store_context import (Generations, entry_generations, index_rows, registry_entries, store_writer, load_approved_account, open_directory, parse_json, read_file,
                            require, require_approval_file, valid_id, verified_account)
 from store_mode import apply_transition, candidate_record, mode_records, preflight_mode, prepare_transition, verify_live
-from store_publish import (attempt_binding, launch_reserved, prepare_proposal, read_attempt, record_at, recovery_root,
+from store_publish import (attempt_binding, commit_changes, launch_reserved, prepare_proposal, read_attempt, record_at, recovery_root,
                            require_plain_receiver, reserve_edit, stanza)
 from store_read import DIRECTIVE, INDEX_NAME, SECRET_NAME, local_inputs
 from store_receive import IDENTITY, absolute_directory, fetch_direct, git, oid, plain_git, receive_binding, verify_incoming
@@ -103,6 +104,8 @@ def compare_versions(stage,store,candidate,tip,local):
     report["choices"] = ["cancel"]
     if kind in ("same-host-edit","compatible","delete-versus-edit") and not report["changed_bound_credentials"]:
         report["choices"].insert(0,"keep-remote")
+        if kind == "delete-versus-edit" and summary["candidate"] and not summary["remote"] and not summary["candidate"]["credential"]:
+            report["choices"].insert(0,"restore-candidate")
         if kind != "delete-versus-edit" and summary["candidate"]["address"] != summary["remote"]["address"]:
             report["choices"].insert(0,"use-candidate-address")
     report["review_id"] = hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":")).encode()).hexdigest()
@@ -114,7 +117,8 @@ def comparison(load,store,expected,ident):
     require(valid_id(ident),"select the original rejected publication")
     account = load()
     with verified_account(account) as (_,state):
-        local = local_inputs(state,store)
+        inputs = []
+        local = local_inputs(state,store,inputs)
     with recovery_root(account) as recovery, private_workspace() as (stage,_):
         stage = stage.resolve(strict=True)
         def pending():
@@ -149,12 +153,13 @@ def comparison(load,store,expected,ident):
             def current():
                 require(load()==account and pending()==candidate,"conflict authority changed")
                 with verified_account(account) as (_,state):
-                    require(local_inputs(state,store)==local,"local SSH inputs changed")
+                    observed = []
+                    require(local_inputs(state,store,observed)==local and observed==inputs,"local SSH inputs changed")
                 with receive_binding(account,store,expected) as (again,actual,fd,_,where):
                     require((again,actual,where)==(ctx,target,binding) and direct_ref(fd,ctx.ref)==tip,
                             "conflict comparison is stale")
             current()
-            yield report,stage,current,(account,ctx,target,remote,binding,recovery,local)
+            yield report,stage,current,(account,ctx,target,remote,binding,recovery,local,inputs)
 
 
 def compare(load,store,expected,ident):
@@ -163,10 +168,53 @@ def compare(load,store,expected,ident):
         return report
 
 
+def restore_host(stage,store,report,local,attempt):
+    from store_transfer import standalone_document
+    tip,draft,host = report["remote_revision"],report["candidate_revision"],report["host_id"]
+    selected = report["candidate"]
+    identity,path,lines,_,_ = record_at(stage,draft,store,host)
+    require(not selected["credential"] and not selected["proxyjump"],"credential or jump restoration requires separate review")
+    _,document = standalone_document(SimpleNamespace(identity=identity,files={path:b"".join(lines)}),
+                                     host,selected["alias"],None,None,False)
+    files = tree(stage,tip,git)
+    recovered = parse_json(git(stage,"cat-file","blob",files[IDENTITY].decode()))
+    require(all(row["host_id"] != host and row["name"].lower() != selected["alias"].lower() for row in recovered["hosts"]),
+            "restoration conflicts with another host identity or alias")
+    current = git(stage,"cat-file","blob",files[path].decode()) if path in files else b""
+    require(all(not line.strip() or line.lstrip().startswith(b"#") for line in current.split(b"\n"))
+            and not re.search(rb"^[ \t]*#[ \t]*(?:tags|secret|desc)[ \t]*:",current,re.M|re.I),
+            "restoration requires an absent or unoccupied project without pending annotations")
+    for revision in (tip,draft):
+        if "groups.tsv" in tree(stage,revision,git):
+            groups = git(stage,"show",revision+":groups.tsv").decode().lower().split()
+            require(selected["alias"].lower() not in groups,"review existing group membership before restoration")
+    updated = current + (b"\n" if current and not current.endswith(b"\n") else b"") + document
+    sources = [row for row in recovered["sources"] if row["path"] == path]
+    require(len(sources) == int(path in files),"changed project mapping")
+    source = dict(path=path,sha256=hashlib.sha256(updated).hexdigest())
+    if sources:
+        sources[0].update(source)
+    else:
+        recovered["sources"].append(source)
+    recovered["hosts"].append(next(row for row in identity["hosts"] if row["host_id"] == host))
+    recovered["generation"] += 1
+    before,after = {},{}
+    verify_incoming(stage,tip,tip,store,local,review_routes=before)
+    shutil.rmtree(stage/"validated")
+    require(all(not route["proxyjump"] for route in before.values()),"review existing jump routes before restoration")
+    proposed = commit_changes(stage,tip,{path:updated,IDENTITY:json.dumps(recovered).encode()+b"\n"},attempt)
+    verify_incoming(stage,proposed,tip,store,local,review_routes=after)
+    observed = after.pop(host)
+    require(before == after and observed["hostname"] == selected["effective_address"] and
+            all(observed[k] == selected[k] for k in ("user","port","proxyjump")) and
+            dict(observed["settings"]) == selected["settings"],"restored host changes the reviewed SSH settings")
+    return proposed
+
+
 def resolve(load,store,expected,ident,action,draft,tip,review_id,*,confirm_prod=None):
-    require(action in ("use-candidate-address","keep-remote","cancel"),"select an explicit supported conflict decision")
+    require(action in ("use-candidate-address","keep-remote","restore-candidate","cancel"),"select an explicit supported conflict decision")
     with comparison(load,store,expected,ident) as (report,stage,current,inputs), ExitStack() as opened:
-        account,ctx,target,remote,binding,recovery,local = inputs
+        account,ctx,target,remote,binding,recovery,local,ssh_inputs = inputs
         host = report["host_id"]
         require((report["candidate_revision"],report["remote_revision"],report["review_id"]) == (draft,tip,review_id)
                 and action in report["choices"],"conflict decision differs from the reviewed versions")
@@ -183,23 +231,26 @@ def resolve(load,store,expected,ident,action,draft,tip,review_id,*,confirm_prod=
                 entry = registry_entries(state,account)[0][store]
                 preflight_mode(state,entry,"two-way")
                 candidate = candidate_record(recovery,account,store,ident,verify_bundle=True)
-                reviewed = dict(revision=tip,ref=ctx.ref,review_id=review_id)
+                reviewed = dict(revision=tip,ref=ctx.ref,review_id=review_id,ssh_inputs=ssh_inputs)
                 active = prepare_transition(recovery,account,entry,"two-way",action,[candidate],reviewed_remote=reviewed)
                 final = apply_transition(state,recovery,account,entry,active,"two-way",
                                          lambda row:verify_live(load,account,state,writer,row))
                 return dict(outcome="kept-remote",original_attempt=ident,remote_revision=tip,
                             generations=asdict(entry_generations(final)))
-        require(all(report[side] is not None for side in ("base","candidate","remote")),
-                "address resolution needs the same existing host on both branches")
-        chosen = str(ipaddress.ip_address(report["candidate"]["address"]))
-        require(not report["changed_bound_credentials"] and
-                all(report[side]["credential"] == report["remote"]["credential"] for side in ("candidate","base")),
-                "review the changed credential binding separately")
-        versions = [record_at(stage,oid,store,host) for oid in (report["base_revision"],draft,tip)]
         require_plain_receiver(remote)
         attempt = str(uuid4())
-        proposed = prepare_proposal(stage,tip,tip,store,host,chosen,attempt,versions[2][4])
-        verify_incoming(stage,proposed,tip,store,local,{report["remote"]["alias"]:{"hostname":chosen}})
+        if action == "restore-candidate":
+            proposed = restore_host(stage,store,report,local,attempt)
+        else:
+            require(all(report[side] is not None for side in ("base","candidate","remote")),
+                    "address resolution needs the same existing host on both branches")
+            chosen = str(ipaddress.ip_address(report["candidate"]["address"]))
+            require(not report["changed_bound_credentials"] and
+                    all(report[side]["credential"] == report["remote"]["credential"] for side in ("candidate","base")),
+                    "review the changed credential binding separately")
+            signature = record_at(stage,tip,store,host)[4]
+            proposed = prepare_proposal(stage,tip,tip,store,host,chosen,attempt,signature)
+            verify_incoming(stage,proposed,tip,store,local,{report["remote"]["alias"]:{"hostname":chosen}})
         bundle = stage/"resolved.bundle"
         git(stage,"bundle","create",str(bundle),"refs/hostbook/proposal","^"+tip)
         with store_writer(load,store,expected) as (actual,locked,_,_lock):
@@ -211,8 +262,16 @@ def resolve(load,store,expected,ident,action,draft,tip,review_id,*,confirm_prod=
                 require((info.st_dev,info.st_ino) == (binding.root.device,binding.root.inode),"resolution checkout changed")
                 files = {}
                 identity,_ = index_rows(work,store,files)
-                selected = stanza(identity,files.__getitem__,store,host)[4]
-                require(selected in (versions[0][4],versions[2][4]),"local host changed during conflict resolution")
+                present = any(row["host_id"] == host for row in identity["hosts"])
+                if present:
+                    selected = stanza(identity,files.__getitem__,store,host)[4]
+                    accepted = [record_at(stage,report["base_revision"],store,host)[4]]
+                    if report["remote"] is not None:
+                        accepted.append(record_at(stage,tip,store,host)[4])
+                    require(selected in accepted,"local host changed during conflict resolution")
+                else:
+                    require(action == "restore-candidate" and identity == parse_json(git(stage,"show",tip+":"+IDENTITY)),
+                            "local deleted selection differs from the reviewed branch")
             link = dict(action=action,original_attempt=ident,original_base=report["base_revision"],original_proposal=draft,review_id=review_id)
             reservation = reserve_edit(opened,recovery,account,ctx,target,host,tip,proposed,bundle,
                                        attempt,str(uuid4()),resolution=link)

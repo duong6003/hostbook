@@ -17,7 +17,7 @@ from store_context import (JSON_LIMIT, Generations, acquire_local_lock, entry_ge
                            staged_local_file, store_writer, sync_local, valid_id, validate_entry, verify_state_directory)
 from store_journal import check_owner, control as validate_control, classify, private_json, require_idle
 from store_publish import attempt_binding, boot_id, read_attempt, json_bytes, recovery_root, select_record, sync_named
-from store_receive import absolute_directory, fetch_from_fd, git, oid, receive, receive_binding, require_no_receive_pending, verify_incoming
+from store_receive import absolute_directory, fetch_from_fd, git, oid, receive, receive_binding, registered_target, require_no_receive_pending, verify_incoming
 from store_read import local_inputs
 import store_publish
 
@@ -140,7 +140,7 @@ def decision(recovery, first):
            + (" reviewed_remote" if record.get("action") == "keep-remote" else ""))
     if record["action"] == "keep-remote":
         reviewed = record["reviewed_remote"]
-        fields(reviewed,"revision ref review_id")
+        fields(reviewed,"revision ref review_id"+(" ssh_inputs" if "ssh_inputs" in reviewed else ""))
         require(len(record["candidates"]) == 1 and reviewed["ref"] == record["candidates"][0]["ref"]
                 and isinstance(reviewed["revision"],str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",reviewed["revision"])
                 and isinstance(reviewed["review_id"],str) and re.fullmatch(r"[0-9a-f]{64}",reviewed["review_id"]),
@@ -279,13 +279,36 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates, sen
     return rec, rec
 
 
-def finish_record(recovery, first, tail, phase):
+def verify_kept_remote(account,recovery,entry,choice):
+    source, = choice["candidates"]
+    store = entry["store_id"]
+    require(candidate_record(recovery,account,store,source["attempt_id"],verify_bundle=True) == source,
+            "retained candidate changed")
+    original,_ = read_attempt(recovery,account,store,source["attempt_id"])
+    reviewed = choice["reviewed_remote"]
+    with open_directory(recovery,("edits",source["attempt_id"])) as edit:
+        evidence = attempt_binding(edit,account,original)
+    with resolved_store(account,store,entry_generations(entry)) as (ctx,_,root,state):
+        inputs = []
+        local_inputs(state,store,inputs)
+        require(inputs == reviewed.get("ssh_inputs"),"reviewed SSH input changed")
+        with registered_target(account,ctx,root,state) as (target,remote):
+            require(ctx.target_id == evidence["target_id"] and ctx.ref == reviewed["ref"] == evidence["ref"]
+                    and evidence["bare_repository"] == dict(asdict(target),path=str(target.path))
+                    and all(getattr(ctx.generations,key)==evidence["generations"][key] for key in
+                            ("registration","connection","checkout"))
+                    and direct_ref(remote,ctx.ref)==reviewed["revision"],"reviewed remote changed before disposition")
+
+
+def finish_record(recovery, first, tail, phase, before_commit=None):
     with open_directory(recovery, ("control", first["record_id"])) as control:
         if tail["sequence"] == 1:
             tail = dict(first, sequence=2, previous_sequence=1, detail=dict(first["detail"], phase=phase))
             with open_directory(control, ("records",)) as history:
                 with staged_local_file(control, "2.json", json_bytes(tail)) as temp:
                     sync_named(control, temp)
+                    if before_commit:
+                        before_commit()
                     rename_guarded(control, temp, history, "2.json", exchange=False)
                     sync_local(history)
         require(tail["detail"]["phase"] == phase, "transition decision changed")
@@ -340,6 +363,11 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
         require(entry == fenced, "unsettled sender crossed the publication fence")
         return entry
     pending_after_drain = choice["action"] == "drain" and mode_records(recovery, account, entry["store_id"], ident)[1]
+    if choice["action"] == "keep-remote" and entry == changed and (tail["detail"]["phase"] == "cancelled" or
+            (tail["sequence"] == 1 and requested == "cancel")):
+        finish_record(recovery,first,tail,"cancelled")
+        replace_entry(state,account,changed,proposed,verify)
+        return proposed
     if tail["detail"]["phase"] == "cancelled" or (entry == fenced and (requested == "cancel" or
                                                   outcome == "not-accepted" or pending_after_drain)):
         require(entry == fenced, "cancelled transition changed its effective mode")
@@ -349,7 +377,13 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     if entry == fenced:
         require(tail["detail"]["phase"] == "fenced", "effective transition update missing")
         replace_entry(state, account, fenced, changed, verify)
-    finish_record(recovery, first, tail, "applied")
+    if choice["action"] == "keep-remote":
+        def reviewed():
+            verify(changed)
+            verify_kept_remote(account,recovery,changed,choice)
+        finish_record(recovery,first,tail,"applied",reviewed)
+    else:
+        finish_record(recovery, first, tail, "applied")
     replace_entry(state, account, changed, proposed, verify)
     return proposed
 

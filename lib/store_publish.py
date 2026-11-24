@@ -115,8 +115,12 @@ def prepare_proposal(stage, base, tip, store_id, host_id, address, attempt, sign
     updated = b"".join(lines)
     next(source for source in identity["sources"] if source["path"] == path)["sha256"] = hashlib.sha256(updated).hexdigest()
     identity["generation"] += 1
+    return commit_changes(stage,tip,{path:updated,IDENTITY:json.dumps(identity,ensure_ascii=False).encode()+b"\n"},attempt)
+
+
+def commit_changes(stage,tip,changes,attempt):
     git(stage, "read-tree", tip)
-    for name, data in ((path, updated), (IDENTITY, json.dumps(identity, ensure_ascii=False).encode() + b"\n")):
+    for name,data in changes.items():
         blob = git(stage, "hash-object", "-w", "--stdin", data=data).strip().decode()
         git(stage, "update-index", "--add", "--cacheinfo", "100644", blob, name)
     root = oid(stage, git(stage, "write-tree").strip().decode())

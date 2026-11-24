@@ -1828,6 +1828,28 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual([d["reviewed_remote"]["revision"] for d in decisions if "reviewed_remote" in d],
                          [view["remote_revision"]])
 
+    def test_keep_remote_rechecks_review_before_retirement_and_allows_cancel(self):
+        import store_conflict,store_mode,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("Host db\n  HostName 192.0.2.33\n")
+        view = store_conflict.compare(load,store,self.generations,ident)
+        replace = store_mode.replace_entry
+        def advance(state,account,old,new,verify):
+            replace(state,account,old,new,verify)
+            if old["transition_id"] and new["transition_id"]:
+                publish("Host db\n  HostName 192.0.2.42\n")
+        with patch.object(store_mode,"replace_entry",advance),self.assertRaises(StoreContextError):
+            store_conflict.resolve(load,store,self.generations,ident,"keep-remote",view["candidate_revision"],
+                                   view["remote_revision"],view["review_id"])
+        expected = Generations(**dict(vars(self.generations),policy=self.generations.policy+2))
+        with self.assertRaises(StoreContextError):
+            store_mode.change_mode(load,store,expected,"two-way")
+        cancelled = store_mode.change_mode(load,store,expected,"cancel")
+        self.assertEqual(store_mode.change_mode(load,store,Generations(**cancelled["generations"]),"two-way")["pending"],[ident])
+
     def test_conditional_address_resolution_keeps_exact_rejected_original_until_accepted(self):
         import store_conflict,store_mode,store_publish
         f,edit,publish = self.prepare_edit()
@@ -1915,6 +1937,36 @@ class StoreContextTest(unittest.TestCase):
         with self.assertRaises(StoreContextError):
             store_conflict.resolve(*args,confirm_prod=lambda *_:["web"])
         self.assertEqual(store_conflict.resolve(*args,confirm_prod=lambda *_:["db"])["outcome"],"accepted")
+
+    def test_deleted_remote_host_needs_explicit_restore_and_preserves_current_project(self):
+        import store_conflict,store_publish
+        f,edit,_ = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        manifest = f.author/".hostbook/identity.json"
+        meta = json.loads(manifest.read_bytes())
+        key = meta["hosts"][0]["host_id"]
+        meta["hosts"] = []; meta["generation"] += 1
+        note = b"# remote project note\n"
+        (f.author/"team.conf").write_bytes(note)
+        meta["sources"][0]["sha256"] = hashlib.sha256(note).hexdigest()
+        manifest.write_text(json.dumps(meta))
+        f.git(f.author,"commit","-qam","Remote deleted selected host")
+        f.git(f.author,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertIn("restore-candidate",view["choices"])
+        local = snapshot(f.store)
+        result = store_conflict.resolve(load,store,self.generations,ident,"restore-candidate",
+                                        view["candidate_revision"],view["remote_revision"],view["review_id"])
+        self.assertEqual(result["outcome"],"accepted")
+        tip = f.git(f.remote,"rev-parse","refs/heads/main")
+        self.assertEqual(f.git(f.remote,"rev-parse",tip+"^"),view["remote_revision"])
+        self.assertIn("HostName 192.0.2.88",f.git(f.remote,"show",tip+":team.conf"))
+        self.assertIn(note.decode().strip(),f.git(f.remote,"show",tip+":team.conf"))
+        saved = json.loads(f.git(f.remote,"show",tip+":.hostbook/identity.json"))
+        self.assertEqual([(host["name"],host["host_id"]) for host in saved["hosts"]],[("db",key)])
+        self.assertEqual(snapshot(f.store),local)
 
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
