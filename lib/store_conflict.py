@@ -8,20 +8,24 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shutil
 
 from store_checkout import direct_ref, tree
 from store_context import (Generations, load_approved_account, open_directory, parse_json, read_file,
-                           require, require_approval_file, valid_id)
+                           require, require_approval_file, valid_id, verified_account)
 from store_mode import candidate_record, mode_records
 from store_publish import attempt_binding, read_attempt, record_at, recovery_root
-from store_read import DIRECTIVE, INDEX_NAME, SECRET_NAME
-from store_receive import IDENTITY, fetch_direct, git, oid, plain_git, receive_binding
+from store_read import DIRECTIVE, INDEX_NAME, SECRET_NAME, local_inputs
+from store_receive import IDENTITY, fetch_direct, git, oid, plain_git, receive_binding, verify_incoming
 from store_transfer_credentials import private_workspace
 
 ANCHORS = ("secrets/vault.pub","secrets/vault.key.age","secrets/vault.recovery.age")
 
 
-def selected_version(stage,rev,files,store,host):
+def selected_version(stage,rev,files,store,host,local):
+    routes = {}
+    verify_incoming(stage,rev,rev,store,local,review_routes=routes)
+    shutil.rmtree(stage/"validated")
     identity = parse_json(git(stage,"cat-file","blob",files[IDENTITY].decode()))
     require(identity["store_id"] == store and identity["format"] == "hostbook-store" and
             identity["version"] == 1,"conflict store identity changed")
@@ -35,14 +39,16 @@ def selected_version(stage,rev,files,store,host):
         require(len(address)<=253 and re.fullmatch(r"[A-Za-z0-9.-]+",address),"unsupported conflict endpoint")
     alias,_,_,credential = signature
     require(INDEX_NAME.fullmatch(alias),"unsupported conflict alias")
-    return dict(alias=alias,address=address,credential=credential),signature
+    route = routes[host]
+    return dict(alias=alias,address=address,credential=credential,user=route["user"],port=route["port"],
+                effective_address=route["hostname"],proxyjump=route["proxyjump"],settings=dict(route["settings"])),signature
 
 
-def compare_versions(stage,store,candidate,tip):
+def compare_versions(stage,store,candidate,tip,local):
     base,draft,host = (candidate[key] for key in ("base_oid","proposed_oid","host_id"))
     versions = (base,draft,tip)
     trees = [tree(stage,revision,git) for revision in versions]
-    sides = [selected_version(stage,rev,files,store,host) for rev,files in zip(versions,trees)]
+    sides = [selected_version(stage,rev,files,store,host,local) for rev,files in zip(versions,trees)]
     summary = dict(zip(("base","candidate","remote"),(view for view,_ in sides)))
     anchors = [tuple(files.get(key) for key in ANCHORS) for files in trees]
     names = set()
@@ -77,7 +83,10 @@ def compare_versions(stage,store,candidate,tip):
 def comparison(load,store,expected,ident):
     require(valid_id(ident),"select the original rejected publication")
     account = load()
+    with verified_account(account) as (_,state):
+        local = local_inputs(state,store)
     with recovery_root(account) as recovery, private_workspace() as (stage,_):
+        stage = stage.resolve(strict=True)
         def pending():
             active,retained,inflight = mode_records(recovery,account,store,None)
             require(not active and not inflight and retained == [ident],"retained publication changed")
@@ -106,9 +115,11 @@ def comparison(load,store,expected,ident):
             require(proposal == candidate["proposed_oid"] and
                     git(stage,"show","-s","--format=%P",proposal).strip().decode() == candidate["base_oid"],
                     "conflict candidate no longer matches its admitted base")
-            report = compare_versions(stage,store,candidate,tip)
+            report = compare_versions(stage,store,candidate,tip,local)
             def current():
                 require(load()==account and pending()==candidate,"conflict authority changed")
+                with verified_account(account) as (_,state):
+                    require(local_inputs(state,store)==local,"local SSH inputs changed")
                 with receive_binding(account,store,expected) as (again,actual,fd,_,where):
                     require((again,actual,where)==(ctx,target,binding) and direct_ref(fd,ctx.ref)==tip,
                             "conflict comparison is stale")

@@ -193,7 +193,7 @@ def absolute_directory(path):
         os.close(root)
 
 
-def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None, read_passphrase=None):
+def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None, read_passphrase=None, review_routes=None):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
     incoming_files = tree(stage, tip, git)
@@ -238,7 +238,9 @@ def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_
     prepared, _ = managed_credentials(files, incoming["hosts"])
     with ssh_view(prepared, local) as config:
         for host in incoming["hosts"]:
-            route = effective(config, host["name"])
+            route = effective(config, host["name"],complete=review_routes is not None)
+            if review_routes is not None:
+                review_routes[host["host_id"]] = route
             if requested and host["name"] in requested:
                 for key, value in requested[host["name"]].items():
                     require(route[key] == value, "imported host differs from the reviewed OpenSSH route")

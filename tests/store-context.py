@@ -1770,7 +1770,7 @@ class StoreContextTest(unittest.TestCase):
         store,load = self.entries[1]["store_id"],lambda:self.account
         with patch.object(store_publish,"send",return_value="not-accepted"):
             ident = edit()["attempt_id"]
-        publish("# synthetic-private-comment\nHost db\n  HostName 192.0.2.33\n")
+        publish("# synthetic-private-comment\nHost db\n  HostName 192.0.2.33\n  User analyst\n  Port 2222\n")
         before = snapshot(f.store),snapshot(f.remote),snapshot(self.root/"shared b"),snapshot(self.recovery)
         view = store_conflict.compare(load,store,self.generations,ident)
         self.assertEqual(view["kind"],"same-host-edit")
@@ -1778,8 +1778,37 @@ class StoreContextTest(unittest.TestCase):
                          ["192.0.2.2","192.0.2.88","192.0.2.33"])
         self.assertEqual(view["remote_revision"],f.git(f.remote,"rev-parse","refs/heads/main"))
         self.assertEqual(view["attempt_id"],ident)
+        self.assertEqual(view["remote"]["user"],"analyst")
+        self.assertEqual(view["remote"]["port"],"2222")
+        self.assertEqual(view["base"]["port"],"22")
         self.assertNotIn("synthetic-private-comment",json.dumps(view))
         self.assertEqual((snapshot(f.store),snapshot(f.remote),snapshot(self.root/"shared b"),snapshot(self.recovery)),before)
+
+    def test_conflict_review_requires_complete_remote_deletion_and_retains_candidate(self):
+        import store_conflict,store_publish
+        f,edit,_ = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        manifest = f.author/".hostbook/identity.json"
+        prior = json.loads(manifest.read_bytes())
+        def publish(meta):
+            meta["generation"] += 1; manifest.write_text(json.dumps(meta))
+            f.git(f.author,"commit","-qam","Synthetic deletion evidence")
+            f.git(f.author,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        prior["hosts"] = []
+        publish(prior)
+        before = snapshot(self.recovery)
+        with self.assertRaises(StoreContextError):
+            store_conflict.compare(load,store,self.generations,ident)
+        (f.author/"team.conf").write_text("# empty project\n")
+        prior["sources"][0]["sha256"] = hashlib.sha256((f.author/"team.conf").read_bytes()).hexdigest()
+        publish(prior)
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(view["kind"],"delete-versus-edit")
+        self.assertIsNone(view["remote"])
+        self.assertEqual(view["candidate"]["address"],"192.0.2.88")
+        self.assertEqual(snapshot(self.recovery),before)
 
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
