@@ -311,10 +311,13 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
     plan = restored_plan(load(),record,manifest)
     finished_source = phase in ("source-removed-local","source-confirmed")
     shared_role = "source" if plan.source == plan.shared else "destination"
-    upgrade = phase in ("destination-saved","source-removed-local")
+    saved_unsent = phase == "destination-saved" and not record["attempts"]
+    upgrade = phase in ("destination-saved","source-removed-local") and not saved_unsent
     prepared = phase == "prepared"
     require((prepared and not record["effects"] and not record["attempts"] and manifest["next_effect"] == "destination-save")
-            or (not finished_source and len(record["effects"]) == 1 and
+            or (saved_unsent and len(record["effects"]) == 1 and
+                manifest["next_effect"] == ("destination-publication" if shared_role == "destination" else "confirm-private-destination"))
+            or (phase in ("destination-confirmed","destination-saved") and not saved_unsent and len(record["effects"]) == 1 and
              ((not upgrade and manifest["next_effect"] == "source-removal") or
               (upgrade and shared_role == "destination" and manifest["next_effect"] == "reconcile-destination")))
             or (finished_source and shared_role == "source" and len(record["effects"]) == 2 and
@@ -339,14 +342,15 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
         mapping.verify_decryption(load,unlock,saved=not prepared)
         with transfer_gates(load,plan,record,manifest,recovery=True) as (tx,verify),ExitStack() as held:
             accepted = None
-            if not prepared and (finished_source or plan.destination == plan.shared):
+            if not prepared and not saved_unsent and (finished_source or plan.destination == plan.shared):
                 proposed = candidate.source_proposed if finished_source else candidate.proposed
                 accepted = held.enter_context(accepted_sender(tx,plan,record,manifest,proposed))
             else:
                 require(not record["attempts"],"unexpected publication before shared source removal")
             def current():
-                if prepared:
+                if not record["attempts"]:
                     require("senders" not in os.listdir(tx),"unrecorded transfer sender requires reconciliation")
+                if prepared:
                     for store in (plan.source,plan.destination):
                         row = next(r for r in record["stores"] if r["store_id"] == store.context.store_id)
                         check_source(plan.account,store,manifest["snapshots"][row["snapshot_id"]])
@@ -358,6 +362,8 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
                 displaced_destination(plan,candidate,record,manifest)
                 if accepted is not None:
                     accepted()
+                elif saved_unsent:
+                    current_receiver(plan,plan.shared.base,require_writes=True)
             current()
             owner,start = new_owner()
             previous = {"owner":record["owner"],"native_start":manifest["native_start"],"sequence":record["sequence"]}
@@ -375,6 +381,7 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             return finish_shared_source(*args)
         if prepared:
             save_destination(*args)
+        if prepared or saved_unsent:
             confirm_destination = publish_destination if plan.destination == plan.shared else confirm_private_destination
             destination = confirm_destination(*args)
             if destination["checkpoint"] != "destination-confirmed":

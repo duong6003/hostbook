@@ -3930,6 +3930,32 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),inverse)
         self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
 
+    def test_resume_original_saved_destination_before_first_shared_send(self):
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-saved")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["attempts"],[])
+        dest = f.vaults.destination.checkout
+        self.assertEqual(f.shared.git(dest,"rev-parse","HEAD"),manifest["proposed"])
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        root = self.recovery/"transactions"/ident
+        (root/"senders").mkdir(mode=0o700)
+        (root/"senders"/new_id()).mkdir(mode=0o700)
+        with self.assertRaisesRegex(StoreContextError,"sender"):
+            run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.shared.base)
+        shutil.rmtree(root/"senders")
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        final,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((final["checkpoint"],len(final["attempts"])),("completed",1))
+        self.assertEqual(f.shared.git(dest,"rev-parse","HEAD"),manifest["proposed"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
+
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent
         from store_transfer import prepare_candidate
