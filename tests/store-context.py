@@ -3601,6 +3601,24 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
             self.assertEqual(record["checkpoint"],"destination-confirmed")
             self.assertEqual(record["effects"][-1]["outcome"],"intended")
 
+    def test_explicit_shared_to_private_command_confirms_which_store_publishes_removal(self):
+        from store_transfer_command import run_transfer
+        f = self.reverse_transfer_case()
+        passwords = {"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id),
+                     "backup":b"operator backup","recovery":b"operator recovery"}
+        emitted,reviewed = [],[]
+        def confirm(comparison):
+            reviewed.append(comparison)
+            return True
+        args = [f.src.store_id,"1","2","3","4",f.plan.host_id,f.dst.store_id,"1","2","3","4",
+                f.plan.alias,f.mapped.name,"create"]
+        self.assertEqual(run_transfer(f.load,args,lambda role:passwords[role.removesuffix("-repeat")],confirm,emitted.append),0)
+        self.assertEqual([r["checkpoint"] for r in emitted],["comparison","prepared","completed"])
+        self.assertEqual(reviewed[0]["publications"],[{"store_id":f.src.store_id,"ref":f.plan.source.ref,"effect":"source-removal"}])
+        self.assertIn(f.plan.host_id,f.shared.git(f.dst.checkout,"show","HEAD:.hostbook/identity.json"))
+        self.assertNotIn(f.plan.host_id,f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))
+        self.assertTrue((f.src.vault/"team-key.age").exists())
+
     def test_transfer_prompt_uses_saved_language_and_first_trusted_compatible_picker(self):
         import store_transfer_command as command
         settings = self.root/"preferences"/"hostbook"

@@ -1,4 +1,4 @@
-"""Run one explicitly reviewed transfer of a private host to a registered shared store."""
+"""Run a reviewed host transfer between one private and one shared store."""
 import json
 import os
 from pathlib import Path
@@ -14,8 +14,8 @@ from store_transfer import interruptible_preview, prepare_candidate, preview
 from store_transfer_apply import save_destination
 from store_transfer_credentials import CredentialRef, private_workspace, stage_credential
 from store_transfer_intent import prepare_intent
-from store_transfer_publish import publish_destination
-from store_transfer_remove import finish_private_source
+from store_transfer_publish import confirm_private_destination, publish_destination, publish_source
+from store_transfer_remove import finish_shared_source, remove_source
 
 
 def run_transfer(load, args, secret, confirm, emit):
@@ -24,9 +24,8 @@ def run_transfer(load, args, secret, confirm, emit):
                    args[6],Generations(*(int(v) for v in args[7:11])),args[11])
     comparison = plan.comparison()
     emit(dict(comparison,checkpoint="comparison",destination_credential=args[12],credential_action=args[13]))
-    require(plan.source.context.kind == "private" and plan.destination.context.kind == "shared"
-            and comparison["shared_mode"] == "two-way" and comparison["shared_checkout_at_remote_tip"]
-            and not comparison["matches"], "this transfer needs a current two-way shared destination and a free host")
+    require(comparison["shared_mode"] == "two-way" and comparison["shared_checkout_at_remote_tip"]
+            and not comparison["matches"], "this transfer needs one current two-way shared checkout and a free host")
     credential = comparison["source"]["credential"]
     require(credential, "this transfer requires a managed source credential")
     src = CredentialRef(plan.source.context.store_id,plan.source.context.generations,credential)
@@ -46,13 +45,24 @@ def run_transfer(load, args, secret, confirm, emit):
         ident = prepare_intent(load,plan,candidate,mapped,unlock,password,code,confirm)
         emit({"transaction_id":ident,"checkpoint":"prepared"})
         save_destination(load,ident,plan,candidate,mapped,unlock,password,code)
-        result = publish_destination(load,ident,plan,candidate,mapped,unlock,password,code)
-        if result["checkpoint"] != "destination-confirmed":
-            emit(result)
-            return 75
-        # Reopen current destination vault before removing the private source.
+        arguments = load,ident,plan,candidate,mapped,unlock,password,code
+        if plan.destination.context.kind == "shared":
+            result = publish_destination(*arguments)
+            if result["checkpoint"] != "destination-confirmed":
+                emit(result)
+                return 75
+        else:
+            confirm_private_destination(*arguments)
+        # Reopen current destination vault before removing either source.
         del store_phrases[dst.store_id]
-        emit(finish_private_source(load,ident,plan,candidate,mapped,unlock,password,code))
+        result = remove_source(*arguments)
+        if plan.source.context.kind == "shared":
+            result = publish_source(*arguments)
+            if result["checkpoint"] != "source-confirmed":
+                emit(result)
+                return 75
+            result = finish_shared_source(*arguments)
+        emit(result)
     return 0
 
 
@@ -129,7 +139,7 @@ def transfer_command(args):
             proc = subprocess.run([*command,"_store_transfer_review",src["name"],src["store_id"],
                 dst["proposed_alias"],dst["store_id"],details["publications"][0]["ref"],details["destination_credential"],
                 str(len(details["retained_credential_users"])),details["credential_action"],
-                "prod" if details["requires_typed_alias"] else "ordinary"],env=env,stdout=subprocess.PIPE)
+                "prod" if details["requires_typed_alias"] else "ordinary",src["kind"]],env=env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
             if details["requires_typed_alias"]:

@@ -404,8 +404,9 @@ stable host ID, proposed alias, matching destination hosts, other users of the
 source credential, and the shared ref that would receive the change.
 
 `hostbook store-transfer SOURCE R C N P HOST_ID DESTINATION R C N P ALIAS CREDENTIAL create`
-moves one independently declared host from a clean private checkout to a clean,
-current two-way shared checkout backed by an approved local bare Git repository.
+moves one independently declared host in either direction between a clean private
+checkout and a clean, current two-way shared checkout backed by an approved local
+bare Git repository.
 Use `reuse` in place of `create` to select an existing destination credential
 whose metadata and decrypted value match. Both stores need existing, distinct
 vaults. This command accepts a free destination alias, one managed key or
@@ -415,8 +416,10 @@ The command prints the current comparison, prompts on the controlling terminal
 for the vault passwords and a separately kept transaction password and recovery
 code, then shows a confirmation. PROD hosts require their source alias typed
 exactly. The prepared JSON result identifies the transaction before the first
-checkout effect. The source is removed after the destination accepts the
-conditional update and the saved credential decrypts again. Other source hosts
+checkout effect. A shared destination must accept its exact conditional update
+before private removal. A private destination must be durable and its credential
+must decrypt before the shared source removal is prepared and conditionally
+published. An intervening shared update preserves its remote host. Other source hosts
 retain their original credential. A completed result follows verification of
 both checkouts. An interrupted or uncertain move retains its protected journal
 and fences the participating stores for reconciliation.
