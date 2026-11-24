@@ -2976,6 +2976,91 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertEqual(snapshot(f.src.checkout),before)
         self.assertEqual(snapshot(f.shared.remote),remote)
 
+    def check_shared_source_publication(self, refused, *, editor=False):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publisher
+        import store_transfer_remove as removal
+        f = self.reverse_transfer_case()
+        mapped = stage_credential(f.load,f.original,f.mapped,f.v.unlock)
+        pw,code = b"reverse backup fixture",b"reverse recovery fixture"
+        send = publisher.send
+        attempted = []
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,f.v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            publisher.confirm_private_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            before = snapshot(f.dst.checkout)
+            source_vault = snapshot(f.src.vault)
+            args = f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code
+            result = removal.remove_source(*args)
+            self.assertEqual(result["checkpoint"],"source-removed-local")
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.source.base)
+            self.assertFalse((f.src.checkout/"team.conf").exists())
+            if editor:
+                record,manifest = reopen_intent(f.load,ident,pw)
+                captured = (f.src.checkout/".git").joinpath(*manifest["source_runtime"],"source")
+                changed = captured.read_bytes()+b"# independent save through previously opened source\n"
+                captured.write_bytes(changed)
+                with self.assertRaisesRegex(StoreContextError,"local changes"):
+                    publisher.publish_source(*args)
+                self.assertEqual(captured.read_bytes(),changed)
+                self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.source.base)
+                self.assertEqual(reopen_intent(f.load,ident,pw)[0]["attempts"],[])
+                return
+            def checked(*call):
+                record,protected = reopen_intent(f.load,ident,pw)
+                attempt = record["attempts"][0]
+                self.assertEqual((attempt["store_id"],attempt["outcome"]),(f.src.store_id,"reserved"))
+                self.assertEqual((call[3],call[4],call[5]),(f.plan.source.ref,f.plan.source.base,candidate.source_proposed))
+                self.assertEqual(protected["publication"]["target"]["inode"],f.shared.remote.stat().st_ino)
+                if refused:
+                    f.shared.git(f.shared.author,"fetch","-q",str(f.shared.remote),"refs/heads/main")
+                    f.shared.git(f.shared.author,"merge","-q","--ff-only","FETCH_HEAD")
+                    (f.shared.author/"independent").write_text("unrelated independent update")
+                    f.shared.git(f.shared.author,"add","independent")
+                    f.shared.git(f.shared.author,"commit","-qm","Independent shared change")
+                    f.shared.git(f.shared.author,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+                attempted.append(attempt["attempt_id"])
+                return send(*call)
+            with patch.object(publisher,"send",side_effect=checked):
+                sent = publisher.publish_source(*args)
+            self.assertEqual(len(attempted),1)
+            self.assertEqual(snapshot(f.dst.checkout),before)
+            self.assertEqual(snapshot(f.src.vault),source_vault)
+            record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+            self.assertEqual(record["attempts"][0]["attempt_id"],attempted[0])
+            self.assertIn("source_bundle",manifest)
+            if refused:
+                self.assertEqual(sent["outcome"],"not-accepted")
+                self.assertEqual(record["checkpoint"],"source-removed-local")
+                self.assertIn("Host db",f.shared.git(f.shared.remote,"show","refs/heads/main:team.conf"))
+                self.assertEqual(f.shared.git(f.shared.remote,"show","main:independent"),"unrelated independent update")
+                with self.assertRaises(StoreContextError):
+                    removal.finish_shared_source(*args)
+                self.assertTrue((f.src.checkout/".git").joinpath(*manifest["source_runtime"],"source").is_file())
+            else:
+                self.assertEqual(sent["checkpoint"],"source-confirmed")
+                self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),candidate.source_proposed)
+                self.assertEqual(removal.finish_shared_source(*args)["checkpoint"],"completed")
+                self.assertEqual(f.shared.git(f.src.checkout,"status","--porcelain"),"")
+                from store_journal import require_idle
+                from store_publish import recovery_root
+                with recovery_root(self.account) as root:
+                    for ctx in (f.src,f.dst):
+                        require_idle(root,self.account,ctx.store_id)
+
+    def test_shared_source_publishes_exact_reviewed_removal_after_private_destination_is_verified(self):
+        self.check_shared_source_publication(False)
+
+    def test_shared_source_refusal_retains_remote_host_private_copy_and_encrypted_recovery(self):
+        self.check_shared_source_publication(True)
+
+    def test_shared_source_publication_preserves_an_edit_to_the_displaced_source(self):
+        self.check_shared_source_publication(False,editor=True)
+
     def test_transfer_candidate_preserves_exact_id_settings_and_verified_destination_password(self):
         from store_transfer import prepare_candidate
         from store_transfer_credentials import stage_credential

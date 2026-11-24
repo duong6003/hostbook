@@ -5,12 +5,13 @@ import fcntl
 import os
 import subprocess
 
-from store_checkout import check_worktree, direct_ref, durable_file, read_index, read_ref, tree
+from store_checkout import check_contents, check_worktree, direct_ref, durable_file, read_index, read_ref, tree
 from store_context import (StoreContextError, open_directory, require, require_approval_file, require_private_directory,
                            resolved_store, sync_local)
+from store_journal import publication_receipt
 from store_publish import require_plain_receiver, send
 from store_read import local_inputs
-from store_receive import git, plain_git, registered_target
+from store_receive import IDENTITY, git, plain_git, registered_target
 from store_transfer import writable_shared
 from store_transfer_apply import advance, check_source, selected, transfer_gates
 from store_transfer_credentials import private_workspace
@@ -69,6 +70,46 @@ def confirm_private_destination(load, ident, plan, candidate, mapping, read_pass
     return {"transaction_id":ident,"checkpoint":"destination-confirmed"}
 
 
+def removed_checkout(load, plan, candidate, mapping, record, manifest):
+    destination_checkout(load,plan,candidate,mapping,record,manifest)
+    src = plan.source
+    evidence = manifest["source_evidence"]
+    require(manifest["confirmed_destination"] == candidate.proposed and manifest["source_proposed"] == candidate.source_proposed
+            and len(record["effects"]) == 2 and record["effects"][1]["outcome"] == "observed"
+            and record["effects"][1]["store_id"] == src.context.store_id
+            and record["effects"][1]["evidence_id"] == evidence["evidence_id"],"shared source removal evidence changed")
+    with resolved_store(plan.account,src.context.store_id,src.context.generations) as (active,_,_,state):
+        require(active == src.context and local_inputs(state,active.store_id) == src.local,"shared source settings changed")
+    with local_descriptors(plan.account,src) as (checkout,repo):
+        filemode,_ = plain_git(repo,bare=False)
+        require(evidence["ref"] == src.ref and evidence["tip"] == candidate.source_proposed == read_ref(repo,src.ref)
+                and encoded(read_index(repo)) == evidence["index"],"saved source branch or index changed")
+        check_worktree(checkout,tree(candidate.source_stage,candidate.source_proposed,git),filemode)
+
+
+def publishable_source(load, plan, candidate, mapping, record, manifest):
+    removed_checkout(load,plan,candidate,mapping,record,manifest)
+    runtime = ("hostbook-transfer-v1",record["transaction_id"],record["effects"][1]["effect_id"])
+    require(manifest["source_runtime"] == list(runtime),"source exchange binding changed")
+    original = tree(candidate.source_stage,plan.source.base,git)
+    with local_descriptors(plan.account,plan.source) as (_,repo),open_directory(repo,runtime) as slot:
+        filemode,_ = plain_git(repo,bare=False)
+        require_private_directory(slot,"shared source exchange")
+        check_contents(slot,"source",original[candidate.source_path],filemode)
+        check_contents(slot,"0",original[IDENTITY],filemode)
+
+
+def current_receiver(plan, expected, pinned=None, *, require_writes=False):
+    shared = plan.shared
+    with resolved_store(plan.account,shared.context.store_id,shared.context.generations) as (ctx,_,root,state):
+        require(ctx == shared.context and ctx.effective_mode == "two-way","shared registration changed")
+        with registered_target(plan.account,ctx,root,state) as (target,remote):
+            require(target == shared.target and (pinned is None or os.path.samestat(os.fstat(remote),os.fstat(pinned)))
+                    and direct_ref(remote,shared.ref) == expected,"shared publication requires reconciliation")
+            if require_writes:
+                require_plain_receiver(remote)
+
+
 @contextmanager
 def sender_lease(folder, expected):
     require_private_directory(folder,"transfer sender")
@@ -87,18 +128,32 @@ def sender_lease(folder, expected):
 
 
 def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, password, code):
+    require(plan.destination.context.kind == "shared","publication requires a shared destination")
+    return publish_shared(load,ident,plan,candidate,mapping,read_passphrase,password,code,"destination")
+
+
+def publish_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
+    require(plan.source.context.kind == "shared","publication requires a shared source")
+    return publish_shared(load,ident,plan,candidate,mapping,read_passphrase,password,code,"source")
+
+
+def publish_shared(load, ident, plan, candidate, mapping, read_passphrase, password, code, role):
     record,manifest = reopen_intent(load,ident,password)
-    require(plan.destination.context.kind == "shared" and record["checkpoint"] == "destination-saved" and not record["attempts"]
-            and manifest["next_effect"] == "destination-publication","transfer destination publication is not ready")
+    if role == "destination":
+        prior,stage,proposed,checkout = "destination-saved",candidate.stage,candidate.proposed,saved_checkout
+    else:
+        prior,stage,proposed,checkout = "source-removed-local",candidate.source_stage,candidate.source_proposed,publishable_source
+    require(record["checkpoint"] == prior and not record["attempts"] and manifest["next_effect"] == role+"-publication",
+            "transfer publication is not ready")
     phrase = read_passphrase(mapping.destination.store_id)
     mapping.verify_saved(load,lambda _store:phrase)
-    account,dst = plan.account,plan.destination
-    require(git(candidate.stage,"rev-list","--parents","-n","1",candidate.proposed).split() ==
-            [candidate.proposed.encode(),dst.base.encode()],"transfer proposal has an unexpected parent")
+    account,shared = plan.account,plan.shared
+    require(git(stage,"rev-list","--parents","-n","1",proposed).split() == [proposed.encode(),shared.base.encode()],
+            "transfer proposal has an unexpected parent")
     attempt_id = token()
     with ExitStack() as transport:
         with transfer_gates(load,plan,record,manifest) as (tx,verify), writable_shared(plan,transfer=record) as remote:
-            saved_checkout(load,plan,candidate,mapping,record,manifest)
+            checkout(load,plan,candidate,mapping,record,manifest)
             pinned_tx,pinned_remote = os.dup(tx),os.dup(remote)
             transport.callback(os.close,pinned_tx)
             transport.callback(os.close,pinned_remote)
@@ -114,25 +169,25 @@ def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, 
             info = os.fstat(fd)
             sync_local(attempt_folder)
             lease_bytes = {"device":info.st_dev,"inode":info.st_ino}
-            attempt = {"attempt_id":attempt_id,"store_id":dst.context.store_id,"owner_id":record["owner"]["owner_id"],
-                       "connection_generation":dst.context.generations.connection,"reservation_id":token(),
-                       "target_id":dst.context.target_id,"intent_id":token(),"evidence_id":None,
+            attempt = {"attempt_id":attempt_id,"store_id":shared.context.store_id,"owner_id":record["owner"]["owner_id"],
+                       "connection_generation":shared.context.generations.connection,"reservation_id":token(),
+                       "target_id":shared.context.target_id,"intent_id":token(),"evidence_id":None,
                        "sender_state":"active","outcome":"reserved"}
-            binding = {"attempt":attempt_id,"target":asdict(dst.target),"ref":dst.ref,"base":dst.base,
-                       "proposed":candidate.proposed,"lease":lease_bytes,"reservation":attempt["reservation_id"],
-                       "intent":attempt["intent_id"],"store":dst.context.store_id}
+            binding = {"attempt":attempt_id,"target":asdict(shared.target),"ref":shared.ref,"base":shared.base,
+                       "proposed":proposed,"lease":lease_bytes,"reservation":attempt["reservation_id"],
+                       "intent":attempt["intent_id"],"store":shared.context.store_id}
             def ready():
-                saved_checkout(load,plan,candidate,mapping,record,manifest)
-                require_plain_receiver(pinned_remote)
-                require(direct_ref(pinned_remote,dst.ref) == dst.base, "destination remote base changed")
+                checkout(load,plan,candidate,mapping,record,manifest)
+                current_receiver(plan,shared.base,pinned_remote,require_writes=True)
             record,manifest,proof = advance(pinned_tx,account,record,manifest,dict(record,attempts=[attempt]),
-                dict(manifest,publication=binding,next_effect="send-destination"),password,code,observe=ready)
+                dict(manifest,publication=binding,next_effect="send-"+role),password,code,observe=ready)
             verify(record)
         started = False
         def start():
             nonlocal started
             proof()
             selected(pinned_tx,account,record)
+            ready()
             with open_directory(pinned_tx,("senders",attempt_id)) as named:
                 require(os.path.samestat(os.fstat(named),os.fstat(attempt_folder)) and
                         os.path.samestat(os.fstat(fd),os.stat("lease",dir_fd=named,follow_symlinks=False)),
@@ -142,7 +197,7 @@ def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, 
             started = True
         try:
             with private_workspace() as (_,runtime):
-                result = send(candidate.stage,pinned_remote,fd,dst.ref,dst.base,candidate.proposed,runtime,account,start)
+                result = send(stage,pinned_remote,fd,shared.ref,shared.base,proposed,runtime,account,start)
         except (OSError, StoreContextError, subprocess.SubprocessError):
             result = "uncertain" if started else "not-accepted"
         finally:
@@ -154,31 +209,27 @@ def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, 
                         os.stat("lease",dir_fd=named,follow_symlinks=False).st_ino == lease_bytes["inode"],
                         "original transfer sender binding changed")
                 ack = token()
-                receipt = {"attempt_id":attempt_id,"evidence_id":ack,"sender_state":"quiescent","outcome":result}
+                settled = dict(attempt,outcome=result,evidence_id=ack,sender_state="quiescent")
+                receipt = publication_receipt(record["stores"],settled)
                 durable_file(named,"outcome.json",wire(receipt))
                 sync_local(named)
                 with transfer_gates(load,plan,record,manifest) as (tx,verify):
                     proof()
-                    settled = dict(attempt,outcome=result,evidence_id=ack,sender_state="quiescent")
                     record,manifest,proof = advance(tx,account,record,manifest,dict(record,attempts=[settled]),
-                        dict(manifest,next_effect="reconcile-destination",publication_evidence=receipt),password,code)
+                        dict(manifest,next_effect="reconcile-"+role,publication_evidence=receipt),password,code)
                     historical = True
                     verify(record)
                     if result == "accepted":
                         def confirmed():
-                            saved_checkout(load,plan,candidate,mapping,record,manifest)
-                            with resolved_store(account,dst.context.store_id,dst.context.generations) as (ctx,_,root,state):
-                                require(ctx == dst.context,"destination registration changed")
-                                with registered_target(account,ctx,root,state) as (target,actual):
-                                    require(target == dst.target and os.path.samestat(os.fstat(pinned_remote),os.fstat(actual))
-                                            and direct_ref(actual,dst.ref) == candidate.proposed,
-                                            "destination publication requires reconciliation")
+                            checkout(load,plan,candidate,mapping,record,manifest)
+                            current_receiver(plan,proposed,pinned_remote)
                         confirmed()
-                        record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="destination-confirmed"),
-                            dict(manifest,next_effect="source-removal",confirmed_destination=candidate.proposed),
-                            password,code,observe=confirmed)
+                        updated = dict(manifest,next_effect="source-removal" if role == "destination" else "complete")
+                        updated["confirmed_"+role] = proposed
+                        record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint=role+"-confirmed"),
+                            updated,password,code,observe=confirmed)
                         verify(record)
         except (OSError,StoreContextError):
-            return {"transaction_id":ident,"attempt_id":attempt_id,"checkpoint":"destination-saved",
+            return {"transaction_id":ident,"attempt_id":attempt_id,"checkpoint":prior,
                     "outcome":result if historical else "uncertain"}
     return {"transaction_id":ident,"attempt_id":attempt_id,"checkpoint":record["checkpoint"],"outcome":result}

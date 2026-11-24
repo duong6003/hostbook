@@ -155,6 +155,11 @@ def transaction(record, prior):
     return (None if op == "migration" and not complete else stores), complete
 
 
+def publication_receipt(stores, attempt):
+    role = next(row["role"] for row in stores if row["store_id"] == attempt["store_id"])
+    return dict(attempt,published_role=role)
+
+
 def completion_receipt(record):
     return {"version":1,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
             "payload_id":record["payload_id"],"effects":[row["evidence_id"] for row in record["effects"]],
@@ -169,7 +174,7 @@ def verified_completion(folder, record, prior):
     effects,attempts = record["effects"],record["attempts"]
     if (len(effects) != 2 or [e["store_id"] for e in effects] != [roles["destination"],roles["source"]]
             or any(e["outcome"] != "observed" or not valid_id(e["evidence_id"]) for e in effects)
-            or len(attempts) != 1 or attempts[0]["store_id"] != roles["destination"]
+            or len(attempts) != 1 or attempts[0]["store_id"] not in roles.values()
             or attempts[0]["outcome"] != "accepted" or attempts[0]["sender_state"] != "quiescent"
             or record["collection"] != {"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}):
         return False
@@ -188,7 +193,7 @@ def verified_completion(folder, record, prior):
         with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
             require_private_directory(sender,"transfer sender")
             return (private_json(folder,"completion.json") == completion_receipt(record) and
-                    private_json(sender,"outcome.json") == {k:attempt[k] for k in ("attempt_id","evidence_id","sender_state","outcome")})
+                    private_json(sender,"outcome.json") == publication_receipt(record["stores"],attempt))
     except (OSError,StoreContextError):
         return False
 

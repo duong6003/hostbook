@@ -1,27 +1,36 @@
-"""Remove the exact private source only after verified, settled shared destination acceptance."""
+"""Remove a confirmed source and preserve displaced files until required publication settles."""
 import os
 
-from store_checkout import (check_contents, check_destinations, check_worktree, direct_ref, durable_file,
+from store_checkout import (check_contents, check_destinations, check_worktree, durable_file,
                             fast_forward, install_sources, read_index, read_ref, rename_guarded, tree)
 from store_context import (StoreContextError, open_directory, require, require_private_directory,
-                           resolved_store, sync_local)
+                           sync_local)
 from store_journal import private_json
-from store_receive import IDENTITY, git, plain_git, prepare_adoption, registered_target
+from store_receive import IDENTITY, git, plain_git, prepare_adoption
 from store_transfer_apply import advance, check_source, transfer_gates
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token
-from store_transfer_publish import destination_checkout
+from store_transfer_publish import current_receiver, destination_checkout, removed_checkout
 
 
 def finish_private_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
+    require(plan.source.context.kind == "private","expected a private transfer source")
+    return remove_source(load,ident,plan,candidate,mapping,read_passphrase,password,code)
+
+
+def remove_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
     record,manifest = reopen_intent(load,ident,password)
+    private = plan.source.context.kind == "private"
     require(record["checkpoint"] == "destination-confirmed" and manifest["confirmed_destination"] == candidate.proposed
-            and len(record["attempts"]) == 1 and record["attempts"][0]["outcome"] == "accepted"
-            and record["attempts"][0]["sender_state"] == "quiescent" and len(record["effects"]) == 1
+            and manifest["next_effect"] == "source-removal" and len(record["effects"]) == 1
             and record["effects"][0]["outcome"] == "observed", "source removal requires a confirmed destination")
-    require(plan.source.context.kind == "private" and candidate.source_proposed == manifest["source_proposed"]
+    attempts = record["attempts"]
+    require((len(attempts) == 1 and attempts[0]["outcome"] == "accepted" and attempts[0]["sender_state"] == "quiescent"
+             and attempts[0]["store_id"] == plan.destination.context.store_id) if private else not attempts,
+            "destination acceptance is unsettled")
+    require(candidate.source_proposed == manifest["source_proposed"]
             and encoded(candidate.source_identity) == manifest["source_identity"]
-            and candidate.source_path == manifest["source_path"], "private source removal proposal changed")
-    account,src,dst = plan.account,plan.source,plan.destination
+            and candidate.source_path == manifest["source_path"], "source removal proposal changed")
+    account,src = plan.account,plan.source
     phrase = read_passphrase(mapping.destination.store_id)
     mapping.verify_saved(load,lambda _store:phrase)
     source = manifest["snapshots"][next(row["snapshot_id"] for row in record["stores"] if row["role"] == "source")]
@@ -31,7 +40,7 @@ def finish_private_source(load, ident, plan, candidate, mapping, read_passphrase
             and set(before)-set(after) == {path} and not set(after)-set(before)
             and {p for p in after if after[p] != before[p]} == {IDENTITY}
             and git(stage,"cat-file","blob",after[IDENTITY].decode()) == candidate.source_identity,
-            "private source removal differs from its confirmed bytes")
+            "source removal differs from its confirmed bytes")
     effect = {"effect_id":token(),"store_id":src.context.store_id,"intent_id":token(),"evidence_id":None,"outcome":"intended"}
     with transfer_gates(load,plan,record,manifest) as (tx,verify),local_descriptors(account,src) as (checkout,repo):
         check_source(account,src,source)
@@ -39,24 +48,22 @@ def finish_private_source(load, ident, plan, candidate, mapping, read_passphrase
         original_index = read_index(repo)
         prepare_adoption(stage,original_index,before,src.base,removal)
         proposed_index = (stage/"index").read_bytes()
-        attempt = record["attempts"][0]
         def destination():
             destination_checkout(load,plan,candidate,mapping,record,manifest)
-            with open_directory(tx,("senders",attempt["attempt_id"])) as sender:
-                require(private_json(sender,"outcome.json") == manifest["publication_evidence"],
-                        "original destination acceptance evidence changed")
-            with resolved_store(account,dst.context.store_id,dst.context.generations) as (active,_,root,state):
-                require(active == dst.context,"destination registration changed")
-                with registered_target(account,active,root,state) as (target,remote):
-                    require(target == dst.target and direct_ref(remote,dst.ref) == candidate.proposed,
-                            "confirmed destination is no longer current")
+            if private:
+                with open_directory(tx,("senders",attempts[0]["attempt_id"])) as sender:
+                    require(private_json(sender,"outcome.json") == manifest["publication_evidence"],
+                            "original destination acceptance evidence changed")
+                current_receiver(plan,candidate.proposed)
+            else:
+                current_receiver(plan,src.base,require_writes=True)
         destination()
         def before_removal():
             destination()
             check_source(account,src,source)
         runtime = ("hostbook-transfer-v1",ident,effect["effect_id"])
         record,manifest,proof = advance(tx,account,record,manifest,dict(record,effects=record["effects"]+[effect]),
-            dict(manifest,next_effect="remove-private-source",source_runtime=list(runtime)),password,code,observe=before_removal)
+            dict(manifest,next_effect="remove-source",source_runtime=list(runtime)),password,code,observe=before_removal)
         def live():
             proof()
             verify(record)
@@ -110,40 +117,85 @@ def finish_private_source(load, ident, plan, candidate, mapping, read_passphrase
                     return {"ref":src.ref,"tip":tip,"index":encoded(index)}
             observed = source_observation()
             def unchanged():
-                require(source_observation() == observed,"private source observation changed")
+                require(source_observation() == observed,"source observation changed")
             evidence = token()
             completed_effect = dict(effect,evidence_id=evidence,outcome="observed")
             record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="source-removed-local",
-                effects=[record["effects"][0],completed_effect]),dict(manifest,next_effect="confirm-private-source",
+                effects=[record["effects"][0],completed_effect]),dict(manifest,next_effect="confirm-private-source" if private else "source-publication",
                 source_evidence=dict(observed,evidence_id=evidence)),password,code,observe=unchanged)
             live()
+            if not private:
+                unchanged()
+                return {"transaction_id":ident,"checkpoint":"source-removed-local"}
             record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="source-confirmed"),
                 dict(manifest,next_effect="complete"),password,code,observe=unchanged)
             live()
             verify_slot()
             unchanged()
-            # Retire only files moved into this private directory by this transaction.
-            # Keep both actual displaced files discoverable on any ambiguous comparison.
-            retired = []
-            for name,expected in (("source",before[path]),("0",before[IDENTITY])):
-                check_contents(slot,name,expected,filemode)
-                captured = os.stat(name,dir_fd=slot,follow_symlinks=False)
-                retiring = "verified-"+name
-                rename_guarded(slot,name,slot,retiring,exchange=False)
-                sync_local(slot)
-                require(os.path.samestat(captured,os.stat(retiring,dir_fd=slot,follow_symlinks=False)),
-                        "displaced private source changed before retirement")
-                check_contents(slot,retiring,expected,filemode)
-                retired.append((retiring,expected))
-            unchanged()
-            verify_slot()
-            for name,expected in retired:
-                check_contents(slot,name,expected,filemode)
-                os.unlink(name,dir_fd=slot)
-                sync_local(slot)
+            retire_displaced(slot,before[path],before[IDENTITY],filemode,unchanged,verify_slot)
         record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="completed"),
             dict(manifest,next_effect="none"),password,code,observe=unchanged)
         verify(record)
         proof()
         unchanged()
+    return {"transaction_id":ident,"checkpoint":"completed"}
+
+
+def retire_displaced(slot, source_blob, identity_blob, filemode, unchanged, verify_slot):
+    # Retire only files moved into this private directory by this transaction.
+    # Keep both actual displaced files discoverable on any ambiguous comparison.
+    retired = []
+    for name,expected in (("source",source_blob),("0",identity_blob)):
+        check_contents(slot,name,expected,filemode)
+        captured = os.stat(name,dir_fd=slot,follow_symlinks=False)
+        retiring = "verified-"+name
+        rename_guarded(slot,name,slot,retiring,exchange=False)
+        sync_local(slot)
+        require(os.path.samestat(captured,os.stat(retiring,dir_fd=slot,follow_symlinks=False)),
+                "displaced source changed before retirement")
+        check_contents(slot,retiring,expected,filemode)
+        retired.append((retiring,expected))
+    unchanged()
+    verify_slot()
+    for name,expected in retired:
+        check_contents(slot,name,expected,filemode)
+        os.unlink(name,dir_fd=slot)
+        sync_local(slot)
+
+
+def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
+    record,manifest = reopen_intent(load,ident,password)
+    src = plan.source
+    require(src.context.kind == "shared" and record["checkpoint"] == "source-confirmed"
+            and manifest["confirmed_source"] == candidate.source_proposed and manifest["next_effect"] == "complete"
+            and len(record["attempts"]) == 1 and len(record["effects"]) == 2,"shared source publication is unconfirmed")
+    attempt = record["attempts"][0]
+    require(attempt["outcome"] == "accepted" and attempt["sender_state"] == "quiescent"
+            and attempt["store_id"] == src.context.store_id,"shared source acceptance is unsettled")
+    runtime = ("hostbook-transfer-v1",ident,record["effects"][1]["effect_id"])
+    require(manifest["source_runtime"] == list(runtime),"shared source exchange binding changed")
+    phrase = read_passphrase(mapping.destination.store_id)
+    mapping.verify_saved(load,lambda _store:phrase)
+    before = tree(candidate.source_stage,src.base,git)
+    with transfer_gates(load,plan,record,manifest) as (tx,verify),local_descriptors(plan.account,src) as (_,repo):
+        filemode,_ = plain_git(repo,bare=False)
+        def current():
+            removed_checkout(load,plan,candidate,mapping,record,manifest)
+            current_receiver(plan,candidate.source_proposed)
+            with open_directory(tx,("senders",attempt["attempt_id"])) as sender:
+                require(private_json(sender,"outcome.json") == manifest["publication_evidence"],
+                        "original source acceptance evidence changed")
+        current()
+        with open_directory(repo,runtime) as slot:
+            def verify_slot():
+                with local_descriptors(plan.account,src) as (_,named),open_directory(named,runtime) as actual:
+                    require_private_directory(actual,"shared source exchange")
+                    require(os.path.samestat(os.fstat(actual),os.fstat(slot)),"shared source exchange changed")
+            verify_slot()
+            retire_displaced(slot,before[candidate.source_path],before[IDENTITY],filemode,current,verify_slot)
+        record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="completed"),
+            dict(manifest,next_effect="none"),password,code,observe=current)
+        verify(record)
+        proof()
+        current()
     return {"transaction_id":ident,"checkpoint":"completed"}
