@@ -118,7 +118,9 @@ class StoreContextTest(unittest.TestCase):
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
             for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py",
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
-                         "store_transfer.py", "store_transfer_credentials.py"):
+                         "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
+                         "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -2896,11 +2898,11 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 os.close(directory)
         self.assertEqual(snapshot(self.root), before)
 
-    def transfer_case(self, *, shared_credential=False):
+    def transfer_case(self, *, shared_credential=False, prod=False):
         from store_transfer import preview
         vaults = self.transfer_vaults()
         host = new_id()
-        self.write_route(0, host, "# secret: login\nHost source-one\n  HostName 192.0.2.61\n"
+        self.write_route(0, host, ("# tags: prod\n" if prod else "")+"# secret: login\nHost source-one\n  HostName 192.0.2.61\n"
                          "  User fixture\n  Port 2210\n  ProxyJump relay.example\n", name="source-one")
         if shared_credential:
             other = b"# secret: login\nHost stays\n  HostName 192.0.2.77\n"
@@ -3449,6 +3451,57 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
             record,_ = reopen_intent(f.load,ident,code,recovery=True)
             self.assertEqual(record["checkpoint"],"destination-confirmed")
             self.assertEqual(record["effects"][-1]["outcome"],"intended")
+
+    def test_explicit_transfer_command_runs_reviewed_move_and_emits_only_public_results(self):
+        from store_transfer_command import run_transfer
+        f = self.transfer_case(shared_credential=True)
+        preview = f.plan.comparison()
+        answers = {"source":f.vaults.unlock(f.vaults.src.store_id),"destination":f.vaults.unlock(f.vaults.dst.store_id),
+                   "backup":b"transaction fixture","recovery":b"independent fixture"}
+        prompts,review,results = [],[],[]
+        def secret(role):
+            prompts.append(role)
+            return answers[role.removesuffix("-repeat")]
+        def confirm(details):
+            review.append(details)
+            return True
+        args = [f.vaults.src.store_id,"1","2","3","4",f.host,f.vaults.dst.store_id,"1","2","3","4","moved","team-login","create"]
+        self.assertEqual(run_transfer(f.load,args,secret,confirm,results.append),0)
+        self.assertEqual(len(review),1)
+        self.assertEqual(review[0]["retained_credential_users"],preview["retained_credential_users"])
+        self.assertEqual(review[0]["destination_credential"],"team-login")
+        self.assertEqual([row["checkpoint"] for row in results],["comparison","prepared","completed"])
+        self.assertEqual(results[-1]["transaction_id"],results[1]["transaction_id"])
+        output = json.dumps(results).encode()
+        for value in (*answers.values(),b"fixture mapped password",b"AGE-SECRET-KEY"):
+            self.assertNotIn(value,output)
+        self.assertFalse((f.vaults.source.checkout/"team.conf").exists())
+        self.assertIn(f.host,f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))
+        self.assertIn("backup-repeat",prompts)
+        self.assertIn("recovery-repeat",prompts)
+
+    def test_public_transfer_dispatch_and_prod_refusal_precede_any_effect(self):
+        from store_transfer_command import run_transfer
+        f = self.transfer_case(prod=True)
+        app = f.shared.app
+        empty = subprocess.run([app,"store-transfer"],cwd=self.root/"shared b",env=f.shared.env,
+                               stdin=subprocess.DEVNULL,capture_output=True,timeout=5)
+        self.assertEqual(empty.returncode,65)
+        self.assertIn(b"both registered selections",empty.stderr)
+        v = f.vaults
+        args = [v.src.store_id,"1","2","3","4",f.host,v.dst.store_id,"1","2","3","4","moved","team-login","create"]
+        passwords = {"source":v.unlock(v.src.store_id),"destination":v.unlock(v.dst.store_id),
+                     "backup":b"backup fixture","recovery":b"recovery fixture"}
+        protected = [v.source.checkout,v.destination.checkout,f.shared.remote,self.recovery]
+        before = [snapshot(path) for path in protected]
+        seen = []
+        def ordinary_approval(comparison):
+            self.assertTrue(comparison["requires_typed_alias"])
+            return True
+        with self.assertRaisesRegex(StoreContextError,"explicit transfer confirmation"):
+            run_transfer(f.load,args,lambda role:passwords[role.removesuffix("-repeat")],ordinary_approval,seen.append)
+        self.assertEqual([snapshot(path) for path in protected],before)
+        self.assertEqual([row["checkpoint"] for row in seen],["comparison"])
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential

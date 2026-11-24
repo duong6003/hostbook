@@ -135,13 +135,15 @@ def current_credentials(load_account, store_id, expected, names):
     return account, material, keys, interactive
 
 
-def prompt_passphrase():
+def prompt_passphrase(prompt="Password: "):
     import getpass
+    import warnings
 
     try:
-        with open("/dev/tty", "w") as terminal:
-            return getpass.getpass(stream=terminal).encode()
-    except (OSError, EOFError):
+        with open("/dev/tty", "w") as terminal, warnings.catch_warnings():
+            warnings.simplefilter("error",getpass.GetPassWarning)
+            return getpass.getpass(prompt=prompt,stream=terminal).encode()
+    except (OSError, EOFError, getpass.GetPassWarning):
         raise StoreContextError("registered vault unlock requires a terminal") from None
 
 

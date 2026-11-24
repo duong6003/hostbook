@@ -394,3 +394,29 @@ Vietnamese label from `lang/vi.sh` in parentheses where a reader of that UI need
 The macOS real SSH gap remains: the Linux fixture requires Docker, and enabling a
 system SSH server or changing user credentials on a runner would require a separate
 isolated fixture. See [Getting started](Getting-started) for manual removal steps.
+
+### Explicit registered host transfer
+
+`hostbook store-transfer-preview SOURCE R C N P HOST_ID DESTINATION R C N P [ALIAS]`
+prints a structured comparison. Each store has its own registration, checkout,
+connection and policy generation arguments. The comparison includes the selected
+stable host ID, proposed alias, matching destination hosts, other users of the
+source credential, and the shared ref that would receive the change.
+
+`hostbook store-transfer SOURCE R C N P HOST_ID DESTINATION R C N P ALIAS CREDENTIAL create`
+moves one independently declared host from a clean private checkout to a clean,
+current two-way shared checkout backed by an approved local bare Git repository.
+Use `reuse` in place of `create` to select an existing destination credential
+whose metadata and decrypted value match. Both stores need existing, distinct
+vaults. This command accepts a free destination alias, one managed key or
+password, one host in its own project file, and empty group files.
+
+The command prints the current comparison, prompts on the controlling terminal
+for the vault passwords and a separately kept transaction password and recovery
+code, then shows a confirmation. PROD hosts require their source alias typed
+exactly. The prepared JSON result identifies the transaction before the first
+checkout effect. The source is removed after the destination accepts the
+conditional update and the saved credential decrypts again. Other source hosts
+retain their original credential. A completed result follows verification of
+both checkouts. An interrupted or uncertain move retains its protected journal
+and fences the participating stores for reconciliation.

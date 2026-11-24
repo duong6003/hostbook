@@ -83,7 +83,7 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
+  store-transfer|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       guard_python_path || exit 64
       exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" "$@"
@@ -113,6 +113,11 @@ IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; e
 private_dir(){ legacy_destinations "$1" && mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 case ${1:-} in
+  _store_transfer_labels)
+    [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
+    HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
+    for key in transfer_source_pw transfer_destination_pw transfer_backup_pw transfer_backup_repeat transfer_recovery_code transfer_code_repeat; do t "$key"; printf '\n'; done
+    exit 0;;
   add|import)
     if [ "${BASH_SOURCE[0]}" = "$0" ] && legacy_authority_present &&
        guard_python -I -B -S "$LEGACY_GUARD_LIB" _registered_selection "$DIR" >/dev/null 2>&1; then
@@ -3156,6 +3161,16 @@ fi
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
+  _store_transfer_review)
+    [ "$#" -eq 10 ] || exit 65
+    at "$(t transfer_title)"
+    action=$(t transfer_create "$7"); [ "$9" != reuse ] || action=$(t transfer_reuse "$7")
+    head="$(t transfer_from "$2" "$3")$NL$(t transfer_to "$4" "$5")$NL$(t transfer_publish "$6")$NL$action$NL$(t transfer_retained "$8")"
+    if [ "${10}" = prod ]; then
+      UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t transfer_title)" "" "equals:$2" "$(t delete_type_rule "$2")" "" "$head"
+    else
+      UI_HEAD=$head ui_confirm --danger --default=false --affirmative "$(t move_yes "$2")" --negative "$(t cancel)" "$(t transfer_question "$2")"
+    fi;;
   _footer_data) cmd_footer_data;;
   _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc
