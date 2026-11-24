@@ -88,7 +88,7 @@ def inspect_paths(checkout,state,uids):
         identities = memberships()
         evidence,seen = [],set()
         grant = None
-        def check(fd,role,child=None):
+        def check(fd,role,reachable,child=None):
             nonlocal grant
             current = os.fstat(fd)
             acl = linux_acl(fd,"system.posix_acl_access")
@@ -96,21 +96,26 @@ def inspect_paths(checkout,state,uids):
             mid = mount_id(fd)
             evidence.append((role,mid,current.st_dev,current.st_ino,current.st_mode,current.st_uid,current.st_gid,
                              current.st_ctime_ns,acl,inherited))
-            for uid,groups in identities.items():
+            searchable = set()
+            for uid in reachable:
+                groups = identities[uid]
                 bits = access_bits(current,acl,uid,groups)
+                if bits & 1 or uid == current.st_uid:
+                    searchable.add(uid)
                 if child is not None:
                     writable = bits & 3 == 3 and (not current.st_mode & stat.S_ISVTX or uid == child.st_uid)
                 else:
-                    writable = bool(bits & 2) or inherited and access_bits(current,inherited,uid,groups) & 2
+                    writable = bits & 3 == 3 if stat.S_ISDIR(current.st_mode) else bool(bits & 2)
                 if uid == current.st_uid or writable:
                     grant = grant or role
-            return mid
-        def walk(fd,role,mount):
+            return mid,searchable
+        def walk(fd,role,mount,reachable):
             info = os.fstat(fd)
             key = (info.st_dev,info.st_ino)
             require(key not in seen and len(seen) < MAX_STORE_FILES,"overlapping or oversized migration resources")
             seen.add(key)
-            require(check(fd,role) == mount,"nested mount requires separate evidence")
+            actual,searchable = check(fd,role,reachable)
+            require(actual == mount,"nested mount requires separate evidence")
             if stat.S_ISDIR(info.st_mode):
                 for name in sorted(os.listdir(fd)):
                     child = os.stat(name,dir_fd=fd,follow_symlinks=False)
@@ -119,16 +124,17 @@ def inspect_paths(checkout,state,uids):
                     opened = os.open(name,FILE_FLAGS,dir_fd=fd)
                     try:
                         require(os.path.samestat(child,os.fstat(opened)),"candidate entry changed")
-                        walk(opened,"git" if role == "checkout" and name == ".git" else role,mount)
+                        walk(opened,"git" if role == "checkout" and name == ".git" else role,mount,searchable)
                     finally:
                         os.close(opened)
         for role,path in (("checkout",checkout),("state",state)):
             fd = os.open("/",DIRECTORY_FLAGS)
             try:
+                reachable = set(identities)
                 for component in path.parts[1:]:
                     sub = os.open(component,DIRECTORY_FLAGS,dir_fd=fd)
                     try:
-                        check(fd,role+"-ancestor",os.fstat(sub))
+                        _,reachable = check(fd,role+"-ancestor",reachable,os.fstat(sub))
                     except BaseException:
                         os.close(sub)
                         raise
@@ -137,7 +143,7 @@ def inspect_paths(checkout,state,uids):
                 if role == "checkout":
                     with open_directory(fd,(".git",)) as repo:
                         plain_git(repo,bare=False)
-                walk(fd,role,mount_id(fd))
+                walk(fd,role,mount_id(fd),reachable)
             finally:
                 os.close(fd)
         return grant,evidence,identities

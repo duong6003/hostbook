@@ -258,7 +258,12 @@ class StoreContextTest(unittest.TestCase):
         import struct
         entries = [(1,6,0xffffffff),(2,6,other),(4,0,0xffffffff),(16,6,0xffffffff),(32,0,0xffffffff)]
         os.setxattr(child,"system.posix_acl_access",struct.pack("<I",2)+b"".join(struct.pack("<HHI",*v) for v in entries))
-        self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+        self.assertEqual(inspect(other)["filesystem_permissions"],"checked")
+        self.root.chmod(0o711); f.legacy.chmod(0o711)
+        try:
+            self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+        finally:
+            self.root.chmod(0o700); f.legacy.chmod(0o700)
 
     def test_migration_backup_reopens_original_index_worktree_config_and_private_files(self):
         from store_migration_backup import backup, restore
