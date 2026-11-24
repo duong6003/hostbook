@@ -2959,6 +2959,42 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         (v.destination.vault/"vault.recovery.age").write_bytes((v.destination.vault/"vault.key.age").read_bytes())
         rejected(stage_credential(f.load,v.src,v.dst,v.unlock))
 
+    def test_transfer_candidate_requires_native_authentication_settings_for_host_and_jump(self):
+        from store_transfer import prepare_candidate, preview
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        local = self.state/"stores/v1"/v.dst.store_id/"ssh"
+        local.mkdir(mode=0o700)
+        config = local/"config"
+        for name in ("moved","relay.example"):
+            config.write_text(f"Host {name}\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n")
+            config.chmod(0o600)
+            plan = preview(f.load,v.src.store_id,self.generations,f.host,v.dst.store_id,self.generations,"moved")
+            before = snapshot(self.root)
+            with self.assertRaisesRegex(StoreContextError, "selected route"):
+                with prepare_candidate(f.load,plan,mapped):
+                    self.fail("incompatible native authentication admitted")
+            self.assertEqual(before,snapshot(self.root))
+
+    def test_transfer_candidate_rechecks_receiver_policy_after_preparation(self):
+        import store_transfer
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        hook = f.shared.remote/"hooks"/"update"
+        hook.parent.mkdir(exist_ok=True)
+        def change_policy(*args):
+            hook.touch(mode=0o700, exist_ok=True)
+            return original(*args)
+        original = store_transfer.tree
+        with patch.object(store_transfer,"tree",side_effect=change_policy):
+            with self.assertRaisesRegex(StoreContextError, "server hooks"):
+                with store_transfer.prepare_candidate(f.load,f.plan,mapped):
+                    self.fail("old receiver policy reused")
+
     def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
         library = Path(__file__).resolve().parents[1]/"lib"
         script = """

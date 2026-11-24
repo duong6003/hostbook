@@ -218,10 +218,11 @@ def route_chains(store_id, identity, files, local):
             chain, visited = [], set()
             alias, options = row["name"], []
             for _ in range(32):
-                route = effective(config,alias,options)
+                route = effective(config,alias,options,complete=True)
                 key = keys.get(alias.lower())
                 binding = (store_id,key) if key else None
-                step = (binding, alias.lower(), endpoint(route), route["proxyjump"], credentials.get(alias.lower()))
+                step = (binding, alias.lower(), endpoint(route), route["proxyjump"], credentials.get(alias.lower()),
+                        route["settings"])
                 require(step not in visited, "transfer SSH jump route contains a loop")
                 visited.add(step)
                 chain.append(step)
@@ -257,6 +258,17 @@ def verify_accepted_mapping(stage, existing, mapping):
         require((oid is None and data is None) or
                 (oid is not None and data is not None and git(stage,"cat-file","blob",oid.decode()) == data),
                 "accepted destination vault or credential differs from the reviewed mapping")
+
+
+@contextmanager
+def writable_destination(plan):
+    dst = plan.destination
+    with receive_binding(plan.account,dst.context.store_id,dst.context.generations) as (ctx,target,remote,_,_):
+        require((ctx,target) == (dst.context,dst.target) and ctx.effective_mode == "two-way",
+                "destination binding or mode changed")
+        require_plain_receiver(remote)
+        require(direct_ref(remote,dst.ref) == dst.base, "destination branch changed")
+        yield remote
 
 
 @contextmanager
@@ -299,8 +311,22 @@ def prepare_candidate(load, plan, mapping):
     after = route_chains(dst.context.store_id,identity,files,dst.local)
     require(all(after[key] == route for key,route in prior.items()), "destination changes a dependent route")
     old, new = source_routes[plan.host_id], after[plan.host_id]
-    require(old[0][2:4] == new[0][2:4] and old[1:] == new[1:]
+    require(old[0][2:4] == new[0][2:4] and old[0][5] == new[0][5] and old[1:] == new[1:]
             and new[0][4] == (mapping.destination.name if mapping else None), "destination changes the selected route")
+    if mapping:
+        settings = dict(new[0][5])
+        methods = settings.get("preferredauthentications")
+        def offered(method):
+            return methods is None or method in methods.split(",")
+        enabled = ("yes","true")
+        if mapping.public_key:
+            require(settings["pubkeyauthentication"] not in ("no","false") and offered("publickey"),
+                    "selected route disables public key authentication")
+        else:
+            require(settings["batchmode"] not in enabled and int(settings["numberofpasswordprompts"]) > 0
+                    and ((settings["passwordauthentication"] in enabled and offered("password"))
+                         or (settings["kbdinteractiveauthentication"] in enabled and offered("keyboard-interactive"))),
+                    "selected route disables interactive authentication")
     changes = {project:document, IDENTITY:json.dumps(identity,separators=(",",":")).encode()+b"\n"}
     if mapping and not mapping.reused:
         for suffix, contents in (("meta",mapping.metadata),("age",mapping.ciphertext),("pub",mapping.public_key)):
@@ -311,9 +337,7 @@ def prepare_candidate(load, plan, mapping):
         stage = folder/"destination.git"
         stage.mkdir(mode=0o700)
         git(stage,"init","-q","--bare","--template=")
-        with receive_binding(plan.account,dst.context.store_id,dst.context.generations) as (ctx,target,remote,_,_):
-            require((ctx,target) == (dst.context,dst.target), "destination binding changed")
-            require_plain_receiver(remote)
+        with writable_destination(plan) as remote:
             require(fetch_direct(stage,remote,dst.ref,"refs/hostbook/base") == dst.base, "destination remote advanced")
         existing = tree(stage,dst.base,git)
         if mapping:
@@ -335,4 +359,5 @@ def prepare_candidate(load, plan, mapping):
         plan.revalidate(load)
         if mapping:
             mapping.check_current(load)
-        yield DestinationCandidate(stage,proposed,changes,source_path)
+        with writable_destination(plan):
+            yield DestinationCandidate(stage,proposed,changes,source_path)

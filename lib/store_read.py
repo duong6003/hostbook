@@ -30,6 +30,7 @@ SSH_OPTIONS = frozenset("""
     requesttty serveralivecountmax serveraliveinterval tcpkeepalive user
 """.split())
 LOCAL_OPTIONS = SSH_OPTIONS | {"stricthostkeychecking"}
+EFFECTIVE_OPTIONS = LOCAL_OPTIONS - {"host", "match", "hostname", "user", "port", "proxyjump"}
 INLINE_COMMENT = re.compile(r"(?:^|[ 	])#")
 DIRECTIVE = re.compile(r"([A-Za-z][A-Za-z0-9]*)(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)")
 SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
@@ -240,7 +241,7 @@ def ssh_view(files, local):
         yield config
 
 
-def effective(computed, alias, options=()):
+def effective(computed, alias, options=(), *, complete=False):
     import subprocess
 
     require(not alias.startswith("-"), "invalid SSH alias")
@@ -250,14 +251,20 @@ def effective(computed, alias, options=()):
                                 stderr=subprocess.DEVNULL, timeout=5, check=True, text=True)
     except (OSError, subprocess.SubprocessError):
         raise StoreContextError("OpenSSH could not resolve the selected route") from None
-    fields = {}
+    fields, settings = {}, {}
     for line in result.stdout.splitlines():
         name, _, value = line.partition(" ")
         if name in ("hostname", "user", "port", "proxyjump"):
             fields[name] = value
+        elif complete and name in EFFECTIVE_OPTIONS:
+            settings[name] = value
     require({"hostname", "user", "port"} <= fields.keys(), "incomplete OpenSSH route")
     jump = fields.get("proxyjump", "")
     fields["proxyjump"] = render_jumps(jump, logical=True) if jump else ""
+    if complete:
+        required = EFFECTIVE_OPTIONS - {"preferredauthentications"}
+        require(required <= settings.keys(), "incomplete native SSH connection settings")
+        fields["settings"] = tuple(sorted(settings.items()))
     return fields
 
 
