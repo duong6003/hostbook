@@ -20,7 +20,7 @@ from store_mode import mode_records
 from store_publish import recovery_root
 from store_receive import IDENTITY, fetch_from_fd, git, plain_git
 from store_transfer import writable_shared
-from store_transfer_credentials import private_workspace, unlock_end
+from store_transfer_credentials import key_binding, private_workspace, read_mapping_end, unlock_end, verify_private_key
 from store_transfer_recovery import capture, read_payload, seal_payload, verify_backup
 from store_transfer_owner import new_owner
 from store_vault import VaultUnlockCache, file_evidence
@@ -50,7 +50,7 @@ def local_descriptors(account, store):
             yield opened(binding.root), opened(binding.git_dir)
 
 
-def clean_checkout(account, store):
+def clean_checkout(account, store, *, retain_groups_for=None):
     with local_descriptors(account,store) as (checkout,repo), private_workspace() as (stage,_):
         filemode, _ = plain_git(repo,bare=False)
         index = read_index(repo)
@@ -65,17 +65,36 @@ def clean_checkout(account, store):
                 all(path in files and blob(path) == data for path,data in store.files.items()),
                 "transfer SSH sources differ from the accepted checkout")
         groups = blob("groups.tsv") if "groups.tsv" in files else b""
-        require(not groups.strip(), "transfer requires review of existing group memberships")
-        return files, index, blob(IDENTITY), filemode
+        memberships = []
+        if groups.strip():
+            require(retain_groups_for,"transfer requires review of existing group memberships")
+            known = {host["name"].lower() for host in store.identity["hosts"]}
+            seen = set()
+            for line in groups.decode("ascii").split("\n"):
+                if not line:
+                    continue
+                parts = line.removesuffix("\r").split("\t")
+                require(len(parts) == 3 and re.fullmatch(r"[a-z0-9_-]+",parts[0]) and parts[0] not in seen
+                        and parts[1] in ("","sync","tabs","split"),"unverified destination group")
+                members = [name.lower() for name in parts[2].split(" ")]
+                require(len(set(members)) == len(members) and all(member in known for member in members),
+                        "unverified destination group membership")
+                seen.add(parts[0])
+                if retain_groups_for.lower() in members:
+                    memberships.append(parts[0])
+        return files, index, blob(IDENTITY), filemode,groups,memberships
 
 
-def capture_credentials(load, mapping, read_passphrase, password, code):
+def capture_credentials(load, mapping, read_passphrase, password, code, previous=None):
     account = load()
     tools = verified_age_tools(account)
     cache = VaultUnlockCache(tools[0])
     material = {}
-    for role, ref, end in (("source",mapping.source,mapping.source_before),
-                           ("destination",mapping.destination,mapping.destination_before)):
+    selection = [("source",mapping.source,mapping.source_before),("destination",mapping.destination,mapping.destination_before)]
+    if previous:
+        selection.append(("prior_destination",*previous))
+    for role, ref, end in selection:
+        require(read_mapping_end(account,ref) == end,"reviewed transfer credential changed")
         phrase = read_passphrase(ref.store_id)
         require(phrase != password and phrase != code, "transaction recovery must be independent of the store password")
         identity = unlock_end(cache,tools,account,load,ref,lambda _store:phrase)
@@ -85,9 +104,15 @@ def capture_credentials(load, mapping, read_passphrase, password, code):
                   "vault_evidence":vault.evidence,"credential_evidence":end.file_evidence}
         if end.record:
             record = end.record
+            plaintext = cache.open_secret(identity,record.ciphertext)
+            if role == "prior_destination":
+                require(plaintext,"prior destination credential is empty")
+                key = key_binding(record)
+                if key:
+                    verify_private_key(plaintext,key)
             backup.update(meta=encoded(record.metadata),age=encoded(record.ciphertext),
-                          public_key=encoded(record.public_key) if record.public_key else None,
-                          value=encoded(cache.open_secret(identity,record.ciphertext)))
+                          public_key=encoded(record.public_key) if record.public_key else None,value=encoded(plaintext))
+        require(read_mapping_end(account,ref) == end,"reviewed transfer credential changed")
         material[role] = backup
     mapping.check_current(load)
     require(verified_age_tools(account) == tools, "transfer vault tools changed")
@@ -102,8 +127,7 @@ def initial_record(plan, ident, owner):
               for role,store in (("source",plan.source),("destination",plan.destination))]
     record = {"format":"hostbook-transaction","version":1,"transaction_id":ident,
               "device_id":plan.account.device_id,"root_id":plan.account.recovery_root_id,"sequence":1,"previous_sequence":0,
-              "operation":"transfer","checkpoint":"prepared","owner":owner,"stores":stores,"hosts":[
-              {"store_id":store["store_id"],"host_id":plan.host_id} for store in stores],
+              "operation":"transfer","checkpoint":"prepared","owner":owner,"stores":stores,"hosts":plan.host_keys(),
               "payload_id":token(),"recovery_generation":1,"effects":[],"attempts":[],
               "collection":{"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}}
     transaction(record,None)
@@ -198,22 +222,34 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
     mapping.check_current(load)
     comparison = dict(plan.comparison(),destination_credential=mapping.destination.name,
                       credential_action="reuse" if mapping.reused else "create",source_groups=[])
-    # The supported source project holds exactly one concrete host. Any PROD annotation requires its alias.
-    prod = any(b"prod" in line.split(b":",1)[1].lower().split() for line in plan.source.files[candidate.source_path].split(b"\n")
-               if re.match(rb"^[ \t]*#[ \t]*tags[ \t]*:",line,re.I))
-    comparison["requires_typed_alias"] = prod
-    checks = [clean_checkout(plan.account,store) for store in (plan.source,plan.destination)]
+    def prod(document):
+        return any(b"prod" in line.split(b":",1)[1].lower().split() for line in document.split(b"\n")
+                   if re.match(rb"^[ \t]*#[ \t]*tags[ \t]*:",line,re.I))
+    required_aliases = []
+    if prod(plan.source.files[candidate.source_path]):
+        required_aliases.append(plan.source_hosts[plan.host_id]["name"])
+    if plan.decision == "update":
+        target = next(row for row in plan.destination.identity["hosts"] if row["host_id"] == plan.destination_key)
+        if prod(plan.destination.files[target["bindings"][0]["path"]]) and plan.alias not in required_aliases:
+            required_aliases.append(plan.alias)
+    comparison["required_aliases"] = required_aliases
+    comparison["requires_typed_alias"] = bool(required_aliases)
+    checks = [clean_checkout(plan.account,plan.source),clean_checkout(plan.account,plan.destination,
+              retain_groups_for=plan.alias if plan.decision == "update" else None)]
+    comparison["retained_destination_groups"] = checks[1][5]
     answer = confirm(comparison)
-    require((isinstance(answer,str) and answer == plan.source_hosts[plan.host_id]["name"]) if prod else answer is True,
-            "explicit transfer confirmation required")
+    if required_aliases:
+        require(([answer] if isinstance(answer,str) else answer) == required_aliases,"explicit transfer confirmation required")
+    else:
+        require(answer is True,"explicit transfer confirmation required")
     owner, start = new_owner()
     record = initial_record(plan,token(),owner)
-    credentials = capture_credentials(load,mapping,read_passphrase,password,code)
+    credentials = capture_credentials(load,mapping,read_passphrase,password,code,candidate.previous_credential)
     snapshots = {}
     for row,store,observed in zip(record["stores"],(plan.source,plan.destination),checks):
         snapshots[row["snapshot_id"]] = {"context":asdict(store.context),"base":store.base,"ref":store.ref,
             "index":encoded(observed[1]),"identity":encoded(observed[2]),"files":{k:encoded(v) for k,v in store.files.items()},
-            "local":[encoded(v) if v is not None else None for v in store.local],"groups":None,"tracked":{
+            "local":[encoded(v) if v is not None else None for v in store.local],"groups":encoded(observed[4]) if observed[4] else None,"tracked":{
             path:oid.decode() for path,oid in observed[0].items()}}
     def bundle(stage, proposed, base):
         git(stage,"update-ref","refs/hostbook/transfer",proposed)
@@ -222,6 +258,7 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
         require(path.stat().st_size <= JSON_LIMIT,"transfer proposal exceeds recovery size limit")
         return encoded(path.read_bytes())
     contents = {"record":record,"native_start":start,"comparison":comparison,"snapshots":snapshots,"source_path":candidate.source_path,
+                     "replaced_project":candidate.replaced_project,
                      "destination_ref":plan.destination.ref,"target":asdict(plan.shared.target),
                      "destination_base":plan.destination.base,"proposed":candidate.proposed,
                      "bundle":bundle(candidate.stage,candidate.proposed,plan.destination.base),

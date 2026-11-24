@@ -13,7 +13,7 @@ from store_publish import require_plain_receiver, send
 from store_read import local_inputs
 from store_receive import IDENTITY, git, plain_git, registered_target
 from store_transfer import writable_shared
-from store_transfer_apply import advance, check_source, selected, transfer_gates
+from store_transfer_apply import advance, check_source, displaced_destination, selected, transfer_gates
 from store_transfer_credentials import private_workspace
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
 
@@ -38,7 +38,7 @@ def destination_checkout(load, plan, candidate, mapping, record, manifest):
             and manifest["destination_base"] == dst.base and wire(manifest["target"]) == wire(asdict(plan.shared.target))
             and manifest["changes"] == {path:encoded(data) for path,data in candidate.changes.items()},
             "publication requires the exact saved transfer candidate")
-    require(record["hosts"] == [{"store_id":end.context.store_id,"host_id":plan.host_id} for end in (src,dst)],
+    require(record["hosts"] == plan.host_keys(),
             "transfer host binding changed")
     with resolved_store(plan.account,dst.context.store_id,dst.context.generations) as (active,_,_,state):
         require(active == dst.context and local_inputs(state,active.store_id) == dst.local,
@@ -62,6 +62,7 @@ def confirm_private_destination(load, ident, plan, candidate, mapping, read_pass
     with transfer_gates(load,plan,record,manifest) as (tx,verify):
         def current():
             saved_checkout(load,plan,candidate,mapping,record,manifest)
+            displaced_destination(plan,candidate,record,manifest)
         record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="destination-confirmed"),
             dict(manifest,next_effect="source-removal",confirmed_destination=candidate.proposed),password,code,observe=current)
         verify(record)
@@ -154,6 +155,7 @@ def publish_shared(load, ident, plan, candidate, mapping, read_passphrase, passw
     with ExitStack() as transport:
         with transfer_gates(load,plan,record,manifest) as (tx,verify), writable_shared(plan,transfer=record) as remote:
             checkout(load,plan,candidate,mapping,record,manifest)
+            displaced_destination(plan,candidate,record,manifest)
             pinned_tx,pinned_remote = os.dup(tx),os.dup(remote)
             transport.callback(os.close,pinned_tx)
             transport.callback(os.close,pinned_remote)
@@ -178,6 +180,7 @@ def publish_shared(load, ident, plan, candidate, mapping, read_passphrase, passw
                        "intent":attempt["intent_id"],"store":shared.context.store_id}
             def ready():
                 checkout(load,plan,candidate,mapping,record,manifest)
+                displaced_destination(plan,candidate,record,manifest)
                 current_receiver(plan,shared.base,pinned_remote,require_writes=True)
             record,manifest,proof = advance(pinned_tx,account,record,manifest,dict(record,attempts=[attempt]),
                 dict(manifest,publication=binding,next_effect="send-"+role),password,code,observe=ready)
@@ -222,6 +225,7 @@ def publish_shared(load, ident, plan, candidate, mapping, read_passphrase, passw
                     if result == "accepted":
                         def confirmed():
                             checkout(load,plan,candidate,mapping,record,manifest)
+                            displaced_destination(plan,candidate,record,manifest)
                             current_receiver(plan,proposed,pinned_remote)
                         confirmed()
                         updated = dict(manifest,next_effect="source-removal" if role == "destination" else "complete")

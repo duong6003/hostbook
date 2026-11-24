@@ -20,7 +20,7 @@ from store_publish import require_plain_receiver
 from store_read import (DIRECTIVE, MAX_ROUTE_BYTES, SECRET_COMMENT, effective, jump_fields, local_inputs,
                         managed_credentials, render_jumps, ssh_view)
 from store_receive import IDENTITY, fetch_direct, fetch_from_fd, git, plain_git, receive_binding
-from store_transfer_credentials import CredentialRef, private_workspace
+from store_transfer_credentials import CredentialRef, private_workspace, read_mapping_end
 
 
 @dataclass(frozen=True, repr=False)
@@ -38,8 +38,13 @@ class ObservedStore:
         rows = self.identity["hosts"]
         inputs, credentials = managed_credentials(self.files, rows)
         with ssh_view(inputs, self.local) as config:
-            return {row["host_id"]: dict(effective(config, row["name"]), name=row["name"], host_id=row["host_id"],
-                                        credential=credentials.get(row["name"].lower())) for row in rows}
+            routes = {}
+            for row in rows:
+                route = effective(config,row["name"],complete=True)
+                route["settings"] = dict(route["settings"])
+                routes[row["host_id"]] = dict(route,name=row["name"],host_id=row["host_id"],
+                                               credential=credentials.get(row["name"].lower()))
+            return routes
 
 
 def observe_store(account, store_id, expected, *, transfer=None):
@@ -93,6 +98,14 @@ class TransferPlan:
     def shared(self):
         return self.source if self.source.context.kind == "shared" else self.destination
 
+    @property
+    def destination_key(self):
+        return self.chosen_destination_id if self.decision == "update" else self.host_id
+
+    def host_keys(self):
+        return [{"store_id":self.source.context.store_id,"host_id":self.host_id},
+                {"store_id":self.destination.context.store_id,"host_id":self.destination_key}]
+
     def revalidate(self, load, *, transfer=None):
         account = load()
         require(account == self.account, "transfer account approval changed")
@@ -124,16 +137,26 @@ class TransferPlan:
         elif "stable-id" in reasons:
             choices.insert(0,"reconcile")
         else:
+            if "endpoint" in reasons:
+                choices.insert(0,"update")
             if "alias" in reasons:
                 choices.insert(0,"choose-free-alias")
             elif "endpoint" in reasons:
                 choices.insert(0,"keep-both")
+        changes = {}
+        if self.decision == "update" and self.chosen_destination_id in self.destination_hosts:
+            previous = self.destination_hosts[self.chosen_destination_id]
+            def settings(row):
+                return dict(row["settings"],**{k:row[k] for k in ("hostname","user","port","proxyjump")})
+            old,new = settings(previous),settings(host)
+            changes = {key:{"existing":old.get(key),"proposed":new.get(key)} for key in sorted(old.keys()|new.keys())
+                       if old.get(key) != new.get(key)}
         return {
             "source":dict(host, store_id=src.context.store_id, kind=src.context.kind,revision=src.base),
             "destination":{"store_id":dst.context.store_id, "kind":dst.context.kind,
-                           "proposed_alias":self.alias, "proposed_host_id":self.host_id,"revision":dst.base},
+                           "proposed_alias":self.alias, "proposed_host_id":self.destination_key,"revision":dst.base},
             "matches":matches, "retained_credential_users":users,"choices":choices,
-            "decision":self.decision,"chosen_destination_id":self.chosen_destination_id,
+            "decision":self.decision,"chosen_destination_id":self.chosen_destination_id,"connection_changes":changes,
             "publications":[{"store_id":shared.context.store_id,"ref":shared.ref,"effect":effect}],
             "shared_mode":shared.context.effective_mode, "shared_checkout_at_remote_tip":shared.base == shared.remote_tip,
         }
@@ -144,9 +167,9 @@ class TransferPlan:
             require(not comparison["matches"] and self.chosen_destination_id is None,
                     "destination match requires an explicit transfer decision")
             return
-        require(self.decision == "keep-both" and self.decision in comparison["choices"] and
+        require(self.decision in ("keep-both","update") and self.decision in comparison["choices"] and
                 any(row["host_id"] == self.chosen_destination_id and "endpoint" in row["reasons"]
-                    for row in comparison["matches"]), "duplicate decision does not match the reviewed destination")
+                    and (self.decision != "update" or row["name"] == self.alias) for row in comparison["matches"]), "duplicate decision does not match the reviewed destination")
 
     def choose(self, decision, host, source_revision, destination_revision):
         require((source_revision,destination_revision) == (self.source.base,self.destination.base),
@@ -208,25 +231,27 @@ class DestinationCandidate:
     source_stage: Path
     source_proposed: str
     source_identity: bytes
+    replaced_project: Optional[str]
+    previous_credential: Optional[tuple]
 
 
-def standalone_document(plan, mapping):
-    selected = next(row for row in plan.source.identity["hosts"] if row["host_id"] == plan.host_id)
+def standalone_document(store, host_id, alias, old_name, new_name, allow_key):
+    selected = next(row for row in store.identity["hosts"] if row["host_id"] == host_id)
     require(len(selected["bindings"]) == 1, "transfer requires one independent host stanza")
     binding = selected["bindings"][0]
     path = binding["path"]
     require(binding["host_ordinal"] == 1 and binding["token_ordinal"] == 1
-            and sum(other["path"] == path for row in plan.source.identity["hosts"] for other in row["bindings"]) == 1,
+            and sum(other["path"] == path for row in store.identity["hosts"] for other in row["bindings"]) == 1,
             "transfer requires a project containing only the selected host")
-    raw = plan.source.files[path]
+    raw = store.files[path]
     document = []
     found = False
     for line in raw.split(b"\n"):
         text = line.rstrip(b"\r").strip(b" \t")
         marker = SECRET_COMMENT.fullmatch(text.decode())
         if marker:
-            require(not found and mapping and marker[1] == mapping.source.name, "unexpected transfer credential annotation")
-            line = b"# secret: " + mapping.destination.name.encode()
+            require(not found and old_name and marker[1] == old_name, "unexpected transfer credential annotation")
+            line = b"# secret: " + new_name.encode()
         elif text and not text.startswith(b"#"):
             directive = DIRECTIVE.fullmatch(text.decode())
             require(directive, "unsupported transfer SSH source")
@@ -236,13 +261,13 @@ def standalone_document(plan, mapping):
                                     line, re.I)
                 require(not found and name and name[2].decode().lower() == selected["name"].lower(),
                         "transfer requires a single literal Host")
-                line = name[1] + plan.alias.encode() + name[3]
+                line = name[1] + alias.encode() + name[3]
                 found = True
             else:
                 require(found and key not in ("include","match"), "transfer requires independent host settings")
                 if key == "identityfile":
-                    require(mapping and mapping.public_key, "unexpected transfer IdentityFile")
-                    line = b"  IdentityFile secrets/" + mapping.destination.name.encode() + b".pub"
+                    require(allow_key, "unexpected transfer IdentityFile")
+                    line = b"  IdentityFile secrets/" + new_name.encode() + b".pub"
         document.append(line)
     require(found, "transfer source host is missing")
     return path, b"\n".join(document)
@@ -362,7 +387,8 @@ def prepare_candidate(load, plan, mapping):
                 and mapping.destination.generations == dst.context.generations, "transfer credential mapping changed")
         mapping.check_current(load)
     plan.revalidate(load)
-    source_path, document = standalone_document(plan,mapping)
+    source_path, document = standalone_document(src,plan.host_id,plan.alias,source_name,
+                                                mapping.destination.name if mapping else None,mapping and mapping.public_key)
     source_after = copy.deepcopy(src.identity)
     source_after["generation"] += 1
     source_after["hosts"] = [r for r in source_after["hosts"] if r["host_id"] != plan.host_id]
@@ -373,19 +399,34 @@ def prepare_candidate(load, plan, mapping):
     remaining = route_chains(src.context.store_id,source_after,source_files,src.local)
     require(all(route == source_routes[key] for key,route in remaining.items()), "source removal changes a dependent route")
 
-    project = "host-" + plan.host_id + ".conf"
-    require(project not in dst.files, "destination project already exists")
     identity = copy.deepcopy(dst.identity)
     identity["generation"] += 1
-    identity["sources"].append({"path":project,"sha256":hashlib.sha256(document).hexdigest()})
-    identity["hosts"].append({"host_id":plan.host_id,"name":plan.alias,
-                              "bindings":[{"path":project,"host_ordinal":1,"token_ordinal":1}]})
+    digest = hashlib.sha256(document).hexdigest()
+    replaced_project,previous_credential = None,None
+    if plan.decision == "update":
+        old_name = plan.destination_hosts[plan.destination_key]["credential"]
+        if old_name:
+            old_ref = CredentialRef(dst.context.store_id,dst.context.generations,old_name)
+            old_end = read_mapping_end(plan.account,old_ref)
+            require(old_end.record is not None,"prior destination credential is unavailable")
+            previous_credential = old_ref,old_end
+        project,_ = standalone_document(dst,plan.destination_key,plan.alias,old_name,old_name,
+                                        previous_credential and old_end.record.public_key)
+        replaced_project = project if dst.files[project] != document else None
+        row = next(source for source in identity["sources"] if source["path"] == project)
+        row["sha256"] = digest
+    else:
+        project = "host-" + plan.host_id + ".conf"
+        require(project not in dst.files, "destination project already exists")
+        identity["sources"].append({"path":project,"sha256":digest})
+        identity["hosts"].append({"host_id":plan.host_id,"name":plan.alias,
+                                  "bindings":[{"path":project,"host_ordinal":1,"token_ordinal":1}]})
     files = dict(dst.files)
     files[project] = document
     prior = route_chains(dst.context.store_id,dst.identity,dst.files,dst.local)
     after = route_chains(dst.context.store_id,identity,files,dst.local)
-    require(all(after[key] == route for key,route in prior.items()), "destination changes a dependent route")
-    old, new = source_routes[plan.host_id], after[plan.host_id]
+    require(all(after[key] == route for key,route in prior.items() if key != plan.destination_key), "destination changes a dependent route")
+    old, new = source_routes[plan.host_id], after[plan.destination_key]
     require(old[0][2:4] == new[0][2:4] and old[0][5] == new[0][5] and old[1:] == new[1:]
             and new[0][4] == (mapping.destination.name if mapping else None), "destination changes the selected route")
     if mapping:
@@ -402,7 +443,9 @@ def prepare_candidate(load, plan, mapping):
                     and ((settings["passwordauthentication"] in enabled and offered("password"))
                          or (settings["kbdinteractiveauthentication"] in enabled and offered("keyboard-interactive"))),
                     "selected route disables interactive authentication")
-    changes = {project:document, IDENTITY:json.dumps(identity,separators=(",",":")).encode()+b"\n"}
+    changes = {IDENTITY:json.dumps(identity,separators=(",",":")).encode()+b"\n"}
+    if document != dst.files.get(project):
+        changes[project] = document
     if mapping and not mapping.reused:
         for suffix, contents in (("meta",mapping.metadata),("age",mapping.ciphertext),("pub",mapping.public_key)):
             if contents is not None:
@@ -416,7 +459,9 @@ def prepare_candidate(load, plan, mapping):
         existing = tree(stage,dst.base,git)
         if mapping:
             verify_accepted_mapping(stage,existing,mapping.destination,mapping.destination_before)
-        require(all(path == IDENTITY or path not in existing for path in changes), "destination file is occupied")
+        if previous_credential:
+            verify_accepted_mapping(stage,existing,*previous_credential)
+        require(all(path in (IDENTITY,replaced_project) or path not in existing for path in changes), "destination file is occupied")
         for path, data in dst.files.items():
             require(path in existing and git(stage,"cat-file","blob",existing[path].decode()) == data,
                     "destination source differs from its accepted revision")
@@ -435,4 +480,5 @@ def prepare_candidate(load, plan, mapping):
         if mapping:
             mapping.check_current(load)
         with writable_shared(plan):
-            yield DestinationCandidate(stage,proposed,changes,source_path,plan,mapping,source_stage,removal,source_identity)
+            yield DestinationCandidate(stage,proposed,changes,source_path,plan,mapping,source_stage,removal,source_identity,
+                                       replaced_project,previous_credential)

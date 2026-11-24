@@ -149,13 +149,36 @@ def check_source(account, source, snapshot):
         check_worktree(checkout,{k:v.encode() for k,v in snapshot["tracked"].items()},modes)
 
 
+def displaced_destination(plan, candidate, record, manifest, *, retire=False):
+    project = candidate.replaced_project
+    if not project:
+        return
+    runtime = ("hostbook-transfer-v1",record["transaction_id"],record["effects"][0]["effect_id"])
+    require(manifest["replaced_project"] == project and manifest["destination_runtime"] == list(runtime),
+            "reviewed destination exchange changed")
+    original = tree(candidate.stage,plan.destination.base,git)[project]
+    with local_descriptors(plan.account,plan.destination) as (_,repo),open_directory(repo,runtime) as slot:
+        require_private_directory(slot,"transfer destination exchange")
+        filemode,_ = plain_git(repo,bare=False)
+        check_contents(slot,"1",original,filemode)
+        if retire:
+            captured = os.stat("1",dir_fd=slot,follow_symlinks=False)
+            rename_guarded(slot,"1",slot,"verified-project",exchange=False)
+            sync_local(slot)
+            require(os.path.samestat(captured,os.stat("verified-project",dir_fd=slot,follow_symlinks=False)),
+                    "displaced destination changed before retirement")
+            check_contents(slot,"verified-project",original,filemode)
+            os.unlink("verified-project",dir_fd=slot)
+            sync_local(slot)
+
+
 def save_destination(load, ident, plan, candidate, mapping, credential_passphrase, password, code):
     record, manifest = reopen_intent(load,ident,password)
     require(record["checkpoint"] == "prepared" and not record["effects"] and not record["attempts"]
             and candidate.plan is plan and candidate.mapping is mapping and manifest["proposed"] == candidate.proposed
             and manifest["source_path"] == candidate.source_path and manifest["destination_ref"] == plan.destination.ref
-            and manifest["destination_base"] == plan.destination.base and record["hosts"] == [
-                {"store_id":s.context.store_id,"host_id":plan.host_id} for s in (plan.source,plan.destination)]
+            and manifest["destination_base"] == plan.destination.base and record["hosts"] == plan.host_keys()
+            and manifest.get("replaced_project") == candidate.replaced_project
             and manifest["changes"] == {k:encoded(v) for k,v in candidate.changes.items()},
             "destination save requires the original confirmed preparation")
     require(mapping.destination.name == manifest["credentials"]["destination"]["name"] and
@@ -184,10 +207,12 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
         filemode,logs = plain_git(repo,bare=False)
         require(read_ref(repo,dst.ref) == dst.base and read_index(repo) == original_index, "destination Git base changed")
         check_worktree(checkout,before,filemode)
-        check_destinations(checkout,candidate.changes,before,tx)
+        exchange_root = repo if candidate.replaced_project else tx
+        runtime = (("hostbook-transfer-v1",ident,effect_id) if candidate.replaced_project else ("exchange",effect_id))
+        check_destinations(checkout,candidate.changes,before,exchange_root)
         with writable_shared(plan,transfer=record):
             record,manifest,proof = advance(tx,account,record,manifest,dict(record,effects=[effect]),
-                                      dict(manifest,next_effect="install-destination",destination_effect=effect_id),password,code)
+                                      dict(manifest,next_effect="install-destination",destination_effect=effect_id,destination_runtime=list(runtime)),password,code)
         def live():
             verify(record)
             proof()
@@ -199,14 +224,20 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
                         "destination filesystem binding changed")
             with writable_shared(plan,transfer=record):
                 pass
-        with private_path(tx,("exchange",effect_id)) as exchange:
-            # Only the native sidecar requires replacement. Its original and proposal are
-            # already encrypted. Keep the displaced inode addressable until it is verified.
-            durable_file(exchange,"0",candidate.changes[IDENTITY])
+        with private_path(exchange_root,runtime[:-1]) as parent:
+            os.mkdir(runtime[-1],0o700,dir_fd=parent)
+            sync_local(parent)
+        with open_directory(exchange_root,runtime) as exchange:
+            require_private_directory(exchange,"transfer destination exchange")
+            replacements = [IDENTITY]
+            if candidate.replaced_project:
+                replacements.append(candidate.replaced_project)
+            for index,path in enumerate(replacements):
+                durable_file(exchange,str(index),candidate.changes[path])
             sync_local(exchange)
             def install(working, capture, _paths, previous, proposed, modes):
                 for path,data in candidate.changes.items():
-                    if path == IDENTITY:
+                    if path in replacements:
                         continue
                     require(path not in previous, "transfer destination is occupied")
                     parts = path.split("/")
@@ -216,7 +247,7 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
                         sync_local(parent)
                         check_contents(parent,parts[-1],proposed[path],modes)
                 proof()
-                install_sources(working,capture,[IDENTITY],previous,proposed,modes)
+                install_sources(working,capture,replacements,previous,proposed,modes)
             live()
             fast_forward(checkout,repo,dst.ref,dst.base,candidate.proposed,original_index,stage,before,after,live,
                          filemode,logs,exchange,[],install=install)
@@ -234,6 +265,7 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
                     require(tip == candidate.proposed and index == expected_index, "saved destination Git state changed")
                     check_worktree(working,after,filemode)
                 mapping.check_current(load,saved=True)
+                displaced_destination(plan,candidate,record,manifest)
                 return {"ref":dst.ref,"tip":tip,"index":encoded(index)}
             observation = destination_observation()
             def unchanged():

@@ -409,8 +409,9 @@ checkout and a clean, current two-way shared checkout backed by an approved loca
 bare Git repository.
 Use `reuse` in place of `create` to select an existing destination credential
 whose metadata and decrypted value match. Both stores need existing, distinct
-vaults. This command accepts a free destination alias, one managed key or
-password, one host in its own project file, and empty group files.
+vaults. The source host and any explicitly replaced destination host must each
+occupy their own project file. A new destination uses a free alias. The command
+accepts one managed key or password and currently requires empty source groups.
 
 The command prints the current comparison, prompts on the controlling terminal
 for the vault passwords and a separately kept transaction password and recovery
@@ -430,3 +431,13 @@ revisions. Append `keep-both EXISTING_DESTINATION_HOST_ID SOURCE_REVISION DESTIN
 to the transfer command to preserve the existing record and create the incoming
 host under that alias. Append `cancel` to leave both stores untouched. Updated
 revisions require another comparison.
+
+
+To update a different destination host at the same endpoint, pass its existing
+alias and append `update EXISTING_DESTINATION_HOST_ID SOURCE_REVISION DESTINATION_REVISION`.
+The confirmation compares approved OpenSSH settings, the existing and proposed
+credential mapping, and destination groups. Update retains that host's ID, alias,
+project, group memberships and history. Its previous settings and selected
+credential remain independently recoverable. A PROD source or destination
+requires its exact alias. A stable host ID already present in the destination
+requires reconciliation with the original transfer evidence.

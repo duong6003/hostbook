@@ -50,7 +50,11 @@ def run_transfer(load, args, secret, confirm, emit):
         require(password and secret("backup-repeat") == password,"transaction backup passwords differ")
         code = secret("recovery")
         require(code and secret("recovery-repeat") == code and password != code,"independent transaction recovery codes differ")
-        ident = prepare_intent(load,plan,candidate,mapped,unlock,password,code,confirm)
+        def reviewed(details):
+            if plan.decision == "update":
+                emit(dict(details,checkpoint="review"))
+            return confirm(details)
+        ident = prepare_intent(load,plan,candidate,mapped,unlock,password,code,reviewed)
         emit({"transaction_id":ident,"checkpoint":"prepared"})
         save_destination(load,ident,plan,candidate,mapped,unlock,password,code)
         arguments = load,ident,plan,candidate,mapped,unlock,password,code
@@ -148,10 +152,11 @@ def transfer_command(args):
             proc = subprocess.run([*command,"_store_transfer_review",src["name"],src["store_id"],
                 dst["proposed_alias"],dst["store_id"],details["publications"][0]["ref"],details["destination_credential"],
                 str(len(details["retained_credential_users"])),details["credential_action"],
-                "prod" if details["requires_typed_alias"] else "ordinary",src["kind"],details["decision"],match.get("name",""),match.get("host_id","")],env=env,stdout=subprocess.PIPE)
+                ",".join(details["required_aliases"]),src["kind"],details["decision"],match.get("name",""),match.get("host_id",""),
+                ",".join(details["retained_destination_groups"]),",".join(details["connection_changes"])],env=env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
             if details["requires_typed_alias"]:
-                return proc.stdout.decode().rstrip("\n")
+                return proc.stdout.decode().splitlines()
             return not proc.stdout
         return run_transfer(load,args,secret,confirm,lambda data:print(json.dumps(data),flush=True))

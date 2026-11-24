@@ -3163,7 +3163,7 @@ case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _store_transfer_review)
-    [ "$#" -eq 14 ] || exit 65
+    [ "$#" -eq 16 ] || exit 65
     at "$(t transfer_title)"
     action=$(t transfer_create "$7"); [ "$9" != reuse ] || action=$(t transfer_reuse "$7")
     case ${11} in
@@ -3172,9 +3172,20 @@ case ${1:-} in
       *) exit 65;;
     esac
     head="$(t "$from" "$2" "$3")$NL$(t "$to" "$4" "$5")$NL$(t "$publish" "$6")$NL$action$NL$(t transfer_retained "$8")"
-    if [ "${12}" = keep-both ]; then head="$head$NL$(t transfer_keep_both "${13}" "${14}" "$4")"; fi
-    if [ "${10}" = prod ]; then
-      UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t transfer_title)" "" "equals:$2" "$(t delete_type_rule "$2")" "" "$head"
+    case ${12} in
+      keep-both) head="$head$NL$(t transfer_keep_both "${13}" "${14}" "$4")";;
+      update)
+        head="$head$NL$(t transfer_update "${13}" "${14}")"
+        [ -z "${15}" ] || head="$head$NL$(t transfer_keep_groups "${15}")"
+        [ -z "${16}" ] || head="$head$NL$(t transfer_change_settings "${16}")";;
+    esac
+    if [ -n "${10}" ]; then
+      IFS=, read -r -a required <<< "${10}"
+      for alias in "${required[@]}"; do
+        typed=$(UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t transfer_title)" "" "equals:$alias" "$(t delete_type_rule "$alias")" "" "$head") || exit 1
+        [ "$typed" = "$alias" ] || exit 1
+        printf '%s\n' "$typed"
+      done
     else
       UI_HEAD=$head ui_confirm --danger --default=false --affirmative "$(t move_yes "$2")" --negative "$(t cancel)" "$(t "$question" "$2")"
     fi;;

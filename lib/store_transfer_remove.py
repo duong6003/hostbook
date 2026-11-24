@@ -7,7 +7,7 @@ from store_context import (StoreContextError, open_directory, require, require_p
                            sync_local)
 from store_journal import private_json
 from store_receive import IDENTITY, git, plain_git, prepare_adoption
-from store_transfer_apply import advance, check_source, transfer_gates
+from store_transfer_apply import advance, check_source, displaced_destination, transfer_gates
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token
 from store_transfer_publish import current_receiver, destination_checkout, removed_checkout
 
@@ -59,12 +59,14 @@ def remove_source(load, ident, plan, candidate, mapping, read_passphrase, passwo
                 current_receiver(plan,src.base,require_writes=True)
         destination()
         def before_removal():
+            displaced_destination(plan,candidate,record,manifest)
             destination()
             check_source(account,src,source)
         runtime = ("hostbook-transfer-v1",ident,effect["effect_id"])
         record,manifest,proof = advance(tx,account,record,manifest,dict(record,effects=record["effects"]+[effect]),
             dict(manifest,next_effect="remove-source",source_runtime=list(runtime)),password,code,observe=before_removal)
         def live():
+            displaced_destination(plan,candidate,record,manifest)
             proof()
             verify(record)
             destination()
@@ -133,6 +135,7 @@ def remove_source(load, ident, plan, candidate, mapping, read_passphrase, passwo
             verify_slot()
             unchanged()
             retire_displaced(slot,before[path],before[IDENTITY],filemode,unchanged,verify_slot)
+        displaced_destination(plan,candidate,record,manifest,retire=True)
         record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="completed"),
             dict(manifest,next_effect="none"),password,code,observe=unchanged)
         verify(record)
@@ -193,6 +196,7 @@ def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase,
                     require(os.path.samestat(os.fstat(actual),os.fstat(slot)),"shared source exchange changed")
             verify_slot()
             retire_displaced(slot,before[candidate.source_path],before[IDENTITY],filemode,current,verify_slot)
+        displaced_destination(plan,candidate,record,manifest,retire=True)
         record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="completed"),
             dict(manifest,next_effect="none"),password,code,observe=current)
         verify(record)
