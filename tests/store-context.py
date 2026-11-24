@@ -3381,7 +3381,8 @@ from store_transfer import preview,prepare_candidate
 from store_transfer_credentials import CredentialRef,stage_credential
 from store_transfer_intent import prepare_intent
 from store_transfer_apply import save_destination
-from store_transfer_publish import publish_destination
+from store_transfer_publish import publish_destination,confirm_private_destination,publish_source
+from store_transfer_remove import remove_source
 args=json.loads(sys.stdin.readline())
 if args['step'] == 'legacy-destination-confirmed':
     import store_transfer_publish
@@ -3399,23 +3400,31 @@ if args['step'] == 'legacy-destination-confirmed':
     TransferPlan.comparison=legacy
 load=lambda:load_approved_account(Path(sys.argv[2]))
 g=Generations(*args['generations'])
-plan=preview(load,args['src'],g,args['host'],args['dst'],g,'moved')
+plan=preview(load,args['src'],g,args['host'],args['dst'],g,args['alias'])
 unlock=lambda store:args['phrases'][store].encode()
 pw,code=args['password'].encode(),args['code'].encode()
-mapping=stage_credential(load,CredentialRef(args['src'],g,'login'),CredentialRef(args['dst'],g,'team-login'),unlock)
+mapping=stage_credential(load,CredentialRef(args['src'],g,args['original']),CredentialRef(args['dst'],g,args['mapped']),unlock)
 with prepare_candidate(load,plan,mapping) as candidate:
     ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda _:True)
     if args['step'] != 'prepared':
         save_destination(load,ident,plan,candidate,mapping,unlock,pw,code)
-        result=publish_destination(load,ident,plan,candidate,mapping,unlock,pw,code)
-        assert result['checkpoint']=='destination-confirmed'
+        if args['step'] != 'destination-saved':
+            apply=publish_destination if plan.destination.context.kind=='shared' else confirm_private_destination
+            result=apply(load,ident,plan,candidate,mapping,unlock,pw,code)
+            assert result['checkpoint']=='destination-confirmed'
+            if args['step'] == 'source-confirmed':
+                remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+                assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
     print(ident,flush=True)
     sys.stdin.readline()
 """
-        src,dst = case.vaults.src.store_id,case.vaults.dst.store_id
+        src,dst = case.plan.source.context.store_id,case.plan.destination.context.store_id
+        reverse = case.plan.source.context.kind == "shared"
+        original,mapped = (case.original.name,case.mapped.name) if reverse else ("login","team-login")
+        unlock = (case.v if reverse else case.vaults).unlock
         pw,code = b"owner independent backup",b"other recovery fixture"
-        data = {"src":src,"dst":dst,"host":case.host,"generations":[1,2,3,4],"step":step,
-                "password":pw.decode(),"code":code.decode(),"phrases":{key:case.vaults.unlock(key).decode() for key in (src,dst)}}
+        data = {"src":src,"dst":dst,"host":case.plan.host_id,"alias":case.plan.alias,"original":original,"mapped":mapped,"generations":[1,2,3,4],"step":step,
+                "password":pw.decode(),"code":code.decode(),"phrases":{key:unlock(key).decode() for key in (src,dst)}}
         proc = subprocess.Popen([sys.executable,"-I","-B","-c",child,str(Path(__file__).resolve().parents[1]/"lib"),str(approval)],
                                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=case.shared.env)
         def stop():
@@ -3535,6 +3544,28 @@ with prepare_candidate(load,plan,mapping) as candidate:
         with recovery_root(f.load()) as root:
             for store in last["stores"]:
                 require_idle(root,f.load(),store["store_id"])
+
+    def test_resume_reverse_after_original_removal_ack_retires_without_second_send(self):
+        import store_transfer_publish
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"source-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        original,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(original["checkpoint"],"source-confirmed")
+        self.assertEqual(manifest["publication_evidence"]["published_role"],"source")
+        events = []
+        def secret(role):
+            return {"destination":f.v.unlock(f.dst.store_id),"backup":pw,"recovery":code}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected duplicate publication")):
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append),0)
+        self.assertEqual(events[-1]["checkpoint"],"completed")
+        last,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(last["attempts"],original["attempts"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),manifest["proposed"])
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

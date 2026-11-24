@@ -447,7 +447,7 @@ selected checkpoint, the two registered host selections, and recorded local
 effects and senders. Status reads the device journal without unlocking a vault.
 Use `cancel` to release a prepared, effect-free transfer after the original
 owner exits. Both recovery envelopes remain available. Use `resume` for a
-verified destination-confirmed transfer. This asks for fresh operator approval,
+verified destination-confirmed transfer or a shared source whose removal was already accepted by its original branch. This asks for fresh operator approval,
 the protected transaction credentials and the destination vault passphrase.
 The original Git proposals and sender receipt identify the move. If the
 destination, original shared branch, source work, or sender proof changes,

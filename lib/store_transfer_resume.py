@@ -16,7 +16,7 @@ from store_transfer_apply import advance, displaced_destination, selected, trans
 from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCredential, private_workspace, read_mapping_end
 from store_transfer_intent import local_descriptors, reopen_intent, wire
 from store_transfer_owner import new_owner
-from store_transfer_publish import current_receiver, publish_source, saved_checkout, sender_lease
+from store_transfer_publish import current_receiver, publish_source, publishable_source, saved_checkout, sender_lease
 from store_transfer_remove import finish_shared_source, remove_source
 
 
@@ -165,13 +165,53 @@ def cancel_prepared(load, ident, password, code, confirm):
     return {"transaction_id":ident,"checkpoint":"cancelled"}
 
 
+@contextmanager
+def accepted_sender(tx, plan, record, manifest, proposed):
+    shared = plan.shared
+    require(len(record["attempts"]) == 1,"missing original publication acceptance")
+    attempt = record["attempts"][0]
+    binding = manifest["publication"]
+    require(attempt["outcome"] == "accepted" and attempt["sender_state"] == "quiescent"
+            and attempt["store_id"] == binding["store"] == shared.context.store_id
+            and attempt["connection_generation"] == shared.context.generations.connection
+            and attempt["target_id"] == shared.context.target_id and wire(binding["target"]) == wire(asdict(shared.target))
+            and (binding["attempt"],binding["ref"],binding["base"],binding["proposed"],binding["reservation"],binding["intent"]) ==
+            (attempt["attempt_id"],shared.ref,shared.base,proposed,attempt["reservation_id"],attempt["intent_id"]),
+            "original publication needs reconciliation")
+    receipt = publication_receipt(record["stores"],attempt)
+    if (plan.destination == shared and "decision" not in manifest["comparison"] and not manifest["comparison"]["matches"]
+            and plan.decision == "new"):
+        brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
+        if manifest["publication_evidence"] == brief:
+            receipt = brief
+    require(manifest["publication_evidence"] == receipt,"original acceptance receipt differs from the attempt")
+    path = ("senders",attempt["attempt_id"])
+    with open_directory(tx,path) as sender,sender_lease(sender,binding["lease"]) as lease:
+        def check():
+            with open_directory(tx,path) as named:
+                require_private_directory(named,"transfer sender")
+                require(os.path.samestat(os.fstat(sender),os.fstat(named)) and
+                        os.path.samestat(os.fstat(lease),os.stat("lease",dir_fd=named,follow_symlinks=False)),
+                        "original transfer sender binding changed")
+                require_approval_file(lease,os.fstat(lease))
+                require(private_json(named,"outcome.json") == receipt,"original acceptance receipt changed")
+            current_receiver(plan,proposed)
+        check()
+        yield check
+
+
 def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
     require(valid_id(ident),"invalid transfer transaction ID")
     record,manifest = reopen_intent(load,ident,password)
-    require(record["operation"] == "transfer" and record["checkpoint"] == "destination-confirmed"
-            and len(record["effects"]) == 1 and record["effects"][0]["outcome"] == "observed"
-            and manifest["next_effect"] == "source-removal","transfer needs separate reconciliation before resuming")
+    phase = record["checkpoint"]
+    require(record["operation"] == "transfer" and phase in ("destination-confirmed","source-confirmed")
+            and all(row["outcome"] == "observed" for row in record["effects"]),
+            "transfer needs separate reconciliation before resuming")
     plan = restored_plan(load(),record,manifest)
+    finished_source = phase == "source-confirmed"
+    require((not finished_source and len(record["effects"]) == 1 and manifest["next_effect"] == "source-removal")
+            or (finished_source and plan.source == plan.shared and len(record["effects"]) == 2 and manifest["next_effect"] == "complete"),
+            "transfer has incomplete local evidence")
     public = dict(manifest["comparison"])
     public.update(plan.comparison())
     public.update(transaction_id=ident,action="resume",checkpoint=record["checkpoint"])
@@ -190,40 +230,18 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             return phrase
         mapping.verify_saved(load,unlock)
         with transfer_gates(load,plan,record,manifest,recovery=True) as (tx,verify),ExitStack() as held:
-            if plan.destination.context.kind == "shared":
-                require(len(record["attempts"]) == 1,"missing original destination acceptance")
-                attempt = record["attempts"][0]
-                binding = manifest["publication"]
-                require(attempt["outcome"] == "accepted" and attempt["sender_state"] == "quiescent"
-                        and attempt["store_id"] == binding["store"] == plan.destination.context.store_id
-                        and attempt["connection_generation"] == plan.destination.context.generations.connection
-                        and attempt["target_id"] == plan.destination.context.target_id
-                        and wire(binding["target"]) == wire(asdict(plan.shared.target))
-                        and (binding["attempt"],binding["ref"],binding["base"],binding["proposed"],binding["reservation"],binding["intent"]) ==
-                        (attempt["attempt_id"],plan.destination.ref,plan.destination.base,candidate.proposed,attempt["reservation_id"],attempt["intent_id"]),
-                        "original publication needs reconciliation")
-                sender = held.enter_context(open_directory(tx,("senders",attempt["attempt_id"])))
-                lease = held.enter_context(sender_lease(sender,binding["lease"]))
-                expected_receipt = publication_receipt(record["stores"],attempt)
-                if "decision" not in manifest["comparison"] and not manifest["comparison"]["matches"] and plan.decision == "new":
-                    brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
-                    if manifest["publication_evidence"] == brief:
-                        expected_receipt = brief
-                require(manifest["publication_evidence"] == expected_receipt,"original acceptance receipt differs from the attempt")
+            accepted = None
+            if finished_source or plan.destination == plan.shared:
+                proposed = candidate.source_proposed if finished_source else candidate.proposed
+                accepted = held.enter_context(accepted_sender(tx,plan,record,manifest,proposed))
             else:
                 require(not record["attempts"],"unexpected publication before shared source removal")
             def current():
-                saved_checkout(load,plan,candidate,mapping,record,manifest)
+                checkout = publishable_source if finished_source else saved_checkout
+                checkout(load,plan,candidate,mapping,record,manifest)
                 displaced_destination(plan,candidate,record,manifest)
-                if plan.destination.context.kind == "shared":
-                    with open_directory(tx,("senders",attempt["attempt_id"])) as named:
-                        require_private_directory(named,"transfer sender")
-                        require(os.path.samestat(os.fstat(sender),os.fstat(named)) and
-                                os.path.samestat(os.fstat(lease),os.stat("lease",dir_fd=named,follow_symlinks=False)),
-                                "original transfer sender binding changed")
-                        require_approval_file(lease,os.fstat(lease))
-                        require(private_json(named,"outcome.json") == expected_receipt,"original acceptance receipt changed")
-                    current_receiver(plan,candidate.proposed)
+                if accepted is not None:
+                    accepted()
             current()
             owner,start = new_owner()
             previous = {"owner":record["owner"],"native_start":manifest["native_start"],"sequence":record["sequence"]}
@@ -233,6 +251,8 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             verify(record)
             proof()
         args = load,ident,plan,candidate,mapping,unlock,password,code
+        if finished_source:
+            return finish_shared_source(*args)
         result = remove_source(*args)
         if plan.source.context.kind == "shared":
             result = publish_source(*args)
