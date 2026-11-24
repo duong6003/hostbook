@@ -140,7 +140,7 @@ def publish_receive_marker(store_fd, record):
 
 
 @contextmanager
-def receive_binding(account, store_id, expected, own_record=None):
+def receive_binding(account, store_id, expected, own_record=None, *, transfer=None):
     with resolved_store(account, store_id, expected) as (context, checkout, root_fd, state_fd):
         require(context.kind == "shared" and context.effective_mode in ("receive-only", "two-way")
                 and context.transition_id is None, "a connected unfenced shared store is required")
@@ -148,7 +148,7 @@ def receive_binding(account, store_id, expected, own_record=None):
                 "receive requires a regular Git checkout")
         with bound_directory(root_fd, path_parts(account.root.path, account.recovery.path), account.recovery,
                              "invalid recovery root") as recovery_fd:
-            require_idle(recovery_fd, account, store_id)
+            require_idle(recovery_fd, account, store_id, transfer=transfer)
         parts = path_parts(account.state.path, context.status.parent)
         with open_directory(state_fd, parts) as settings:
             require_private_directory(settings, "connection settings")

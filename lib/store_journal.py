@@ -192,7 +192,7 @@ def classify(folder, account, ident, kind):
         return affected, terminal and not unsettled_terminal and selector["sequence"] == len(names)
 
 
-def require_idle(recovery_fd, account, store_id, transition=None, sender=None):
+def require_idle(recovery_fd, account, store_id, transition=None, sender=None, *, transfer=None):
     for kind in ("transactions", "control"):
         try:
             container = os.open(kind, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery_fd)
@@ -209,6 +209,14 @@ def require_idle(recovery_fd, account, store_id, transition=None, sender=None):
                     except (TypeError, KeyError) as exc:
                         raise StoreContextError("invalid recovery record") from exc
                     own = False
+                    if (transfer is not None and kind == "transactions" and ident == transfer["transaction_id"]
+                            and transfer["operation"] == "transfer" and scope is not None and store_id in scope
+                            and scope == {row["store_id"] for row in transfer["stores"]}):
+                        selected = private_json(folder,"current.json")
+                        with open_directory(folder,("records",)) as history:
+                            seq = transfer["sequence"]
+                            own = (selected["sequence"] == seq == len(os.listdir(history))
+                                   and private_json(history,f"{seq}.json") == transfer)
                     if (transition is not None and kind == "control" and ident == transition["record_id"]
                             and scope == {store_id} and transition["operation"] == "registration-transition"):
                         with open_directory(folder, ("records",)) as history:

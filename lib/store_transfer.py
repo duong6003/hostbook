@@ -42,7 +42,7 @@ class ObservedStore:
                                         credential=credentials.get(row["name"].lower())) for row in rows}
 
 
-def observe_store(account, store_id, expected):
+def observe_store(account, store_id, expected, *, transfer=None):
     with resolved_store(account, store_id, expected) as (ctx, binding, root, state):
         require(binding.git_dir.path == ctx.checkout/".git" and binding.git_common_dir == binding.git_dir,
                 "transfer requires a regular Git checkout")
@@ -61,7 +61,7 @@ def observe_store(account, store_id, expected):
         local = local_inputs(state, store_id)
     target, tip = None, None
     if ctx.kind == "shared":
-        with receive_binding(account, store_id, expected) as (verified, target, remote, _, actual):
+        with receive_binding(account, store_id, expected, transfer=transfer) as (verified, target, remote, _, actual):
             require((ctx, binding) == (verified, actual), "registered transfer binding changed")
             plain_git(remote, bare=True)
             tip = direct_ref(remote, ref)
@@ -87,11 +87,11 @@ class TransferPlan:
     source_hosts: dict
     destination_hosts: dict
 
-    def revalidate(self, load):
+    def revalidate(self, load, *, transfer=None):
         account = load()
         require(account == self.account, "transfer account approval changed")
         for prior in (self.source, self.destination):
-            require(observe_store(account, prior.context.store_id, prior.context.generations) == prior,
+            require(observe_store(account, prior.context.store_id, prior.context.generations,transfer=transfer) == prior,
                     "transfer inputs changed since comparison")
 
     def comparison(self):
@@ -263,9 +263,9 @@ def verify_accepted_mapping(stage, existing, mapping):
 
 
 @contextmanager
-def writable_destination(plan):
+def writable_destination(plan, *, transfer=None):
     dst = plan.destination
-    with receive_binding(plan.account,dst.context.store_id,dst.context.generations) as (ctx,target,remote,_,_):
+    with receive_binding(plan.account,dst.context.store_id,dst.context.generations,transfer=transfer) as (ctx,target,remote,_,_):
         require((ctx,target) == (dst.context,dst.target) and ctx.effective_mode == "two-way",
                 "destination binding or mode changed")
         require_plain_receiver(remote)

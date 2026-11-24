@@ -3144,6 +3144,35 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
         finally:
             os.close(directory)
 
+    def test_confirmed_destination_save_is_durable_and_keeps_source_and_remote_intact(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,replace(v.dst,name="team-login"),v.unlock)
+        password,code = b"fixture transaction secret",b"fixture transaction recovery"
+        original = [snapshot(path) for path in (v.source.checkout,f.shared.remote,self.root/"shared b")]
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            group = v.source.checkout/"groups.tsv"
+            group.write_text("new\t\tsource-one\n")
+            with self.assertRaisesRegex(StoreContextError, "untracked"):
+                save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            group.unlink()
+            result = save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            self.assertEqual(result["checkpoint"],"destination-saved")
+            self.assertEqual(f.shared.git(v.destination.checkout,"rev-parse","HEAD"),candidate.proposed)
+        self.assertEqual(original,[snapshot(p) for p in (v.source.checkout,f.shared.remote,self.root/"shared b")])
+        self.assertEqual(f.shared.git(v.destination.checkout,"status","--porcelain"),"")
+        mapped.verify_saved(f.load,v.unlock)
+        record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["sequence"],3)
+        self.assertEqual(record["effects"][0]["outcome"],"observed")
+        self.assertEqual(manifest["next_effect"],"destination-publication")
+        self.assertFalse((self.recovery/"receives"/ident).exists())
+
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
         f = self.transfer_vaults()
