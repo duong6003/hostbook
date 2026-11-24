@@ -11,7 +11,7 @@ from store_context import (StoreContextError, open_directory, require, require_a
 from store_publish import require_plain_receiver, send
 from store_read import local_inputs
 from store_receive import git, plain_git, registered_target
-from store_transfer import observe_store, writable_destination
+from store_transfer import writable_shared
 from store_transfer_apply import advance, check_source, selected, transfer_gates
 from store_transfer_credentials import private_workspace
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
@@ -21,7 +21,12 @@ def saved_checkout(load, plan, candidate, mapping, record, manifest):
     src, dst = plan.source,plan.destination
     source_snapshot = next(row["snapshot_id"] for row in record["stores"] if row["role"] == "source")
     check_source(plan.account,src,manifest["snapshots"][source_snapshot])
-    require(observe_store(plan.account,src.context.store_id,src.context.generations) == src,"transfer source changed")
+    with resolved_store(plan.account,src.context.store_id,src.context.generations) as (active,_,root,state):
+        require(active == src.context and local_inputs(state,active.store_id) == src.local,"transfer source changed")
+        if active.kind == "shared":
+            with registered_target(plan.account,active,root,state) as (target,remote):
+                require(target == src.target and direct_ref(remote,src.ref) == src.base,"registered shared source changed")
+                require_plain_receiver(remote)
     destination_checkout(load,plan,candidate,mapping,record,manifest)
 
 
@@ -29,7 +34,7 @@ def destination_checkout(load, plan, candidate, mapping, record, manifest):
     src, dst = plan.source,plan.destination
     require(plan.account == load() and candidate.plan is plan and candidate.mapping is mapping
             and manifest["proposed"] == candidate.proposed and manifest["destination_ref"] == dst.ref
-            and manifest["destination_base"] == dst.base and wire(manifest["target"]) == wire(asdict(dst.target))
+            and manifest["destination_base"] == dst.base and wire(manifest["target"]) == wire(asdict(plan.shared.target))
             and manifest["changes"] == {path:encoded(data) for path,data in candidate.changes.items()},
             "publication requires the exact saved transfer candidate")
     require(record["hosts"] == [{"store_id":end.context.store_id,"host_id":plan.host_id} for end in (src,dst)],
@@ -44,6 +49,24 @@ def destination_checkout(load, plan, candidate, mapping, record, manifest):
                 encoded(read_index(repo)) == evidence["index"], "saved destination branch or index changed")
         check_worktree(checkout,tree(candidate.stage,candidate.proposed,git),filemode)
     mapping.check_current(load,saved=True)
+
+
+def confirm_private_destination(load, ident, plan, candidate, mapping, read_passphrase, password, code):
+    record,manifest = reopen_intent(load,ident,password)
+    require(plan.destination.context.kind == "private" and record["checkpoint"] == "destination-saved"
+            and not record["attempts"] and manifest["next_effect"] == "confirm-private-destination",
+            "private destination is not ready to confirm")
+    phrase = read_passphrase(mapping.destination.store_id)
+    mapping.verify_saved(load,lambda _store:phrase)
+    with transfer_gates(load,plan,record,manifest) as (tx,verify):
+        def current():
+            saved_checkout(load,plan,candidate,mapping,record,manifest)
+        record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="destination-confirmed"),
+            dict(manifest,next_effect="source-removal",confirmed_destination=candidate.proposed),password,code,observe=current)
+        verify(record)
+        proof()
+        current()
+    return {"transaction_id":ident,"checkpoint":"destination-confirmed"}
 
 
 @contextmanager
@@ -65,7 +88,7 @@ def sender_lease(folder, expected):
 
 def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, password, code):
     record,manifest = reopen_intent(load,ident,password)
-    require(record["checkpoint"] == "destination-saved" and not record["attempts"]
+    require(plan.destination.context.kind == "shared" and record["checkpoint"] == "destination-saved" and not record["attempts"]
             and manifest["next_effect"] == "destination-publication","transfer destination publication is not ready")
     phrase = read_passphrase(mapping.destination.store_id)
     mapping.verify_saved(load,lambda _store:phrase)
@@ -74,7 +97,7 @@ def publish_destination(load, ident, plan, candidate, mapping, read_passphrase, 
             [candidate.proposed.encode(),dst.base.encode()],"transfer proposal has an unexpected parent")
     attempt_id = token()
     with ExitStack() as transport:
-        with transfer_gates(load,plan,record,manifest) as (tx,verify), writable_destination(plan,transfer=record) as remote:
+        with transfer_gates(load,plan,record,manifest) as (tx,verify), writable_shared(plan,transfer=record) as remote:
             saved_checkout(load,plan,candidate,mapping,record,manifest)
             pinned_tx,pinned_remote = os.dup(tx),os.dup(remote)
             transport.callback(os.close,pinned_tx)

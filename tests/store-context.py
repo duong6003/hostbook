@@ -2927,6 +2927,55 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         plan = preview(load,vaults.src.store_id,self.generations,host,vaults.dst.store_id,self.generations,"moved")
         return SimpleNamespace(plan=plan, shared=shared, vaults=vaults, load=load, host=host)
 
+    def reverse_transfer_case(self):
+        from store_transfer import preview
+        from store_transfer_credentials import CredentialRef
+        seed = self.transfer_case()
+        v,shared = seed.vaults,seed.shared
+        src,dst = v.destination,v.source
+        raw = b"# secret: team-key\nHost db\n  HostName 192.0.2.2\n  User fixture\n"
+        (src.checkout/"team.conf").write_bytes(raw)
+        path = src.checkout/".hostbook/identity.json"
+        identity = json.loads(path.read_bytes())
+        identity["generation"] += 1
+        identity["sources"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+        path.write_text(json.dumps(identity))
+        (src.vault/"team-key.age").write_bytes(v.seal(src,b"shared fixture password"))
+        (src.vault/"team-key.meta").write_bytes(b"type=password\n")
+        shared.git(src.checkout,"add","--all")
+        shared.git(src.checkout,"commit","-qm","Shared host uses its own fixture credential")
+        shared.git(src.checkout,"push","-q",str(shared.remote),"HEAD:refs/heads/main")
+        host = identity["hosts"][0]["host_id"]
+        plan = preview(seed.load,src.store_id,src.generations,host,dst.store_id,dst.generations,"personal-db")
+        return SimpleNamespace(plan=plan,load=seed.load,shared=shared,v=v,src=src,dst=dst,
+            original=CredentialRef(src.store_id,src.generations,"team-key"),
+            mapped=CredentialRef(dst.store_id,dst.generations,"db-credential"))
+
+    def test_reverse_transfer_confirms_saved_decryptable_private_destination_before_touching_shared_source(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publish
+        f = self.reverse_transfer_case()
+        mapped = stage_credential(f.load,f.original,f.mapped,f.v.unlock)
+        pw,code = b"reverse backup fixture",b"reverse recovery fixture"
+        before,remote = snapshot(f.src.checkout),snapshot(f.shared.remote)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,f.v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            result = publish.confirm_private_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            self.assertEqual(result["checkpoint"],"destination-confirmed")
+            record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+            self.assertEqual(record["attempts"],[])
+            self.assertEqual(manifest["confirmed_destination"],candidate.proposed)
+            self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),candidate.proposed)
+            self.assertEqual(f.shared.git(f.src.checkout,"rev-parse","HEAD"),f.plan.source.base)
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.source.base)
+            mapped.verify_saved(f.load,f.v.unlock)
+        self.assertEqual(snapshot(f.src.checkout),before)
+        self.assertEqual(snapshot(f.shared.remote),remote)
+
     def test_transfer_candidate_preserves_exact_id_settings_and_verified_destination_password(self):
         from store_transfer import prepare_candidate
         from store_transfer_credentials import stage_credential

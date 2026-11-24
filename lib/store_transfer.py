@@ -87,6 +87,10 @@ class TransferPlan:
     source_hosts: dict
     destination_hosts: dict
 
+    @property
+    def shared(self):
+        return self.source if self.source.context.kind == "shared" else self.destination
+
     def revalidate(self, load, *, transfer=None):
         account = load()
         require(account == self.account, "transfer account approval changed")
@@ -249,12 +253,11 @@ def route_chains(store_id, identity, files, local):
     return chains
 
 
-def verify_accepted_mapping(stage, existing, mapping):
-    observed = mapping.destination_before
+def verify_accepted_mapping(stage, existing, ref, observed):
     vault, record = observed.vault, observed.record
     expected = {"vault.pub":vault.recipient, "vault.key.age":vault.password_envelope,
                 "vault.recovery.age":vault.recovery_envelope}
-    name = mapping.destination.name
+    name = ref.name
     for suffix, data in (("meta",record.metadata if record else None), ("age",record.ciphertext if record else None),
                          ("pub",record.public_key if record else None)):
         expected[name+"."+suffix] = data
@@ -266,27 +269,38 @@ def verify_accepted_mapping(stage, existing, mapping):
 
 
 @contextmanager
-def writable_destination(plan, *, transfer=None):
-    dst = plan.destination
+def writable_shared(plan, *, transfer=None):
+    dst = plan.shared
     with receive_binding(plan.account,dst.context.store_id,dst.context.generations,transfer=transfer) as (ctx,target,remote,_,_):
         require((ctx,target) == (dst.context,dst.target) and ctx.effective_mode == "two-way",
-                "destination binding or mode changed")
+                "shared binding or mode changed")
         require_plain_receiver(remote)
-        require(direct_ref(remote,dst.ref) == dst.base, "destination branch changed")
+        require(direct_ref(remote,dst.ref) == dst.base, "shared branch changed")
         yield remote
 
 
-def source_proposal(plan, folder, source_path, after):
+def fetch_reviewed_base(plan, store, stage):
+    if store.context.kind == "shared":
+        with writable_shared(plan) as remote:
+            tip = fetch_direct(stage,remote,store.ref,"refs/hostbook/base")
+    else:
+        with resolved_store(plan.account,store.context.store_id,store.context.generations) as (ctx,binding,root,_):
+            with bound_directory(root,path_parts(plan.account.root.path,binding.git_dir.path),binding.git_dir,
+                                 "private Git binding changed") as repo:
+                require(ctx == store.context and read_ref(repo,store.ref) == store.base, "private Git branch changed")
+                tip = fetch_from_fd(stage,repo,store.ref,"refs/hostbook/base")
+    require(tip == store.base, "reviewed transfer base changed")
+
+
+def source_proposal(plan, folder, source_path, after, mapping):
     src = plan.source
     stage = folder/"source.git"
     stage.mkdir(mode=0o700)
     git(stage,"init","-q","--bare","--template=")
-    with resolved_store(plan.account,src.context.store_id,src.context.generations) as (ctx,binding,root,_):
-        with bound_directory(root,path_parts(plan.account.root.path,binding.git_dir.path),binding.git_dir,
-                             "source Git binding changed") as repo:
-            require(ctx == src.context and read_ref(repo,src.ref) == src.base
-                    and fetch_from_fd(stage,repo,src.ref,"refs/hostbook/base") == src.base,"source Git branch changed")
+    fetch_reviewed_base(plan,src,stage)
     before = tree(stage,src.base,git)
+    if mapping:
+        verify_accepted_mapping(stage,before,mapping.source,mapping.source_before)
     require(parse_json(git(stage,"cat-file","blob",before[IDENTITY].decode())) == src.identity
             and all(path in before and git(stage,"cat-file","blob",before[path].decode()) == data
                     for path,data in src.files.items()), "source differs from its accepted revision")
@@ -305,9 +319,8 @@ def source_proposal(plan, folder, source_path, after):
 def prepare_candidate(load, plan, mapping):
     """Build a destination-only regular Git commit in private staging and verify its SSH effects."""
     src, dst = plan.source, plan.destination
-    require((src.context.kind,dst.context.kind) == ("private","shared")
-            and dst.context.effective_mode == "two-way" and dst.base == dst.remote_tip,
-            "transfer requires a current two-way shared destination")
+    require({src.context.kind,dst.context.kind} == {"private","shared"} and plan.shared.context.effective_mode == "two-way"
+            and plan.shared.base == plan.shared.remote_tip,"transfer requires a current two-way shared checkout")
     require(not plan.comparison()["matches"], "destination match requires an explicit transfer decision")
     source_name = plan.source_hosts[plan.host_id]["credential"]
     if source_name is None:
@@ -368,11 +381,10 @@ def prepare_candidate(load, plan, mapping):
         stage = folder/"destination.git"
         stage.mkdir(mode=0o700)
         git(stage,"init","-q","--bare","--template=")
-        with writable_destination(plan) as remote:
-            require(fetch_direct(stage,remote,dst.ref,"refs/hostbook/base") == dst.base, "destination remote advanced")
+        fetch_reviewed_base(plan,dst,stage)
         existing = tree(stage,dst.base,git)
         if mapping:
-            verify_accepted_mapping(stage,existing,mapping)
+            verify_accepted_mapping(stage,existing,mapping.destination,mapping.destination_before)
         require(all(path == IDENTITY or path not in existing for path in changes), "destination file is occupied")
         for path, data in dst.files.items():
             require(path in existing and git(stage,"cat-file","blob",existing[path].decode()) == data,
@@ -387,9 +399,9 @@ def prepare_candidate(load, plan, mapping):
         proposed = git(stage,"-c","user.name=Hostbook","-c","user.email=hostbook@localhost",
                        "commit-tree",root,"-p",dst.base,"-m","Transfer registered host").strip().decode()
         tree(stage,proposed,git)
-        source_stage,removal,source_identity = source_proposal(plan,folder,source_path,source_after)
+        source_stage,removal,source_identity = source_proposal(plan,folder,source_path,source_after,mapping)
         plan.revalidate(load)
         if mapping:
             mapping.check_current(load)
-        with writable_destination(plan):
+        with writable_shared(plan):
             yield DestinationCandidate(stage,proposed,changes,source_path,plan,mapping,source_stage,removal,source_identity)

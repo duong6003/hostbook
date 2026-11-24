@@ -19,7 +19,7 @@ from store_login import verified_age_tools
 from store_mode import mode_records
 from store_publish import recovery_root
 from store_receive import IDENTITY, fetch_from_fd, git, plain_git
-from store_transfer import writable_destination
+from store_transfer import writable_shared
 from store_transfer_credentials import private_workspace, unlock_end
 from store_transfer_recovery import capture, read_payload, seal_payload, verify_backup
 from store_transfer_owner import new_owner
@@ -222,7 +222,7 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
         require(path.stat().st_size <= JSON_LIMIT,"transfer proposal exceeds recovery size limit")
         return encoded(path.read_bytes())
     contents = {"record":record,"native_start":start,"comparison":comparison,"snapshots":snapshots,"source_path":candidate.source_path,
-                     "destination_ref":plan.destination.ref,"target":asdict(plan.destination.target),
+                     "destination_ref":plan.destination.ref,"target":asdict(plan.shared.target),
                      "destination_base":plan.destination.base,"proposed":candidate.proposed,
                      "bundle":bundle(candidate.stage,candidate.proposed,plan.destination.base),
                      "source_proposed":candidate.source_proposed,"source_identity":encoded(candidate.source_identity),
@@ -239,7 +239,7 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
                 require((account,active) == (plan.account,ctx), "transfer writer binding changed")
                 writers[ctx.store_id] = writer
                 require_idle(root,account,ctx.store_id)
-            active,pending,inflight = mode_records(root,plan.account,plan.destination.context.store_id,None)
+            active,pending,inflight = mode_records(root,plan.account,plan.shared.context.store_id,None)
             require(not active and not pending and not inflight, "settle existing shared work before transfer")
             plan.revalidate(load)
             mapping.check_current(load)
@@ -252,7 +252,7 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
                 with resolved_store(plan.account,ctx.store_id,ctx.generations) as (_,_,_,state):
                     verify_state_directory(state,path_parts(plan.account.state.path,ctx.writer_lock),writers[ctx.store_id],
                                            "transfer writer changed")
-            with writable_destination(plan), recovery_root(load()) as fresh, private_path(root,("transactions",)) as txns:
+            with writable_shared(plan), recovery_root(load()) as fresh, private_path(root,("transactions",)) as txns:
                 require(load() == plan.account and os.path.samestat(os.fstat(root),os.fstat(fresh))
                         and os.path.samestat(os.stat(scratch,dir_fd=root,follow_symlinks=False),os.fstat(draft)),
                         "transfer recovery authority changed")

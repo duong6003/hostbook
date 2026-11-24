@@ -12,7 +12,7 @@ from store_login import verified_age_tools
 from store_publish import recovery_root, sync_named
 from store_read import local_inputs
 from store_receive import IDENTITY, git, plain_git, prepare_adoption
-from store_transfer import observe_store, writable_destination
+from store_transfer import observe_store, writable_shared
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
 from store_transfer_owner import owner_lease
 from store_transfer_recovery import capture, verify_backup
@@ -185,19 +185,19 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
         require(read_ref(repo,dst.ref) == dst.base and read_index(repo) == original_index, "destination Git base changed")
         check_worktree(checkout,before,filemode)
         check_destinations(checkout,candidate.changes,before,tx)
-        with writable_destination(plan,transfer=record):
+        with writable_shared(plan,transfer=record):
             record,manifest,proof = advance(tx,account,record,manifest,dict(record,effects=[effect]),
                                       dict(manifest,next_effect="install-destination",destination_effect=effect_id),password,code)
         def live():
             verify(record)
             proof()
             check_source(account,plan.source,snapshots["source"])
-            require(observe_store(account,plan.source.context.store_id,plan.source.context.generations) == plan.source,
+            require(observe_store(account,plan.source.context.store_id,plan.source.context.generations,transfer=record) == plan.source,
                     "transfer source changed")
             with local_descriptors(account,dst) as (bound,git_dir):
                 require(os.path.samestat(os.fstat(bound),os.fstat(checkout)) and os.path.samestat(os.fstat(git_dir),os.fstat(repo)),
                         "destination filesystem binding changed")
-            with writable_destination(plan,transfer=record):
+            with writable_shared(plan,transfer=record):
                 pass
         with private_path(tx,("exchange",effect_id)) as exchange:
             # Only the native sidecar requires replacement. Its original and proposal are
@@ -241,7 +241,7 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
             evidence = token()
             observed = dict(effect,evidence_id=evidence,outcome="observed")
             record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="destination-saved",effects=[observed]),
-                                      dict(manifest,next_effect="destination-publication",
+                                      dict(manifest,next_effect="destination-publication" if dst.context.kind == "shared" else "confirm-private-destination",
                                            destination_evidence=dict(observation,evidence_id=evidence)),password,code,observe=unchanged)
             verify(record)
             proof()
