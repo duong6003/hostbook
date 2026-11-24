@@ -270,6 +270,73 @@ class StoreContextTest(unittest.TestCase):
             restore(output,ident,stage,code,recovery=True)
         self.assertEqual(snapshot(recovered/"checkout"),expected)
 
+    def test_migration_backup_refuses_external_git_objects_and_revalidates_final_envelopes(self):
+        import store_migration_backup as migration
+        f = self.migration_case()
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700); settings.mkdir(mode=0o700); ssh.write_text("# fixture\n")
+        paths = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
+        output = self.root/"backups"; output.mkdir(mode=0o700)
+        target = self.root/"restore"; target.mkdir(mode=0o700)
+        alternate = self.root/"outside-objects"
+        objects = f.legacy/".git/objects"
+        objects.rename(alternate)
+        (objects/"info").mkdir(parents=True)
+        (objects/"info/alternates").write_text(str(alternate)+"\n")
+        baseline = snapshot(f.legacy)
+        args = (paths,output,b"fixture phrase",b"other fixture code")
+        with self.assertRaises(StoreContextError):
+            migration.backup(*args)
+        self.assertEqual(snapshot(f.legacy),baseline)
+        self.assertFalse(any(not p.name.startswith(".") for p in output.iterdir()))
+        shutil.rmtree(objects); alternate.rename(objects)
+        materialize = migration.materialize
+        def detach(*inputs,**options):
+            result = materialize(*inputs,**options)
+            pending, = (p for p in output.glob(".backup-*") if (p/"vault.recovery.age").exists())
+            (pending/"vault.recovery.age").rename(self.root/"withheld-backup-envelope")
+            return result
+        with patch.object(migration,"materialize",side_effect=detach), self.assertRaises((OSError,StoreContextError)):
+            migration.backup(*args)
+        self.assertFalse(any(not p.name.startswith(".") for p in output.iterdir()))
+        ident = migration.backup(*args)
+        def interrupted(*inputs,**options):
+            materialize(*inputs,**options)
+            raise StoreContextError("fixture interruption")
+        with patch.object(migration,"materialize",side_effect=interrupted), self.assertRaises(StoreContextError):
+            migration.restore(output,ident,target,args[2])
+        self.assertEqual(list(target.iterdir()),[])
+
+    def test_migration_backup_checks_original_vault_envelopes_and_restored_credential(self):
+        from store_migration_backup import backup, restore
+        from store_vault import VaultUnlockCache
+        v = self.transfer_vaults()
+        f = self.migration_case()
+        shutil.copytree(v.source.vault,f.legacy/"secrets")
+        vault = f.legacy/"secrets"
+        value = b"synthetic private migration password"
+        (vault/"login.meta").write_text("type=password\n")
+        (vault/"login.age").write_bytes(v.seal(v.source,value))
+        original = snapshot(f.legacy)
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700); settings.mkdir(mode=0o700); ssh.write_text("# synthetic\n")
+        source = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
+        output = self.root/"sealed originals"; output.mkdir(mode=0o700)
+        stage = self.root/"restored private"; stage.mkdir(mode=0o700)
+        first,second = b"synthetic backup",b"independent restore"
+        user = v.unlock(v.source.store_id)
+        with self.assertRaises(StoreContextError):
+            backup(source,output,first,second,vault_access=(user,b"wrong"))
+        self.assertEqual(list(output.iterdir()),[])
+        ident = backup(source,output,first,second,vault_access=(user,b"fixture recovery"))
+        folder = restore(output,ident,stage,first)
+        restored = folder/"checkout/secrets"
+        engine = VaultUnlockCache(v.tools)
+        master = engine.open_identity((restored/"vault.recovery.age").read_bytes(),b"fixture recovery",(restored/"vault.pub").read_bytes())
+        self.assertTrue(engine.open_secret(master,(restored/"login.age").read_bytes()) == value)
+        self.assertEqual(snapshot(f.legacy),original)
+        self.assertNotIn(value,b"".join(p.read_bytes() for p in output.rglob("*") if p.is_file()))
+
     def test_migration_inspection_distinguishes_locked_partial_and_damaged_vault_without_prompts(self):
         v = self.transfer_vaults()
         f = self.migration_case()

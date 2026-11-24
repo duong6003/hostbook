@@ -510,7 +510,7 @@ unavailable remote leaves discovery unresolved. Remote history remains
 accessible to prior recipients after any later local migration.
 
 The migration backup API currently seals four explicitly named, disjoint
-inputs from a private checkout without a vault. These are the whole checkout,
+inputs from a private checkout. These are the whole checkout,
 the legacy state directory, Hostbook's settings directory and one SSH config
 file. It verifies both independent recovery credentials, reconstructs the
 original bytes, modes, owners and supported native metadata in private staging,
@@ -519,3 +519,10 @@ a fresh directory beneath a separate private root and refuses an occupied
 name. Active scratch, unknown state, linked data, unsupported metadata and
 oversized recovery sets require separate review. External SSH dependencies and
 writer exclusion still need verification before any registration cutover.
+
+When a complete existing vault is present, backup also checks its original
+password and recovery envelopes, opens each credential in memory, and repeats
+that proof on the isolated restore. A key record must match its stored public
+key. The encrypted archive keeps the original ciphertext and envelopes. Local
+Git history must be self-contained. Restore verification runs native Git
+integrity checks against the private copy, including staged objects.
