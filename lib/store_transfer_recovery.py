@@ -1,10 +1,11 @@
 """Authenticated recovery payloads for one transfer and its independent age identity."""
 from dataclasses import dataclass
 from hmac import compare_digest
+import os
 
 from store_context import (JSON_LIMIT, read_file, require, require_approval_file, require_private_directory, valid_id)
 from store_login import verified_age_tools
-from store_vault import VaultUnlockCache
+from store_vault import VaultUnlockCache, file_evidence
 
 
 @dataclass(frozen=True, repr=False)
@@ -28,21 +29,45 @@ def seal_payload(account, manifest, password, recovery_code):
     return protected
 
 
-def read_payload(account, envelopes, payloads, payload_id, phrase, *, recovery=False):
+def capture(envelopes, payloads, payload_id, names):
     require(valid_id(payload_id), "invalid transfer payload ID")
-    require_private_directory(envelopes, "transaction recovery vault")
-    require_private_directory(payloads, "transaction payload")
-    def captured():
-        name = "vault.recovery.age" if recovery else "vault.key.age"
-        return (read_file(envelopes,"vault.pub",4096,require_approval_file),
-                read_file(envelopes,name,JSON_LIMIT,require_approval_file),
-                read_file(payloads,payload_id+".age",JSON_LIMIT,require_approval_file))
-    original = captured()
-    recipient, envelope, ciphertext = original
+    evidence = []
+    for directory in (envelopes, payloads):
+        require_private_directory(directory, "transaction recovery")
+        evidence.append(file_evidence(os.fstat(directory)))
+
+    def private_file(fd, info):
+        require_approval_file(fd,info)
+        evidence.append(file_evidence(info))
+
+    files = {name:read_file(envelopes,name,JSON_LIMIT,private_file) for name in ("vault.pub",*names)}
+    files["payload"] = read_file(payloads,payload_id+".age",JSON_LIMIT,private_file)
+    return files, evidence
+
+
+def open_manifest(account, envelopes, payloads, payload_id, access, expected=None):
+    names = tuple(name for name, _phrase in access)
+    original = capture(envelopes,payloads,payload_id,names)
+    files = original[0]
     tools = verified_age_tools(account)
     vault = VaultUnlockCache(tools[0])
-    identity = vault.open_identity(envelope, phrase, recipient)
-    manifest = vault.open_secret(identity, ciphertext)
-    require(0 < len(manifest) <= JSON_LIMIT and verified_age_tools(account) == tools
-            and all(compare_digest(a,b) for a,b in zip(captured(),original)), "transaction backup changed")
+    for name, phrase in access:
+        identity = vault.open_identity(files[name],phrase,files["vault.pub"])
+        manifest = vault.open_secret(identity,files["payload"])
+        require(0 < len(manifest) <= JSON_LIMIT and (expected is None or compare_digest(manifest,expected)),
+                "transaction backup does not match its reviewed manifest")
+    require(verified_age_tools(account) == tools and capture(envelopes,payloads,payload_id,names) == original,
+            "transaction backup changed")
     return manifest
+
+
+def read_payload(account, envelopes, payloads, payload_id, phrase, *, recovery=False):
+    """Recover through an available operator-held credential."""
+    name = "vault.recovery.age" if recovery else "vault.key.age"
+    return open_manifest(account,envelopes,payloads,payload_id,((name,phrase),))
+
+
+def verify_backup(account, envelopes, payloads, payload_id, password, code, expected):
+    """Prove both retained envelopes and the complete payload before a new transfer effect."""
+    require(password != code and expected, "independent recovery credentials and a complete manifest are required")
+    open_manifest(account,envelopes,payloads,payload_id,(("vault.key.age",password),("vault.recovery.age",code)),expected)

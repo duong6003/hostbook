@@ -2847,7 +2847,7 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertNotEqual(endpoint(first), endpoint(dict(second,port="22")))
 
     def test_transaction_vault_reopens_complete_manifest_from_either_independent_envelope(self):
-        from store_transfer_recovery import seal_payload, read_payload
+        from store_transfer_recovery import seal_payload, read_payload, verify_backup
         from store_login import verified_age_tools
         from store_checkout import durable_file
         from store_vault import VaultUnlockCache
@@ -2866,6 +2866,23 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 for phrase, recovery in ((password,False),(code,True)):
                     self.assertTrue(read_payload(self.account,directory,directory,payload_id,phrase,
                                                  recovery=recovery) == manifest)
+                verify_backup(self.account,directory,directory,payload_id,password,code,manifest)
+                backup = Path(scratch)/"vault.recovery.age"
+                backup.unlink()
+                self.assertTrue(read_payload(self.account,directory,directory,payload_id,password) == manifest)
+                with self.assertRaises(FileNotFoundError):
+                    verify_backup(self.account,directory,directory,payload_id,password,code,manifest)
+                durable_file(directory,"vault.recovery.age",sealed.recovery_envelope)
+                open_secret = VaultUnlockCache.open_secret
+                def change_permission(cache, identity, ciphertext):
+                    os.fchmod(directory,0o755)
+                    return open_secret(cache,identity,ciphertext)
+                try:
+                    with patch.object(VaultUnlockCache,"open_secret",change_permission):
+                        with self.assertRaisesRegex(StoreContextError, "private"):
+                            verify_backup(self.account,directory,directory,payload_id,password,code,manifest)
+                finally:
+                    os.fchmod(directory,0o700)
                 with self.assertRaises(StoreContextError):
                     read_payload(self.account,directory,directory,payload_id,f.unlock(f.src.store_id))
                 vault = VaultUnlockCache(verified_age_tools(self.account)[0])
