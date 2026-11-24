@@ -2770,6 +2770,72 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
             vault.open_secret(f.identities[f.src.store_id], staged.ciphertext)
         self.assertEqual(before, snapshot(self.root))
 
+    def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        original = b"synthetic shared use"
+        for context in (f.source, f.destination):
+            (context.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, original))
+        destination = f.destination.vault/"login.age"
+        destination.write_bytes(f.seal(f.destination, b"different fixture"))
+        before = snapshot(self.root)
+        for reuse, error in ((False,"occupied"), (True,"different")):
+            with self.assertRaisesRegex(StoreContextError, error):
+                stage_credential(lambda: self.account, f.src, f.dst, f.unlock, reuse_existing=reuse)
+        self.assertEqual(before, snapshot(self.root))
+        destination.write_bytes(f.seal(f.destination, original))
+        existing = destination.read_bytes()
+        staged = stage_credential(lambda: self.account, f.src, f.dst, f.unlock, reuse_existing=True)
+        self.assertTrue(staged.reused)
+        self.assertEqual(staged.ciphertext, existing)
+        staged.verify_saved(lambda: self.account, f.unlock)
+        destination.write_bytes(f.seal(f.destination, original))
+        with self.assertRaisesRegex(StoreContextError, "changed"):
+            staged.verify_saved(lambda: self.account, f.unlock)
+
+    def test_transfer_protected_staging_cleans_on_abort_and_preserves_shared_source(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        self.entries[1]["effective_mode"] = "two-way"
+        self.save_registry()
+        (f.source.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"shared fixture"))
+        (f.source.checkout/"project").write_bytes(
+            b"# secret: login\nHost first\n  HostName one.invalid\n# secret: login\nHost second\n  HostName two.invalid\n")
+        (f.source.git_dir/"index").write_bytes(b"unrelated fixture staged bytes")
+        before = snapshot(self.root)
+        load = lambda: self.account
+        staged = stage_credential(load, f.src, f.dst, f.unlock)
+        with self.assertRaisesRegex(RuntimeError, "cancel"):
+            with staged.private_files(load) as folder:
+                self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((folder/"login.age").stat().st_mode & 0o777, 0o600)
+                self.assertEqual((folder/"login.age").read_bytes(), staged.ciphertext)
+                raise RuntimeError("cancel")
+        self.assertFalse(folder.exists())
+        self.assertEqual(before, snapshot(self.root))
+        with staged.private_files(load) as folder:
+            for path in folder.iterdir():
+                shutil.copyfile(path, f.destination.vault/path.name)
+        staged.verify_saved(load, f.unlock)
+        envelope = f.source.vault/"vault.recovery.age"
+        envelope.write_bytes(envelope.read_bytes() + b"\n")
+        with self.assertRaisesRegex(StoreContextError, "changed"):
+            staged.verify_saved(load, f.unlock)
+
+    def test_transfer_rejects_copied_vault_identity_before_unlock(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        (f.source.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"copied identity fixture"))
+        for name in ("vault.pub", "vault.key.age", "vault.recovery.age"):
+            shutil.copyfile(f.source.vault/name, f.destination.vault/name)
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "share an identity"):
+            stage_credential(lambda: self.account, f.src, f.dst, lambda _: self.fail("unexpected unlock"))
+        self.assertEqual(before, snapshot(self.root))
+
     def test_vault_unlock_cache_is_scoped_and_rejects_rotated_envelopes(self):
         tools = [shutil.which(name) for name in ("age", "age-keygen", "age-plugin-batchpass")]
         if not all(tools):
