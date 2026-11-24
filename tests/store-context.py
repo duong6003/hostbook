@@ -2995,6 +2995,52 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 with store_transfer.prepare_candidate(f.load,f.plan,mapped):
                     self.fail("old receiver policy reused")
 
+    def test_confirmed_transfer_persists_independent_prepared_intent_before_either_checkout_changes(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        import base64
+        f = self.transfer_case()
+        v = f.vaults
+        mapping = stage_credential(f.load,v.src,replace(v.dst,name="team-login"),v.unlock)
+        branches = [v.source.checkout,v.destination.checkout,f.shared.remote,self.root/"shared b"]
+        before = [snapshot(root) for root in branches]
+        password, code = b"transaction fixture password", b"transaction fixture recovery code"
+        with prepare_candidate(f.load,f.plan,mapping) as candidate:
+            with self.assertRaisesRegex(StoreContextError, "confirmation"):
+                prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,password,code,lambda _:False)
+            self.assertFalse((self.recovery/"transactions").exists())
+            called = []
+            def confirm(comparison):
+                called.append(comparison)
+                return True
+            ident = prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,password,code,confirm)
+            self.assertEqual(len(called),1)
+            self.assertEqual(called[0]["destination_credential"],"team-login")
+            proposal = candidate.proposed
+        self.assertEqual([snapshot(root) for root in branches],before)
+        with recovery_root(self.account) as root:
+            for store in (v.src.store_id,v.dst.store_id):
+                with self.assertRaises(StoreContextError):
+                    require_idle(root,self.account,store)
+                hint = self.recovery/"stores"/store/(ident+".ref")
+                self.assertEqual(json.loads(hint.read_bytes()),{"version":1,"transaction_id":ident})
+            require_idle(root,self.account,self.entries[2]["store_id"])
+        record, manifest = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["checkpoint"],"prepared")
+        self.assertEqual(record["transaction_id"],ident)
+        self.assertEqual(manifest["proposed"],proposal)
+        self.assertEqual(manifest["destination_ref"],"refs/heads/main")
+        self.assertTrue(base64.b64decode(manifest["credentials"]["source"]["value"]) == b"fixture mapped password")
+        visible = self.recovery/"transactions"/ident
+        for file in visible.rglob("*"):
+            if file.is_file():
+                data = file.read_bytes()
+                self.assertFalse(any(secret in data for secret in (b"192.0.2.61",b"team-login",b"relay.example",
+                                                                   b"fixture mapped password",password,code)))
+
     def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
         library = Path(__file__).resolve().parents[1]/"lib"
         script = """

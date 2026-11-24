@@ -168,6 +168,8 @@ class DestinationCandidate:
     proposed: str
     changes: dict
     source_path: str
+    plan: TransferPlan
+    mapping: object
 
 
 def standalone_document(plan, mapping):
@@ -360,4 +362,4 @@ def prepare_candidate(load, plan, mapping):
         if mapping:
             mapping.check_current(load)
         with writable_destination(plan):
-            yield DestinationCandidate(stage,proposed,changes,source_path)
+            yield DestinationCandidate(stage,proposed,changes,source_path,plan,mapping)
