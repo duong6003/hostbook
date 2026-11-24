@@ -5,7 +5,7 @@ from store_checkout import (check_contents, check_destinations, check_worktree, 
                             fast_forward, install_sources, read_index, read_ref, rename_guarded, tree)
 from store_context import (StoreContextError, open_directory, require, require_private_directory,
                            sync_local)
-from store_journal import private_json
+from store_journal import sender_receipt
 from store_receive import IDENTITY, git, plain_git, prepare_adoption
 from store_transfer_apply import advance, check_source, displaced_destination, exchange_files, retire_exchange, transfer_gates
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token
@@ -52,7 +52,7 @@ def remove_source(load, ident, plan, candidate, mapping, read_passphrase, passwo
             destination_checkout(load,plan,candidate,mapping,record,manifest)
             if private:
                 with open_directory(tx,("senders",attempts[0]["attempt_id"])) as sender:
-                    require(private_json(sender,"outcome.json") == manifest["publication_evidence"],
+                    require(sender_receipt(sender) == manifest["publication_evidence"],
                             "original destination acceptance evidence changed")
                 current_receiver(plan,candidate.proposed)
             else:
@@ -178,7 +178,7 @@ def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase,
             removed_checkout(load,plan,candidate,mapping,record,manifest)
             current_receiver(plan,candidate.source_proposed)
             with open_directory(tx,("senders",attempt["attempt_id"])) as sender:
-                require(private_json(sender,"outcome.json") == manifest["publication_evidence"],
+                require(sender_receipt(sender) == manifest["publication_evidence"],
                         "original source acceptance evidence changed")
         current()
         with open_directory(repo,runtime) as slot:

@@ -452,3 +452,12 @@ the protected transaction credentials and the destination vault passphrase.
 The original Git proposals and sender receipt identify the move. If the
 destination, original shared branch, source work, or sender proof changes,
 the participating stores remain fenced.
+
+
+Use `settle` after an interrupted publication to inspect its original sender
+and exact bound branch. This records the outcome without sending or changing
+either checkout. A started send with a different observed tip remains uncertain.
+An exact proposal tip with its original direct parent can establish acceptance
+after sender exit. An accepted result retains the historical receipt at the
+local-save checkpoint. `resume` rechecks that destination and branch before
+continuing.

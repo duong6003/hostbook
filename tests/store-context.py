@@ -3406,6 +3406,15 @@ pw,code=args['password'].encode(),args['code'].encode()
 mapping=stage_credential(load,CredentialRef(args['src'],g,args['original']),CredentialRef(args['dst'],g,args['mapped']),unlock)
 with prepare_candidate(load,plan,mapping) as candidate:
     ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda _:True)
+    if args['step']=='send-before-receipt':
+        import store_transfer_publish
+        native=store_transfer_publish.send
+        def sent(*values):
+            assert native(*values)=='accepted'
+            print(ident,flush=True)
+            sys.stdin.readline()
+            raise SystemExit(0)
+        store_transfer_publish.send=sent
     if args['step'] != 'prepared':
         save_destination(load,ident,plan,candidate,mapping,unlock,pw,code)
         if args['step'] != 'destination-saved':
@@ -3645,6 +3654,38 @@ with prepare_candidate(load,plan,mapping) as candidate:
         proc.stdin.close()
         self.assertEqual(proc.wait(timeout=10),0)
         self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
+
+    def test_reconcile_original_exact_branch_after_send_without_receipt_before_source_removal(self):
+        import store_transfer_publish
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"send-before-receipt")
+        before = snapshot(f.vaults.source.checkout)
+        original,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(original["attempts"][0]["outcome"],"reserved")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        shared,ref = f.shared,f.plan.shared.ref
+        self.assertEqual(shared.git(shared.remote,"rev-parse",ref),manifest["proposed"])
+        shared.git(shared.remote,"update-ref",ref,f.plan.destination.base,manifest["proposed"])
+        events = []
+        def secret(role):
+            return {"destination":f.vaults.unlock(f.vaults.dst.store_id),"backup":pw,"recovery":code}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),75)
+            self.assertEqual(events[-1]["outcome"],"uncertain")
+            self.assertEqual(snapshot(f.vaults.source.checkout),before)
+            shared.git(shared.remote,"update-ref",ref,manifest["proposed"],f.plan.destination.base)
+            self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),0)
+            self.assertEqual(events[-1]["outcome"],"accepted")
+            self.assertEqual(events[-1]["checkpoint"],"destination-saved")
+            self.assertEqual(snapshot(f.vaults.source.checkout),before)
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append),0)
+        completed,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(completed["checkpoint"],"completed")
+        self.assertEqual(completed["attempts"][0]["attempt_id"],original["attempts"][0]["attempt_id"])
+        self.assertEqual(shared.git(shared.remote,"rev-parse",ref),manifest["proposed"])
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

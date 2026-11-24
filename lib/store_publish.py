@@ -497,7 +497,12 @@ def observe_attempt(account, edit, original, evidence):
         # The exclusive sender lease is already held. Launch always follows the durable marker.
         return "not-accepted"
     require(started == original["record_id"].encode(), "incomplete send marker")
-    target = parse_directory_binding(evidence["bare_repository"])
+    return observe_original_ref(account,parse_directory_binding(evidence["bare_repository"]),evidence["ref"],
+                                original["detail"]["base_oid"],original["detail"]["proposed_oid"])
+
+
+def observe_original_ref(account, target, ref, base, proposal):
+    """Observe only the originally admitted, direct branch and the proposal's exact parent."""
     with verified_account(account) as (root, _state):
         groups = [(target,), (account.state,), (account.recovery,)]
         groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
@@ -508,9 +513,8 @@ def observe_attempt(account, edit, original, evidence):
             with tempfile.TemporaryDirectory(prefix="settle-", dir=account.state.path) as folder:
                 stage = Path(folder)
                 git(stage, "init", "-q", "--bare", "--template=")
-                tip = fetch_direct(stage, directory, evidence["ref"], "refs/hostbook/observed")
-                proposal = original["detail"]["proposed_oid"]
-                if tip == proposal and git(stage, "show", "-s", "--format=%P", proposal).strip().decode() == original["detail"]["base_oid"]:
+                tip = fetch_direct(stage, directory, ref, "refs/hostbook/observed")
+                if tip == proposal and git(stage, "show", "-s", "--format=%P", proposal).strip().decode() == base:
                     return "accepted"
     return "uncertain"
 

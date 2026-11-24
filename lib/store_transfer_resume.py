@@ -5,16 +5,16 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
 
 from store_checkout import durable_file, tree
-from store_context import (Generations, StoreContextError, open_directory, parse_directory_binding, parse_json, require, resolved_store,
+from store_context import (Generations, StoreContextError, open_directory, parse_directory_binding, parse_json, read_file, require, resolved_store,
                            require_approval_file, require_private_directory, valid_id)
-from store_journal import classify, private_json, publication_receipt
-from store_publish import recovery_root
+from store_journal import classify, private_json, publication_receipt, sender_receipt
+from store_publish import observe_original_ref, recovery_root
 from store_read import local_inputs
 from store_receive import fetch_from_fd, git
 from store_transfer import DestinationCandidate, ObservedStore, TransferPlan
-from store_transfer_apply import advance, displaced_destination, transfer_gates
+from store_transfer_apply import advance, displaced_destination, payload_pin, transfer_gates, write_once
 from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCredential, private_workspace, read_mapping_end
-from store_transfer_intent import local_descriptors, reopen_intent, wire
+from store_transfer_intent import local_descriptors, reopen_intent, token, wire
 from store_transfer_owner import new_owner
 from store_transfer_publish import current_receiver, publish_source, publishable_source, saved_checkout, sender_lease
 from store_transfer_remove import finish_shared_source, remove_source
@@ -176,25 +176,17 @@ def cancel_prepared(load, ident, password, code, confirm):
 
 
 @contextmanager
-def accepted_sender(tx, plan, record, manifest, proposed):
+def original_sender(tx, plan, record, manifest, proposed):
     shared = plan.shared
     require(len(record["attempts"]) == 1,"missing original publication acceptance")
     attempt = record["attempts"][0]
     binding = manifest["publication"]
-    require(attempt["outcome"] == "accepted" and attempt["sender_state"] == "quiescent"
-            and attempt["store_id"] == binding["store"] == shared.context.store_id
+    require(attempt["store_id"] == binding["store"] == shared.context.store_id
             and attempt["connection_generation"] == shared.context.generations.connection
             and attempt["target_id"] == shared.context.target_id and wire(binding["target"]) == wire(asdict(shared.target))
             and (binding["attempt"],binding["ref"],binding["base"],binding["proposed"],binding["reservation"],binding["intent"]) ==
             (attempt["attempt_id"],shared.ref,shared.base,proposed,attempt["reservation_id"],attempt["intent_id"]),
             "original publication needs reconciliation")
-    receipt = publication_receipt(record["stores"],attempt)
-    if (plan.destination == shared and "decision" not in manifest["comparison"] and not manifest["comparison"]["matches"]
-            and plan.decision == "new"):
-        brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
-        if manifest["publication_evidence"] == brief:
-            receipt = brief
-    require(manifest["publication_evidence"] == receipt,"original acceptance receipt differs from the attempt")
     path = ("senders",attempt["attempt_id"])
     with open_directory(tx,path) as sender,sender_lease(sender,binding["lease"]) as lease:
         def check():
@@ -204,23 +196,108 @@ def accepted_sender(tx, plan, record, manifest, proposed):
                         os.path.samestat(os.fstat(lease),os.stat("lease",dir_fd=named,follow_symlinks=False)),
                         "original transfer sender binding changed")
                 require_approval_file(lease,os.fstat(lease))
-                require(private_json(named,"outcome.json") == receipt,"original acceptance receipt changed")
+        check()
+        yield sender,check
+
+
+@contextmanager
+def accepted_sender(tx, plan, record, manifest, proposed):
+    attempt = record["attempts"][0]
+    require(attempt["outcome"] == "accepted" and attempt["sender_state"] == "quiescent","original sender is unsettled")
+    shared = plan.shared
+    receipt = publication_receipt(record["stores"],attempt)
+    if (plan.destination == shared and "decision" not in manifest["comparison"] and not manifest["comparison"]["matches"]
+            and plan.decision == "new"):
+        brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
+        if manifest["publication_evidence"] == brief:
+            receipt = brief
+    require(manifest["publication_evidence"] == receipt,"original acceptance receipt differs from the attempt")
+    with original_sender(tx,plan,record,manifest,proposed) as (sender,pinned):
+        def check():
+            pinned()
+            require(sender_receipt(sender) == receipt,"original acceptance receipt changed")
             current_receiver(plan,proposed)
         check()
         yield check
+
+
+def settle_transfer(load, ident, password, code):
+    record,manifest = reopen_intent(load,ident,password)
+    phase = record["checkpoint"]
+    require(record["operation"] == "transfer" and phase in ("destination-saved","source-removed-local")
+            and len(record["attempts"]) == 1,"transfer has no original publication to reconcile")
+    plan = restored_plan(load(),record,manifest)
+    role = "destination" if plan.destination == plan.shared else "source"
+    require(phase == ("destination-saved" if role == "destination" else "source-removed-local")
+            and manifest["next_effect"] in ("send-"+role,"reconcile-"+role),"inconsistent original publication phase")
+    proposed = manifest["proposed" if role == "destination" else "source_proposed"]
+    attempt = record["attempts"][0]
+    with transfer_gates(load,plan,record,manifest,recovery=True) as (tx,verify),original_sender(tx,plan,record,manifest,proposed) as (sender,pinned):
+        pin = payload_pin(tx,plan.account,record)
+        require(reopen_intent(load,ident,code,recovery=True) == (record,manifest)
+                and payload_pin(tx,plan.account,record) == pin,"protected original transfer evidence changed")
+        try:
+            receipt = sender_receipt(sender)
+        except FileNotFoundError:
+            receipt = None
+            require("observed-outcome.json" not in os.listdir(sender),"missing previous sender receipt")
+        if receipt is not None:
+            candidate = dict(attempt,outcome=receipt.get("outcome"),evidence_id=receipt.get("evidence_id"),sender_state="quiescent")
+            require(candidate["outcome"] in ("accepted","not-accepted","uncertain") and valid_id(candidate["evidence_id"])
+                    and receipt == publication_receipt(record["stores"],candidate),"sender receipt differs from admitted attempt")
+        if attempt["outcome"] in ("accepted","not-accepted"):
+            require(receipt == manifest["publication_evidence"] == publication_receipt(record["stores"],attempt),
+                    "settled sender receipt changed")
+        try:
+            marker = read_file(sender,"send-started",64,require_approval_file)
+        except FileNotFoundError:
+            marker = None
+        require(marker is None or marker == attempt["attempt_id"].encode(),"transfer sender start evidence changed")
+        if marker is None:
+            require(receipt is None or receipt["outcome"] == "not-accepted","started native sender proof is missing")
+            result = "not-accepted"
+        elif receipt is not None and receipt["outcome"] != "uncertain":
+            result = receipt["outcome"]
+        else:
+            result = observe_original_ref(plan.account,plan.shared.target,plan.shared.ref,plan.shared.base,proposed)
+        if receipt is None or result != receipt["outcome"]:
+            settled = dict(attempt,outcome=result,sender_state="quiescent",evidence_id=token())
+            evidence = publication_receipt(record["stores"],settled)
+            require(receipt is None or (receipt["outcome"] == "uncertain" and result == "accepted"),"contradictory publication evidence")
+            pinned()
+            verify(record)
+            require(payload_pin(tx,plan.account,record) == pin,"protected original transfer evidence changed")
+            write_once(tx,sender,"outcome.json" if receipt is None else "observed-outcome.json",wire(evidence))
+        else:
+            settled,evidence = candidate,receipt
+        def observed():
+            pinned()
+            require(sender_receipt(sender) == evidence,"original sender settlement changed")
+        if settled != attempt:
+            next_record,_,proof = advance(tx,plan.account,record,manifest,dict(record,attempts=[settled]),
+                dict(manifest,next_effect="reconcile-"+role,publication_evidence=evidence),password,code,observe=observed)
+            verify(next_record)
+            proof()
+        observed()
+    return {"transaction_id":ident,"checkpoint":phase,"attempt_id":attempt["attempt_id"],"outcome":result}
 
 
 def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
     require(valid_id(ident),"invalid transfer transaction ID")
     record,manifest = reopen_intent(load,ident,password)
     phase = record["checkpoint"]
-    require(record["operation"] == "transfer" and phase in ("destination-confirmed","source-confirmed")
+    require(record["operation"] == "transfer" and phase in ("destination-saved","destination-confirmed","source-removed-local","source-confirmed")
             and all(row["outcome"] == "observed" for row in record["effects"]),
             "transfer needs separate reconciliation before resuming")
     plan = restored_plan(load(),record,manifest)
-    finished_source = phase == "source-confirmed"
-    require((not finished_source and len(record["effects"]) == 1 and manifest["next_effect"] == "source-removal")
-            or (finished_source and plan.source == plan.shared and len(record["effects"]) == 2 and manifest["next_effect"] == "complete"),
+    finished_source = phase in ("source-removed-local","source-confirmed")
+    shared_role = "source" if plan.source == plan.shared else "destination"
+    upgrade = phase in ("destination-saved","source-removed-local")
+    require((not finished_source and len(record["effects"]) == 1 and
+             ((not upgrade and manifest["next_effect"] == "source-removal") or
+              (upgrade and shared_role == "destination" and manifest["next_effect"] == "reconcile-destination")))
+            or (finished_source and shared_role == "source" and len(record["effects"]) == 2 and
+                manifest["next_effect"] == ("reconcile-source" if upgrade else "complete")),
             "transfer has incomplete local evidence")
     public = dict(manifest["comparison"])
     public.update(plan.comparison())
@@ -255,9 +332,13 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             current()
             owner,start = new_owner()
             previous = {"owner":record["owner"],"native_start":manifest["native_start"],"sequence":record["sequence"]}
-            record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,owner=owner),
-                dict(manifest,native_start=start,previous_owners=manifest.get("previous_owners",[])+[previous]),
-                password,code,observe=current)
+            successor = dict(record,owner=owner)
+            updated = dict(manifest,native_start=start,previous_owners=manifest.get("previous_owners",[])+[previous])
+            if upgrade:
+                successor["checkpoint"] = shared_role+"-confirmed"
+                updated["next_effect"] = "complete" if finished_source else "source-removal"
+                updated["confirmed_"+shared_role] = proposed
+            record,manifest,proof = advance(tx,plan.account,record,manifest,successor,updated,password,code,observe=current)
             verify(record)
             proof()
         args = load,ident,plan,candidate,mapping,unlock,password,code

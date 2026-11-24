@@ -160,6 +160,19 @@ def publication_receipt(stores, attempt):
     return dict(attempt,published_role=role)
 
 
+def sender_receipt(sender):
+    original = private_json(sender,"outcome.json")
+    try:
+        observed = private_json(sender,"observed-outcome.json")
+    except FileNotFoundError:
+        return original
+    require(original.get("outcome") == "uncertain" and original.get("sender_state") == "quiescent"
+            and valid_id(original.get("evidence_id")) and valid_id(observed.get("evidence_id"))
+            and original["evidence_id"] != observed["evidence_id"] and observed == dict(original,
+            outcome="accepted",evidence_id=observed["evidence_id"]),"inconsistent reconciled sender outcome")
+    return observed
+
+
 def completion_receipt(record, version=2):
     receipt = {"version":version,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
                "payload_id":record["payload_id"],"effects":[row["evidence_id"] for row in record["effects"]],
@@ -195,7 +208,7 @@ def verified_completion(folder, record, prior):
         with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
             require_private_directory(sender,"transfer sender")
             completion = private_json(folder,"completion.json")
-            observed = private_json(sender,"outcome.json")
+            observed = sender_receipt(sender)
             full = publication_receipt(record["stores"],attempt)
             if completion == completion_receipt(record):
                 return observed == full

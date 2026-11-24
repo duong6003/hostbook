@@ -135,14 +135,18 @@ def review_arguments(details):
 
 
 def run_recovery(load, action, ident, secret, confirm, emit):
-    from store_transfer_resume import cancel_prepared, resume_confirmed, transfer_status
-    require(action in ("status","resume","cancel"),"unknown transfer recovery action")
+    from store_transfer_resume import cancel_prepared, resume_confirmed, settle_transfer, transfer_status
+    require(action in ("status","resume","cancel","settle"),"unknown transfer recovery action")
     status = transfer_status(load,ident)
     emit(status)
     if action == "status":
         return 0
     require(status["fenced"],"transfer has already finished")
     password,code = secret("backup"),secret("recovery")
+    if action == "settle":
+        result = settle_transfer(load,ident,password,code)
+        emit(result)
+        return 0 if result["outcome"] != "uncertain" else 75
     if action == "cancel":
         result = cancel_prepared(load,ident,password,code,confirm)
     else:
@@ -153,7 +157,7 @@ def run_recovery(load, action, ident, secret, confirm, emit):
 
 def transfer_command(args, *, recovery=False):
     if recovery:
-        require(len(args) == 2 and args[1] in ("status","cancel","resume"),"provide the original transaction ID and status, cancel or resume")
+        require(len(args) == 2 and args[1] in ("status","cancel","resume","settle"),"provide the original transaction ID and status, cancel, settle or resume")
     else:
         require(len(args) in (14,15,18),"provide both registered selections, destination alias, credential name and create or reuse")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
@@ -183,11 +187,13 @@ def transfer_command(args, *, recovery=False):
         require(len(texts) == 1+len(roles) and all(texts),"registered transfer prompt translations are unavailable")
         def picker():
             return compatible_picker(account,locations,texts[0])
-        binary = picker()
-        (tools/"fzf").symlink_to(binary[0]/"fzf")
         labels = dict(zip(roles,texts[1:]))
         def secret(role):
             return prompt_passphrase(labels[role]+" ")
+        if recovery and args[1] == "settle":
+            return run_recovery(load,"settle",args[0],secret,None,emit)
+        binary = picker()
+        (tools/"fzf").symlink_to(binary[0]/"fzf")
         def confirm(details):
             require(picker() == binary and load() == account,"transfer confirmation context changed")
             if details.get("action") == "cancel":
