@@ -1,20 +1,26 @@
 """Compare one selected host across two registered stores before a transfer decision."""
 from contextlib import contextmanager
+import copy
 from dataclasses import dataclass
+import hashlib
 import ipaddress
 import json
 import os
 from pathlib import Path
 import pwd
+import re
 import signal
 from typing import Optional
 
-from store_checkout import direct_ref, read_ref
-from store_context import (Account, DirectoryBinding, Generations, INDEX_NAME, StoreContext, bound_directory,
-                           index_rows, load_approved_account, path_parts, read_file, require, resolved_store,
+from store_checkout import direct_ref, read_ref, tree
+from store_context import (Account, DirectoryBinding, Generations, INDEX_NAME, StoreContext, StoreContextError, bound_directory,
+                           index_rows, load_approved_account, parse_json, path_parts, read_file, require, resolved_store,
                            valid_id, valid_ref)
-from store_read import MAX_ROUTE_BYTES, effective, local_inputs, managed_credentials, ssh_view
-from store_receive import plain_git, receive_binding
+from store_publish import require_plain_receiver
+from store_read import (DIRECTIVE, MAX_ROUTE_BYTES, SECRET_COMMENT, effective, jump_fields, local_inputs,
+                        managed_credentials, render_jumps, ssh_view)
+from store_receive import IDENTITY, fetch_direct, git, plain_git, receive_binding
+from store_transfer_credentials import CredentialRef, private_workspace
 
 
 @dataclass(frozen=True, repr=False)
@@ -154,3 +160,161 @@ def preview_command(args):
                        args[5], args[6], Generations(*(int(x) for x in args[7:11])), args[11] if len(args)==12 else None)
         print(json.dumps(plan.comparison()))
     return 0
+
+
+@dataclass(frozen=True, repr=False)
+class DestinationCandidate:
+    stage: Path
+    proposed: str
+    changes: dict
+    source_path: str
+
+
+def standalone_document(plan, mapping):
+    selected = next(row for row in plan.source.identity["hosts"] if row["host_id"] == plan.host_id)
+    require(len(selected["bindings"]) == 1, "transfer requires one independent host stanza")
+    binding = selected["bindings"][0]
+    path = binding["path"]
+    require(binding["host_ordinal"] == 1 and binding["token_ordinal"] == 1
+            and sum(other["path"] == path for row in plan.source.identity["hosts"] for other in row["bindings"]) == 1,
+            "transfer requires a project containing only the selected host")
+    raw = plan.source.files[path]
+    document = []
+    found = False
+    for line in raw.split(b"\n"):
+        text = line.rstrip(b"\r").strip(b" \t")
+        marker = SECRET_COMMENT.fullmatch(text.decode())
+        if marker:
+            require(not found and mapping and marker[1] == mapping.source.name, "unexpected transfer credential annotation")
+            line = b"# secret: " + mapping.destination.name.encode()
+        elif text and not text.startswith(b"#"):
+            directive = DIRECTIVE.fullmatch(text.decode())
+            require(directive, "unsupported transfer SSH source")
+            key = directive[1].lower()
+            if key == "host":
+                name = re.fullmatch(rb"([ \t]*Host(?:[ \t]+=?[ \t]*|=[ \t]*))([A-Za-z0-9._-]+)([ \t]*(?:#[^\r\n]*)?\r?)",
+                                    line, re.I)
+                require(not found and name and name[2].decode().lower() == selected["name"].lower(),
+                        "transfer requires a single literal Host")
+                line = name[1] + plan.alias.encode() + name[3]
+                found = True
+            else:
+                require(found and key not in ("include","match"), "transfer requires independent host settings")
+                if key == "identityfile":
+                    require(mapping and mapping.public_key, "unexpected transfer IdentityFile")
+                    line = b"  IdentityFile secrets/" + mapping.destination.name.encode() + b".pub"
+        document.append(line)
+    require(found, "transfer source host is missing")
+    return path, b"\n".join(document)
+
+
+def route_chains(store_id, identity, files, local):
+    rows = identity["hosts"]
+    inputs, credentials = managed_credentials(files, rows)
+    keys = {r["name"].lower(): r["host_id"] for r in rows}
+    chains = {}
+    with ssh_view(inputs, local) as config:
+        for row in rows:
+            chain, visited = [], set()
+            alias, options = row["name"], []
+            for _ in range(32):
+                route = effective(config,alias,options)
+                key = keys.get(alias.lower())
+                binding = (store_id,key) if key else None
+                step = (binding, alias.lower(), endpoint(route), route["proxyjump"], credentials.get(alias.lower()))
+                require(step not in visited, "transfer SSH jump route contains a loop")
+                visited.add(step)
+                chain.append(step)
+                jump = route["proxyjump"]
+                if not jump or jump.lower() == "none":
+                    break
+                remaining, _, hop = jump.rpartition(",")
+                user, alias, port = jump_fields(hop)
+                alias, options = alias.strip("[]"), []
+                if user:
+                    options += ["-l",user]
+                if port:
+                    options += ["-p",port]
+                if remaining:
+                    options += ["-J",render_jumps(remaining)]
+            else:
+                raise StoreContextError("transfer SSH jump route is too long")
+            chains[row["host_id"]] = chain
+    return chains
+
+
+@contextmanager
+def prepare_candidate(load, plan, mapping):
+    """Build a destination-only regular Git commit in private staging and verify its SSH effects."""
+    src, dst = plan.source, plan.destination
+    require((src.context.kind,dst.context.kind) == ("private","shared")
+            and dst.context.effective_mode == "two-way" and dst.base == dst.remote_tip,
+            "transfer requires a current two-way shared destination")
+    require(not plan.comparison()["matches"], "destination match requires an explicit transfer decision")
+    source_name = plan.source_hosts[plan.host_id]["credential"]
+    if source_name is None:
+        require(mapping is None, "unexpected transfer credential mapping")
+    else:
+        require(mapping and mapping.source == CredentialRef(src.context.store_id,src.context.generations,source_name)
+                and mapping.destination.store_id == dst.context.store_id
+                and mapping.destination.generations == dst.context.generations, "transfer credential mapping changed")
+        mapping.check_current(load)
+    plan.revalidate(load)
+    source_path, document = standalone_document(plan,mapping)
+    source_after = copy.deepcopy(src.identity)
+    source_after["hosts"] = [r for r in source_after["hosts"] if r["host_id"] != plan.host_id]
+    source_after["sources"] = [r for r in source_after["sources"] if r["path"] != source_path]
+    source_files = dict(src.files)
+    del source_files[source_path]
+    source_routes = route_chains(src.context.store_id,src.identity,src.files,src.local)
+    remaining = route_chains(src.context.store_id,source_after,source_files,src.local)
+    require(all(route == source_routes[key] for key,route in remaining.items()), "source removal changes a dependent route")
+
+    project = "host-" + plan.host_id + ".conf"
+    require(project not in dst.files, "destination project already exists")
+    identity = copy.deepcopy(dst.identity)
+    identity["generation"] += 1
+    identity["sources"].append({"path":project,"sha256":hashlib.sha256(document).hexdigest()})
+    identity["hosts"].append({"host_id":plan.host_id,"name":plan.alias,
+                              "bindings":[{"path":project,"host_ordinal":1,"token_ordinal":1}]})
+    files = dict(dst.files)
+    files[project] = document
+    prior = route_chains(dst.context.store_id,dst.identity,dst.files,dst.local)
+    after = route_chains(dst.context.store_id,identity,files,dst.local)
+    require(all(after[key] == route for key,route in prior.items()), "destination changes a dependent route")
+    old, new = source_routes[plan.host_id], after[plan.host_id]
+    require(old[0][2:4] == new[0][2:4] and old[1:] == new[1:]
+            and new[0][4] == (mapping.destination.name if mapping else None), "destination changes the selected route")
+    changes = {project:document, IDENTITY:json.dumps(identity,separators=(",",":")).encode()+b"\n"}
+    if mapping and not mapping.reused:
+        for suffix, contents in (("meta",mapping.metadata),("age",mapping.ciphertext),("pub",mapping.public_key)):
+            if contents is not None:
+                changes["secrets/"+mapping.destination.name+"."+suffix] = contents
+
+    with private_workspace() as (folder,_):
+        stage = folder/"destination.git"
+        stage.mkdir(mode=0o700)
+        git(stage,"init","-q","--bare","--template=")
+        with receive_binding(plan.account,dst.context.store_id,dst.context.generations) as (ctx,target,remote,_,_):
+            require((ctx,target) == (dst.context,dst.target), "destination binding changed")
+            require_plain_receiver(remote)
+            require(fetch_direct(stage,remote,dst.ref,"refs/hostbook/base") == dst.base, "destination remote advanced")
+        existing = tree(stage,dst.base,git)
+        require(all(path == IDENTITY or path not in existing for path in changes), "destination file is occupied")
+        for path, data in dst.files.items():
+            require(path in existing and git(stage,"cat-file","blob",existing[path].decode()) == data,
+                    "destination source differs from its accepted revision")
+        require(parse_json(git(stage,"cat-file","blob",existing[IDENTITY].decode())) == dst.identity,
+                "destination identity differs from its accepted revision")
+        git(stage,"read-tree",dst.base)
+        for path, data in changes.items():
+            blob = git(stage,"hash-object","-w","--stdin",data=data).strip()
+            git(stage,"update-index","-z","--index-info",data=b"100644 "+blob+b"\t"+path.encode()+b"\0")
+        root = git(stage,"write-tree").strip().decode()
+        proposed = git(stage,"-c","user.name=Hostbook","-c","user.email=hostbook@localhost",
+                       "commit-tree",root,"-p",dst.base,"-m","Transfer registered host").strip().decode()
+        tree(stage,proposed,git)
+        plan.revalidate(load)
+        if mapping:
+            mapping.check_current(load)
+        yield DestinationCandidate(stage,proposed,changes,source_path)

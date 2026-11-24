@@ -2879,6 +2879,48 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 os.close(directory)
         self.assertEqual(snapshot(self.root), before)
 
+    def transfer_case(self):
+        from store_transfer import preview
+        vaults = self.transfer_vaults()
+        host = new_id()
+        self.write_route(0, host, "# secret: login\nHost source-one\n  HostName 192.0.2.61\n"
+                         "  User fixture\n  Port 2210\n  ProxyJump relay.example\n", name="source-one")
+        (vaults.source.vault/"login.age").write_bytes(vaults.seal(vaults.source,b"fixture mapped password"))
+        (vaults.source.vault/"login.meta").write_bytes(b"type=password\n")
+        shared = self.prepare_receive()
+        self.assertEqual(shared.receive().returncode, 0)
+        for args in (("init","-q","--template="), ("symbolic-ref","HEAD","refs/heads/main"), ("add","."),
+                     ("commit","-qm","Fixture private source")):
+            shared.git(vaults.source.checkout,*args)
+        self.entries[1]["effective_mode"] = "two-way"
+        self.save_registry()
+        load = lambda: self.account
+        plan = preview(load,vaults.src.store_id,self.generations,host,vaults.dst.store_id,self.generations,"moved")
+        return SimpleNamespace(plan=plan, shared=shared, vaults=vaults, load=load, host=host)
+
+    def test_transfer_candidate_preserves_exact_id_settings_and_verified_destination_password(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_receive import git
+        from store_vault import VaultUnlockCache
+        f = self.transfer_case()
+        vaults = f.vaults
+        mapped = stage_credential(f.load,vaults.src,replace(vaults.dst,name="team-login"),vaults.unlock)
+        before = snapshot(self.root)
+        with prepare_candidate(f.load, f.plan, mapped) as candidate:
+            repo, proposed = candidate.stage, candidate.proposed
+            self.assertEqual(git(repo,"rev-parse",proposed+"^").decode().strip(), f.plan.destination.base)
+            sidecar = json.loads(git(repo,"show",proposed+":.hostbook/identity.json"))
+            selected = next(row for row in sidecar["hosts"] if row["host_id"] == f.host)
+            self.assertEqual(selected["name"], "moved")
+            document = git(repo,"show",proposed+":"+selected["bindings"][0]["path"])
+            self.assertIn(b"# secret: team-login\n",document)
+            self.assertIn(b"  ProxyJump relay.example\n",document)
+            ciphertext = git(repo,"show",proposed+":secrets/team-login.age")
+            self.assertTrue(VaultUnlockCache(vaults.tools).open_secret(vaults.identities[vaults.dst.store_id],
+                                                                       ciphertext) == b"fixture mapped password")
+        self.assertEqual(snapshot(self.root), before)
+
     def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
         library = Path(__file__).resolve().parents[1]/"lib"
         script = """
