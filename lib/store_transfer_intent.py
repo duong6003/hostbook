@@ -11,7 +11,7 @@ from uuid import uuid4
 from store_checkout import (check_index, check_worktree, durable_file, make_parents, read_index, read_ref,
                             rename_guarded, tree)
 from store_context import (JSON_LIMIT, StoreContextError, bound_directory, open_directory, parse_json, path_parts,
-                           read_file, require, require_private_directory, resolved_store, store_writer, sync_local,
+                           read_file, require, require_approval_file, require_private_directory, resolved_store, store_writer, sync_local,
                            valid_id, verify_state_directory)
 from store_journal import classify, private_json, require_idle, transaction
 from store_login import verified_age_tools
@@ -21,7 +21,7 @@ from store_receive import IDENTITY, fetch_from_fd, git, plain_git
 from store_transfer import writable_destination
 from store_transfer_credentials import private_workspace, unlock_end
 from store_transfer_recovery import capture, read_payload, seal_payload, verify_backup
-from store_vault import VaultUnlockCache
+from store_vault import VaultUnlockCache, file_evidence
 
 
 def token():
@@ -79,7 +79,7 @@ def capture_credentials(load, mapping, read_passphrase, password, code):
         identity = unlock_end(cache,tools,account,load,ref,lambda _store:phrase)
         vault = end.vault
         backup = {"name":ref.name,"vault_pub":encoded(vault.recipient),"vault_key":encoded(vault.password_envelope),
-                  "vault_recovery":encoded(vault.recovery_envelope),"vault_identity":encoded(identity),
+                  "vault_recovery":encoded(vault.recovery_envelope),
                   "vault_evidence":vault.evidence,"credential_evidence":end.file_evidence}
         if end.record:
             record = end.record
@@ -241,11 +241,11 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
                 with open_directory(fresh,("transactions",)) as current:
                     require(os.path.samestat(os.fstat(txns),os.fstat(current)), "transaction authority directory changed")
                 verify()
-                rename_guarded(root,scratch,txns,record["transaction_id"],exchange=False)
-                sync_local(txns)
-                sync_local(root)
                 ident = record["transaction_id"]
                 try:
+                    rename_guarded(root,scratch,txns,ident,exchange=False)
+                    sync_local(txns)
+                    sync_local(root)
                     for row in record["stores"]:
                         with private_path(root,("stores",row["store_id"])) as hints:
                             durable_file(hints,ident+".ref",wire({"version":1,"transaction_id":ident}))
@@ -256,7 +256,7 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
                         classify(selected,plan.account,ident,"transactions")
                         verify()
                 except (OSError, StoreContextError):
-                    raise StoreContextError("transfer " + ident + " was prepared and requires reconciliation") from None
+                    raise StoreContextError("transfer " + ident + " preparation requires reconciliation") from None
     return record["transaction_id"]
 
 
@@ -266,13 +266,28 @@ def reopen_intent(load, ident, phrase, *, recovery=False):
     with recovery_root(account) as root, open_directory(root,("transactions",ident)) as tx:
         require_private_directory(tx,"transfer transaction")
         classify(tx,account,ident,"transactions")
-        selected = private_json(tx,"current.json")
+        def pinned(parent,name):
+            require_private_directory(parent,"transfer authority")
+            evidence = []
+            def verify(fd,info):
+                require_approval_file(fd,info)
+                evidence.append(file_evidence(info))
+            return read_file(parent,name,JSON_LIMIT,verify),evidence
+        selector_stamp = pinned(tx,"current.json")
+        selected = parse_json(selector_stamp[0])
+        name = str(selected["sequence"])+".json"
         with open_directory(tx,("records",)) as history:
-            record = private_json(history,str(selected["sequence"])+".json")
-        with open_directory(tx,("recovery",str(record["recovery_generation"]))) as env, open_directory(tx,("payloads",)) as payloads:
+            record_stamp = pinned(history,name)
+        record = parse_json(record_stamp[0])
+        generation = ("recovery",str(record["recovery_generation"]))
+        names = ("vault.recovery.age" if recovery else "vault.key.age",)
+        with open_directory(tx,generation) as env, open_directory(tx,("payloads",)) as payloads:
+            material = capture(env,payloads,record["payload_id"],names)
             manifest = parse_json(read_payload(account,env,payloads,record["payload_id"],phrase,recovery=recovery))
         with recovery_root(load()) as fresh, open_directory(fresh,("transactions",ident)) as actual:
-            require(manifest["record"] == record and os.path.samestat(os.fstat(tx),os.fstat(actual))
-                    and private_json(actual,"current.json") == selected and load() == account,
-                    "transfer recovery manifest or selector changed")
+            with open_directory(actual,("records",)) as hist, open_directory(actual,generation) as env, open_directory(actual,("payloads",)) as payloads:
+                require(manifest["record"] == record and os.path.samestat(os.fstat(tx),os.fstat(actual))
+                        and pinned(actual,"current.json") == selector_stamp and pinned(hist,name) == record_stamp
+                        and capture(env,payloads,record["payload_id"],names) == material and load() == account,
+                        "transfer recovery manifest, record or selector changed")
         return record,manifest

@@ -3034,12 +3034,26 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertEqual(manifest["proposed"],proposal)
         self.assertEqual(manifest["destination_ref"],"refs/heads/main")
         self.assertTrue(base64.b64decode(manifest["credentials"]["source"]["value"]) == b"fixture mapped password")
+        for expanded in manifest["credentials"].values():
+            self.assertNotIn("vault_identity", expanded.keys())
+        contents = json.dumps(manifest).encode()
+        self.assertFalse(any(base64.b64encode(identity) in contents for identity in v.identities.values()))
         visible = self.recovery/"transactions"/ident
         for file in visible.rglob("*"):
             if file.is_file():
                 data = file.read_bytes()
                 self.assertFalse(any(secret in data for secret in (b"192.0.2.61",b"team-login",b"relay.example",
                                                                    b"fixture mapped password",password,code)))
+        from store_transfer_recovery import read_payload
+        current = visible/"records/1.json"
+        def replace_during_unlock(*args, **kwargs):
+            result = read_payload(*args,**kwargs)
+            changed = dict(record, payload_id=new_id())
+            current.write_text(json.dumps(changed))
+            return result
+        with patch("store_transfer_intent.read_payload",side_effect=replace_during_unlock):
+            with self.assertRaisesRegex(StoreContextError, "changed"):
+                reopen_intent(f.load,ident,password)
 
     def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
         library = Path(__file__).resolve().parents[1]/"lib"
@@ -3066,6 +3080,33 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
                 child.send_signal(sig)
                 child.wait(timeout=5)
                 self.assertFalse(folder.exists())
+
+    def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
+        import store_transfer_intent as intent
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        mapping = stage_credential(f.load,v.src,v.dst,v.unlock)
+        failures = []
+        renamed = []
+        real_rename, real_sync = intent.rename_guarded, intent.sync_local
+        def rename(*args,**kwargs):
+            real_rename(*args,**kwargs)
+            renamed.append(args[3])
+        def sync(fd):
+            if renamed and not failures:
+                failures.append(True)
+                raise OSError("fixture directory flush failed")
+            real_sync(fd)
+        with prepare_candidate(f.load,f.plan,mapping) as candidate:
+            with patch.object(intent,"rename_guarded",rename), patch.object(intent,"sync_local",sync):
+                with self.assertRaises(StoreContextError) as outcome:
+                    intent.prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,b"fixture password",b"fixture recovery",
+                                          lambda _:True)
+        self.assertEqual(len(renamed),1)
+        self.assertIn(renamed[0],str(outcome.exception))
+        self.assertTrue((self.recovery/"transactions"/renamed[0]/"current.json").is_file())
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
