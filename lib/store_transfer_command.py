@@ -115,6 +115,25 @@ def compatible_picker(account, locations, minimum):
     raise StoreContextError(reason)
 
 
+def review_arguments(details):
+    from store_read import EFFECTIVE_OPTIONS
+    src,dst = details["source"],details["destination"]
+    match = next((row for row in details["matches"] if row["host_id"] == details["chosen_destination_id"]),{})
+    args = ["_store_transfer_review",src["name"],src["store_id"],dst["proposed_alias"],dst["store_id"],
+            details["publications"][0]["ref"],details["destination_credential"],str(len(details["retained_credential_users"])),
+            details["credential_action"],",".join(details["required_aliases"]),src["kind"],details["decision"],
+            match.get("name",""),match.get("host_id",""),",".join(details["retained_destination_groups"])]
+    if details["decision"] == "update":
+        args.extend([src["host_id"],src["ref"],src["revision"],dst["ref"],dst["revision"],match["credential"] or "—"])
+        allowed = EFFECTIVE_OPTIONS | {"hostname","user","port","proxyjump"}
+        for key,values in details["connection_changes"].items():
+            require(key in allowed,"unsupported transfer review setting")
+            # Escape any terminal controls before values enter an ANSI-capable picker.
+            args.extend([key,*[json.dumps(str(values[k]),ensure_ascii=True)[1:-1] if values[k] is not None else "—"
+                               for k in ("existing","proposed")]])
+    return args
+
+
 def transfer_command(args):
     require(len(args) in (14,15,18),"provide both registered selections, destination alias, credential name and create or reuse")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
@@ -147,13 +166,7 @@ def transfer_command(args):
             return prompt_passphrase(labels[role]+" ")
         def confirm(details):
             require(picker() == binary and load() == account,"transfer confirmation context changed")
-            src,dst = details["source"],details["destination"]
-            match = next((r for r in details["matches"] if r["host_id"] == details["chosen_destination_id"]),{})
-            proc = subprocess.run([*command,"_store_transfer_review",src["name"],src["store_id"],
-                dst["proposed_alias"],dst["store_id"],details["publications"][0]["ref"],details["destination_credential"],
-                str(len(details["retained_credential_users"])),details["credential_action"],
-                ",".join(details["required_aliases"]),src["kind"],details["decision"],match.get("name",""),match.get("host_id",""),
-                ",".join(details["retained_destination_groups"]),",".join(details["connection_changes"])],env=env,stdout=subprocess.PIPE)
+            proc = subprocess.run([*command,*review_arguments(details)],env=env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
             if details["requires_typed_alias"]:

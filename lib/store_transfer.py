@@ -152,9 +152,9 @@ class TransferPlan:
             changes = {key:{"existing":old.get(key),"proposed":new.get(key)} for key in sorted(old.keys()|new.keys())
                        if old.get(key) != new.get(key)}
         return {
-            "source":dict(host, store_id=src.context.store_id, kind=src.context.kind,revision=src.base),
+            "source":dict(host, store_id=src.context.store_id, kind=src.context.kind,ref=src.ref,revision=src.base),
             "destination":{"store_id":dst.context.store_id, "kind":dst.context.kind,
-                           "proposed_alias":self.alias, "proposed_host_id":self.destination_key,"revision":dst.base},
+                           "proposed_alias":self.alias, "proposed_host_id":self.destination_key,"ref":dst.ref,"revision":dst.base},
             "matches":matches, "retained_credential_users":users,"choices":choices,
             "decision":self.decision,"chosen_destination_id":self.chosen_destination_id,"connection_changes":changes,
             "publications":[{"store_id":shared.context.store_id,"ref":shared.ref,"effect":effect}],

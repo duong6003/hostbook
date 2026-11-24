@@ -3163,7 +3163,7 @@ case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _store_transfer_review)
-    [ "$#" -eq 16 ] || exit 65
+    [ "$#" -ge 15 ] || exit 65
     at "$(t transfer_title)"
     action=$(t transfer_create "$7"); [ "$9" != reuse ] || action=$(t transfer_reuse "$7")
     case ${11} in
@@ -3177,7 +3177,15 @@ case ${1:-} in
       update)
         head="$head$NL$(t transfer_update "${13}" "${14}")"
         [ -z "${15}" ] || head="$head$NL$(t transfer_keep_groups "${15}")"
-        [ -z "${16}" ] || head="$head$NL$(t transfer_change_settings "${16}")";;
+        [ "$#" -ge 21 ] && [ $(( ($#-21) % 3 )) -eq 0 ] || exit 65
+        (
+          t transfer_source_key "${16}" "${17}" "${18}"; echo
+          t transfer_destination_key "${14}" "${19}" "${20}"; echo
+          t transfer_credential_change "${21}" "$7"; echo
+          shift 21
+          while [ "$#" -gt 0 ]; do t transfer_setting_change "$1" "$2" "$3"; echo; shift 3; done
+        ) | ui_fzf "$(ui_head "$head")" --no-input --wrap --prompt='› ' \
+              --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")" --bind 'esc:abort' >/dev/null || exit 1;;
     esac
     if [ -n "${10}" ]; then
       IFS=, read -r -a required <<< "${10}"

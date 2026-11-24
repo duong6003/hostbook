@@ -3833,6 +3833,35 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertNotIn(f.plan.host_id,f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))
         self.assertTrue((f.src.vault/"team-key.age").exists())
 
+    def test_terminal_update_review_shows_exact_selected_revisions_and_nonsecret_changes(self):
+        from store_transfer_command import review_arguments
+        f = self.probable_duplicate("db",previous=True)
+        plan = f.plan.choose("update",f.target,f.plan.source.base,f.plan.destination.base)
+        details = dict(plan.comparison(),credential_action="create",destination_credential="mapped-login",
+                       retained_destination_groups=["watched"],required_aliases=["db"])
+        args = review_arguments(details)
+        root = Path(__file__).resolve().parents[1]
+        probe = self.root/"tools"
+        probe.mkdir()
+        picker = probe/"fzf"
+        picker.write_text('#!/bin/sh\n[ "$1" != --help ] || exit 0\ncat > "$HOME/terminal-rows"\nexit 1\n')
+        picker.chmod(0o700)
+        env = dict(f.shared.env,PATH=str(probe)+":/usr/bin:/bin",HOME=str(self.root),
+                   HOSTBOOK_LANG="en",HOSTBOOK_DIR=str(self.root/"unused"),HOSTBOOK_STATE=str(self.root/"state-ui"),
+                   HOSTBOOK_SSH_CONFIG=str(self.root/"ssh-config"),XDG_CONFIG_HOME=str(self.root/"ui-config"))
+        app = self.root/"app"
+        app.mkdir()
+        for directory in ("lib","lang"):
+            (app/directory).symlink_to(root/directory)
+        script = app/"hostbook"
+        script.write_text((root/"hostbook").read_text().replace("local authority_home=~",'local authority_home="'+str(self.root)+'"'))
+        process = subprocess.run(["/bin/bash",str(script),*args],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        self.assertNotEqual(process.returncode,0)
+        rows = (self.root/"terminal-rows").read_text()
+        for value in (f.host,f.target,plan.source.base,plan.destination.base,"original-login → mapped-login","serveraliveinterval: 17 → 0"):
+            self.assertIn(value,rows)
+        self.assertNotIn("original host fixture password",rows)
+
     def test_transfer_prompt_uses_saved_language_and_first_trusted_compatible_picker(self):
         import store_transfer_command as command
         settings = self.root/"preferences"/"hostbook"
