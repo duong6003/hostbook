@@ -2,6 +2,7 @@
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 import base64
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -16,11 +17,12 @@ from store_context import (JSON_LIMIT, StoreContextError, bound_directory, open_
 from store_journal import classify, private_json, require_idle, transaction
 from store_login import verified_age_tools
 from store_mode import mode_records
-from store_publish import boot_id, recovery_root
+from store_publish import recovery_root
 from store_receive import IDENTITY, fetch_from_fd, git, plain_git
 from store_transfer import writable_destination
 from store_transfer_credentials import private_workspace, unlock_end
 from store_transfer_recovery import capture, read_payload, seal_payload, verify_backup
+from store_transfer_owner import new_owner
 from store_vault import VaultUnlockCache, file_evidence
 
 
@@ -92,7 +94,7 @@ def capture_credentials(load, mapping, read_passphrase, password, code):
     return material
 
 
-def initial_record(plan, ident):
+def initial_record(plan, ident, owner):
     stores = [{"store_id":store.context.store_id, "role":role, "snapshot_id":token(),
                "checkout_generation":store.context.generations.checkout,
                "connection_generation":store.context.generations.connection,
@@ -100,8 +102,7 @@ def initial_record(plan, ident):
               for role,store in (("source",plan.source),("destination",plan.destination))]
     record = {"format":"hostbook-transaction","version":1,"transaction_id":ident,
               "device_id":plan.account.device_id,"root_id":plan.account.recovery_root_id,"sequence":1,"previous_sequence":0,
-              "operation":"transfer","checkpoint":"prepared","owner":{"owner_id":token(),"process_id":os.getpid(),
-              "process_start_id":token(),"boot_id":boot_id()},"stores":stores,"hosts":[
+              "operation":"transfer","checkpoint":"prepared","owner":owner,"stores":stores,"hosts":[
               {"store_id":store["store_id"],"host_id":plan.host_id} for store in stores],
               "payload_id":token(),"recovery_generation":1,"effects":[],"attempts":[],
               "collection":{"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}}
@@ -120,12 +121,19 @@ def private_path(root, parts):
 
 
 @contextmanager
-def staged_transaction(recovery, record, protected, manifest, account, password, code):
+def staged_transaction(recovery, record, contents, account, password, code):
     scratch = ".prepare-" + token()
     os.mkdir(scratch,0o700,dir_fd=recovery)
     with open_directory(recovery,(scratch,)) as draft:
+        lease = None
         try:
             require_private_directory(draft,"transfer staging")
+            lease = os.open("owner.lease",os.O_RDWR | os.O_NOFOLLOW | os.O_CREAT | os.O_EXCL,0o600,dir_fd=draft)
+            fcntl.flock(lease,fcntl.LOCK_EX | fcntl.LOCK_NB)
+            info = os.fstat(lease)
+            sync_local(lease)
+            manifest = wire(dict(contents,lease={"device":info.st_dev,"inode":info.st_ino}))
+            protected = seal_payload(account,manifest,password,code)
             with private_path(draft,("records",)) as records:
                 durable_file(records,"1.json",wire(record))
                 sync_local(records)
@@ -144,6 +152,9 @@ def staged_transaction(recovery, record, protected, manifest, account, password,
                 prior = capture(envelopes,payloads,record["payload_id"],names)
                 verify_backup(account,envelopes,payloads,record["payload_id"],password,code,manifest)
                 def verify():
+                    require(os.path.samestat(os.fstat(lease),os.stat("owner.lease",dir_fd=draft,follow_symlinks=False)),
+                            "transfer owner lease binding changed")
+                    require_approval_file(lease,os.fstat(lease))
                     require(capture(envelopes,payloads,record["payload_id"],names) == prior,
                             "verified transfer recovery material changed")
                     with open_directory(draft,("records",)) as history:
@@ -154,13 +165,15 @@ def staged_transaction(recovery, record, protected, manifest, account, password,
                                 os.path.samestat(os.fstat(e),os.fstat(envelopes)), "transfer recovery directory changed")
                 yield scratch, draft, verify
         finally:
+            if lease is not None:
+                os.close(lease)
             # Only clean our still-unpublished directory and the exact files created herein.
             try:
                 here = os.stat(scratch,dir_fd=recovery,follow_symlinks=False)
             except FileNotFoundError:
                 here = None
             if here is not None and os.path.samestat(here,os.fstat(draft)):
-                for path in ("current.json","records/1.json","payloads/"+record["payload_id"]+".age",
+                for path in ("current.json","owner.lease","records/1.json","payloads/"+record["payload_id"]+".age",
                              "recovery/1/vault.pub","recovery/1/vault.key.age","recovery/1/vault.recovery.age"):
                     parts = path.split("/")
                     try:
@@ -193,7 +206,8 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
     answer = confirm(comparison)
     require((isinstance(answer,str) and answer == plan.source_hosts[plan.host_id]["name"]) if prod else answer is True,
             "explicit transfer confirmation required")
-    record = initial_record(plan,token())
+    owner, start = new_owner()
+    record = initial_record(plan,token(),owner)
     credentials = capture_credentials(load,mapping,read_passphrase,password,code)
     snapshots = {}
     for row,store,observed in zip(record["stores"],(plan.source,plan.destination),checks):
@@ -205,13 +219,12 @@ def prepare_intent(load, plan, candidate, mapping, read_passphrase, password, co
     bundle = candidate.stage/"transfer.bundle"
     git(candidate.stage,"bundle","create",str(bundle),"refs/hostbook/transfer","^"+plan.destination.base)
     require(bundle.stat().st_size <= JSON_LIMIT, "transfer proposal exceeds recovery size limit")
-    manifest = wire({"record":record,"comparison":comparison,"snapshots":snapshots,"source_path":candidate.source_path,
+    contents = {"record":record,"native_start":start,"comparison":comparison,"snapshots":snapshots,"source_path":candidate.source_path,
                      "destination_ref":plan.destination.ref,"target":asdict(plan.destination.target),
                      "destination_base":plan.destination.base,"proposed":candidate.proposed,"bundle":encoded(bundle.read_bytes()),
                      "changes":{path:encoded(data) for path,data in candidate.changes.items()},
-                     "credentials":credentials,"next_effect":"destination-save"})
-    protected = seal_payload(plan.account,manifest,password,code)
-    with recovery_root(plan.account) as root, staged_transaction(root,record,protected,manifest,plan.account,password,code) as staged:
+                     "credentials":credentials,"next_effect":"destination-save"}
+    with recovery_root(plan.account) as root, staged_transaction(root,record,contents,plan.account,password,code) as staged:
         scratch,draft,verify = staged
         with ExitStack() as gates:
             writers = {}

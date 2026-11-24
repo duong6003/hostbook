@@ -3033,6 +3033,10 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertEqual(record["transaction_id"],ident)
         self.assertEqual(manifest["proposed"],proposal)
         self.assertEqual(manifest["destination_ref"],"refs/heads/main")
+        from store_transfer_owner import owner_lease
+        with recovery_root(self.account) as root, store_context.open_directory(root,("transactions",ident)) as tx:
+            with owner_lease(tx,record["owner"],manifest) as lease:
+                self.assertEqual(os.fstat(lease).st_ino,manifest["lease"]["inode"])
         self.assertTrue(base64.b64decode(manifest["credentials"]["source"]["value"]) == b"fixture mapped password")
         for expanded in manifest["credentials"].values():
             self.assertNotIn("vault_identity", expanded.keys())
@@ -3107,6 +3111,38 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
         self.assertEqual(len(renamed),1)
         self.assertIn(renamed[0],str(outcome.exception))
         self.assertTrue((self.recovery/"transactions"/renamed[0]/"current.json").is_file())
+
+    def test_transfer_owner_distinguishes_native_process_incarnation_and_exclusive_lease(self):
+        from store_transfer_owner import new_owner, native_start, owner_alive, owner_lease
+        owner, start = new_owner()
+        self.assertEqual(new_owner()[0]["process_start_id"],owner["process_start_id"])
+        self.assertEqual(start,native_start(os.getpid()))
+        self.assertTrue(owner_alive(owner,start))
+        with subprocess.Popen([sys.executable,"-c","import sys; sys.stdin.buffer.read()"],stdin=subprocess.PIPE) as child:
+            child_start = native_start(child.pid)
+            self.assertTrue(owner_alive(dict(owner,process_id=child.pid),child_start))
+            with patch("store_transfer_owner.native_start",return_value="different native incarnation"):
+                self.assertFalse(owner_alive(dict(owner,process_id=child.pid),child_start))
+            child.stdin.close()
+            child.wait(timeout=5)
+            self.assertFalse(owner_alive(dict(owner,process_id=child.pid),child_start))
+        directory = os.open(self.recovery, store_context.DIRECTORY_FLAGS)
+        try:
+            lease = self.recovery/"owner.lease"
+            lease.touch(mode=0o600)
+            info = lease.stat()
+            manifest = {"native_start":start,"lease":{"device":info.st_dev,"inode":info.st_ino}}
+            with owner_lease(directory,owner,manifest):
+                with self.assertRaisesRegex(StoreContextError, "busy"):
+                    with owner_lease(directory,owner,manifest):
+                        self.fail("second claimant acquired lease")
+            lease.rename(self.recovery/"old.lease")
+            lease.touch(mode=0o600)
+            with self.assertRaisesRegex(StoreContextError,"binding changed"):
+                with owner_lease(directory,owner,manifest):
+                    self.fail("substituted lease acquired")
+        finally:
+            os.close(directory)
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
