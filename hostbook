@@ -3178,7 +3178,7 @@ case ${1:-} in
       *) exit 65;;
     esac
     head="$(t "$from" "$2" "$3")$NL$(t "$to" "$4" "$5")$NL$(t "$publish" "$6")$NL$action$NL$(t transfer_retained "$8")"
-    [ -z "${HOSTBOOK_REVIEW_TRANSACTION:-}" ] || head="$(t transfer_resume_id "$HOSTBOOK_REVIEW_TRANSACTION")$NL$head"
+    [ -z "${HOSTBOOK_REVIEW_TRANSACTION:-}" ] || head="$(t transfer_resume_id "$HOSTBOOK_REVIEW_TRANSACTION" "$HOSTBOOK_REVIEW_CHECKPOINT")$NL$head"
     case ${12} in
       keep-both) head="$head$NL$(t transfer_keep_both "${13}" "${14}" "$4")";;
       update)

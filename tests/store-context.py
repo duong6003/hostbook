@@ -3611,6 +3611,15 @@ with prepare_candidate(load,plan,mapping) as candidate:
             self.assertIn(original,labels[3])
             self.assertIn(original,labels[5])
 
+    def test_resume_prompt_identifies_the_prepared_checkpoint(self):
+        root = Path(__file__).resolve().parents[1]
+        for lang in ("en","vi"):
+            env = dict(HOME=str(self.root),HOSTBOOK_LANG=lang,PATH="/usr/bin:/bin")
+            label = subprocess.check_output(["/bin/bash","-c",
+                '. "$1"; printf "$L_transfer_resume_id" "$2" "$3"',"fixture",str(root/"lang"/(lang+".sh")),new_id(),"prepared"],
+                env=env,text=True)
+            self.assertIn("checkpoint prepared" if lang == "en" else "bước prepared",label)
+
     def test_resume_reverse_after_original_removal_ack_retires_without_second_send(self):
         import store_transfer_publish
         from store_transfer_command import run_recovery

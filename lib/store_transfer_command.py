@@ -200,7 +200,8 @@ def transfer_command(args, *, recovery=False):
                 review = ["_store_transfer_cancel",details["transaction_id"],details["source"],details["destination"]]
             else:
                 review = review_arguments(details)
-            terminal_env = dict(env,HOSTBOOK_REVIEW_TRANSACTION=details.get("transaction_id",""))
+            terminal_env = dict(env,HOSTBOOK_REVIEW_TRANSACTION=details.get("transaction_id",""),
+                                HOSTBOOK_REVIEW_CHECKPOINT=details.get("checkpoint",""))
             proc = subprocess.run([*command,*review],env=terminal_env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
