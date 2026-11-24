@@ -1,5 +1,6 @@
 """Compare one selected host across two registered stores before a transfer decision."""
 from dataclasses import dataclass
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -58,7 +59,12 @@ def observe_store(account, store_id, expected):
 
 
 def endpoint(host):
-    return host["hostname"].casefold(), host["user"], host["port"]
+    address = host["hostname"]
+    try:
+        address = str(ipaddress.ip_address(address))
+    except ValueError:
+        address = address.casefold()
+    return address, host["user"], host["port"]
 
 
 @dataclass(frozen=True, repr=False)

@@ -2823,6 +2823,18 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertNotEqual(existing_key, source_id)
         self.assertEqual(observe("separate")["matches"][0]["reasons"], ["stable-id","endpoint"])
 
+    def test_transfer_endpoint_compares_literal_ip_and_exact_login(self):
+        from store_read import effective, ssh_view
+        from store_transfer import endpoint
+        conf = (b"Host long\n HostName 2001:0db8:0:0:0:0:0:1\n User Mixed\n Port 23\n"
+                b"Host short\n HostName 2001:db8::1\n User Mixed\n Port 23\n")
+        with ssh_view([conf], (None,None,None)) as config:
+            first, second = (effective(config, name) for name in ("long","short"))
+        self.assertEqual(endpoint(first), endpoint(second))
+        self.assertEqual(endpoint(dict(first,hostname="2001:0db8:0:0:0:0:0:1")), endpoint(second))
+        self.assertNotEqual(endpoint(first), endpoint(dict(second,user="mixed")))
+        self.assertNotEqual(endpoint(first), endpoint(dict(second,port="22")))
+
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
         f = self.transfer_vaults()
