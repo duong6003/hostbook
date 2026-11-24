@@ -13,9 +13,9 @@ import subprocess
 from uuid import uuid4
 
 from store_checkout import direct_ref, tree
-from store_context import (Generations, index_rows, store_writer, load_approved_account, open_directory, parse_json, read_file,
+from store_context import (Generations, entry_generations, index_rows, registry_entries, store_writer, load_approved_account, open_directory, parse_json, read_file,
                            require, require_approval_file, valid_id, verified_account)
-from store_mode import candidate_record, mode_records
+from store_mode import apply_transition, candidate_record, mode_records, preflight_mode, prepare_transition, verify_live
 from store_publish import (attempt_binding, launch_reserved, prepare_proposal, read_attempt, record_at, recovery_root,
                            require_plain_receiver, reserve_edit, stanza)
 from store_read import DIRECTIVE, INDEX_NAME, SECRET_NAME, local_inputs
@@ -100,6 +100,11 @@ def compare_versions(stage,store,candidate,tip,local):
                 base_revision=base,candidate_revision=draft,remote_revision=tip,kind=kind,
                 credential_conflicts=collisions,changed_bound_credentials=sorted(set(changed_bindings)|(selected-names)),**summary)
 
+    report["choices"] = ["cancel"]
+    if kind in ("same-host-edit","compatible","delete-versus-edit") and not report["changed_bound_credentials"]:
+        report["choices"].insert(0,"keep-remote")
+        if kind != "delete-versus-edit" and summary["candidate"]["address"] != summary["remote"]["address"]:
+            report["choices"].insert(0,"use-candidate-address")
     report["review_id"] = hashlib.sha256(json.dumps(report,sort_keys=True,separators=(",",":")).encode()).hexdigest()
     return report
 
@@ -159,12 +164,31 @@ def compare(load,store,expected,ident):
 
 
 def resolve(load,store,expected,ident,action,draft,tip,review_id,*,confirm_prod=None):
-    require(action == "use-candidate-address","select an explicit supported conflict decision")
+    require(action in ("use-candidate-address","keep-remote","cancel"),"select an explicit supported conflict decision")
     with comparison(load,store,expected,ident) as (report,stage,current,inputs), ExitStack() as opened:
         account,ctx,target,remote,binding,recovery,local = inputs
         host = report["host_id"]
         require((report["candidate_revision"],report["remote_revision"],report["review_id"]) == (draft,tip,review_id)
-                and report["kind"] in ("same-host-edit","compatible"),"conflict decision differs from the reviewed versions")
+                and action in report["choices"],"conflict decision differs from the reviewed versions")
+        if action == "cancel":
+            return dict(outcome="cancelled",original_attempt=ident)
+        if report["required_aliases"]:
+            require(confirm_prod and confirm_prod(account,report,action) == report["required_aliases"],
+                    "type the exact affected PROD host aliases to confirm")
+            current()
+        if action == "keep-remote":
+            with store_writer(load,store,expected) as (actual,locked,state,writer):
+                require((actual,locked) == (account,ctx),"conflict registration changed")
+                current()
+                entry = registry_entries(state,account)[0][store]
+                preflight_mode(state,entry,"two-way")
+                candidate = candidate_record(recovery,account,store,ident,verify_bundle=True)
+                reviewed = dict(revision=tip,ref=ctx.ref,review_id=review_id)
+                active = prepare_transition(recovery,account,entry,"two-way",action,[candidate],reviewed_remote=reviewed)
+                final = apply_transition(state,recovery,account,entry,active,"two-way",
+                                         lambda row:verify_live(load,account,state,writer,row))
+                return dict(outcome="kept-remote",original_attempt=ident,remote_revision=tip,
+                            generations=asdict(entry_generations(final)))
         require(all(report[side] is not None for side in ("base","candidate","remote")),
                 "address resolution needs the same existing host on both branches")
         chosen = str(ipaddress.ip_address(report["candidate"]["address"]))
@@ -172,10 +196,6 @@ def resolve(load,store,expected,ident,action,draft,tip,review_id,*,confirm_prod=
                 all(report[side]["credential"] == report["remote"]["credential"] for side in ("candidate","base")),
                 "review the changed credential binding separately")
         versions = [record_at(stage,oid,store,host) for oid in (report["base_revision"],draft,tip)]
-        if report["required_aliases"]:
-            require(confirm_prod and confirm_prod(account,report,action) == report["required_aliases"],
-                    "type the exact affected PROD host aliases to confirm")
-            current()
         require_plain_receiver(remote)
         attempt = str(uuid4())
         proposed = prepare_proposal(stage,tip,tip,store,host,chosen,attempt,versions[2][4])
@@ -231,4 +251,4 @@ def conflict_command(args):
             return load_approved_account(home)
         result = compare(load,store,expected,ident) if len(args)==6 else resolve(load,store,expected,ident,*args[6:],confirm_prod=confirm_aliases)
     print(json.dumps(result))
-    return 0 if result.get("outcome","accepted") == "accepted" else 75
+    return 0 if result.get("outcome","accepted") in ("accepted","kept-remote","cancelled") else 75

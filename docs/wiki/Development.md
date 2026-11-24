@@ -561,3 +561,9 @@ version and preserves its other settings. A changed ref requires a new review.
 A rejected resolution leaves the original candidate available, and an
 uncertain sender must be settled against its original branch. The operation
 reports the publication outcome independently of local checkout adoption.
+
+`keep-remote` binds an explicit choice to the displayed remote revision and
+comparison ID. It retires the exact private candidate through the store control
+journal, including when the remote deleted the host. It leaves the branch and
+checkout byte-for-byte intact. `cancel` preserves the candidate for later.
+Use the returned policy generation for subsequent store operations.

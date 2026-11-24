@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import tempfile
 from uuid import uuid4
@@ -135,13 +136,21 @@ def decision(recovery, first):
         record = private_json(folder, "decision.json")
         require(hashlib.sha256(json_bytes(record)).hexdigest() == plan["decision_sha256"],
                 "mode decision evidence changed")
-    fields(record, "action candidates" + (" send_attempt" if record.get("action") in ("send-confirmed","drain") else ""))
+    fields(record, "action candidates" + (" send_attempt" if record.get("action") in ("send-confirmed","drain") else "")
+           + (" reviewed_remote" if record.get("action") == "keep-remote" else ""))
+    if record["action"] == "keep-remote":
+        reviewed = record["reviewed_remote"]
+        fields(reviewed,"revision ref review_id")
+        require(len(record["candidates"]) == 1 and reviewed["ref"] == record["candidates"][0]["ref"]
+                and isinstance(reviewed["revision"],str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",reviewed["revision"])
+                and isinstance(reviewed["review_id"],str) and re.fullmatch(r"[0-9a-f]{64}",reviewed["review_id"]),
+                "invalid reviewed remote decision")
     if record["action"] == "send-confirmed":
         require(valid_id(record["send_attempt"]) and len(record["candidates"]) == 1, "invalid confirmed sender")
     if record["action"] == "drain":
         require(valid_id(record["send_attempt"]) and not record["candidates"], "invalid admitted sender")
-    require(record["action"] in ("clean","discard-confirmed","send-confirmed","drain") and isinstance(record["candidates"],list)
-            and bool(record["candidates"]) == (record["action"] in ("discard-confirmed","send-confirmed")), "invalid mode decision")
+    require(record["action"] in ("clean","discard-confirmed","send-confirmed","drain","keep-remote") and isinstance(record["candidates"],list)
+            and bool(record["candidates"]) == (record["action"] in ("discard-confirmed","send-confirmed","keep-remote")), "invalid mode decision")
     return record
 
 
@@ -235,7 +244,7 @@ def recover_sender_links(recovery, account, store):
         os.close(drafts)
 
 
-def prepare_transition(recovery, account, entry, wanted, action, candidates, send_attempt=None):
+def prepare_transition(recovery, account, entry, wanted, action, candidates, send_attempt=None, *, reviewed_remote=None):
     ident = str(uuid4())
     old_id, new_id = str(uuid4()), str(uuid4())
     rec = {"format":"hostbook-control", "version":1, "record_id":ident, "device_id":account.device_id,
@@ -251,6 +260,8 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates, sen
             choice = {"action":action, "candidates":candidates}
             if send_attempt is not None:
                 choice["send_attempt"] = send_attempt
+            if reviewed_remote is not None:
+                choice["reviewed_remote"] = reviewed_remote
             saved = json_bytes(choice)
             durable_file(evidence, "decision.json", saved)
             durable_file(evidence, old_id, json_bytes(entry))
@@ -295,7 +306,7 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     require(old["store_id"] == entry["store_id"] and old["kind"] == "shared" and old["transition_id"] is None
             and old["effective_mode"] in ("two-way", "receive-only") and wanted in ("two-way", "receive-only")
             and (wanted != old["effective_mode"] or (wanted == "two-way" and choice["action"] in
-                ("send-confirmed","discard-confirmed"))) and proposed == dict(old, effective_mode=wanted,
+                ("send-confirmed","discard-confirmed","keep-remote"))) and proposed == dict(old, effective_mode=wanted,
                 policy_generation=old["policy_generation"]+3), "invalid mode plan")
     fenced = dict(old, transition_id=ident, policy_generation=old["policy_generation"]+1)
     changed = dict(fenced, effective_mode=wanted, policy_generation=fenced["policy_generation"]+1)

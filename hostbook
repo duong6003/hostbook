@@ -3171,7 +3171,7 @@ case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _store_conflict_confirm)
     [ "$#" -eq 9 ] || exit 65
-    case $6 in use-candidate-address) decision=$(t conflict_use_address);; *) exit 65;; esac
+    case $6 in use-candidate-address) decision=$(t conflict_use_address);; keep-remote) decision=$(t conflict_keep_remote);; *) exit 65;; esac
     at "$(t conflict_title)"
     head=$(t conflict_scope "$2" "$3")$NL$(t conflict_versions "$4" "$5")$NL$(t conflict_addresses "$8" "$9")$NL$decision
     IFS=, read -r -a required <<< "$7"

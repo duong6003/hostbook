@@ -1816,6 +1816,17 @@ class StoreContextTest(unittest.TestCase):
         self.assertIsNone(view["remote"])
         self.assertEqual(view["candidate"]["address"],"192.0.2.88")
         self.assertEqual(snapshot(self.recovery),before)
+        pristine = snapshot(f.remote),snapshot(f.store)
+        kept = store_conflict.resolve(load,store,self.generations,ident,"keep-remote",
+                                     view["candidate_revision"],view["remote_revision"],view["review_id"])
+        self.assertEqual(kept["outcome"],"kept-remote")
+        self.assertEqual((snapshot(f.remote),snapshot(f.store)),pristine)
+        import store_mode
+        current = Generations(**kept["generations"])
+        self.assertNotIn("pending",store_mode.change_mode(load,store,current,"two-way"))
+        decisions = [json.loads(p.read_bytes()) for p in self.recovery.glob("modes/*/decision.json")]
+        self.assertEqual([d["reviewed_remote"]["revision"] for d in decisions if "reviewed_remote" in d],
+                         [view["remote_revision"]])
 
     def test_conditional_address_resolution_keeps_exact_rejected_original_until_accepted(self):
         import store_conflict,store_mode,store_publish
