@@ -338,6 +338,12 @@ def restore_staging(target,temp,records,created):
                 retired = ".cleanup-"+str(uuid4())
                 rename_guarded(target,temp,target,retired,exchange=False)
                 if os.path.samestat(os.stat(retired,dir_fd=target,follow_symlinks=False),os.fstat(stage)):
+                    for key in sorted(created,key=lambda p:p.count("/")):
+                        if records[key]["directory"]:
+                            with open_directory(stage,key.split("/")) as directory:
+                                info = os.fstat(directory)
+                                require((info.st_dev,info.st_ino) == created[key][:2],"changed restore directory retained")
+                                os.fchmod(directory,stat.S_IMODE(info.st_mode)|0o700)
                     for key in sorted(created,key=lambda p:p.count("/"),reverse=True):
                         parts = key.split("/")
                         try:

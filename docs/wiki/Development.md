@@ -534,3 +534,12 @@ after a restart, run
 `hostbook store-migration-restore BACKUPS BACKUP_ID PRIVATE_PARENT code`.
 Use `password` for the other envelope. Hostbook requests credentials on the
 terminal. The restore appears under the backup ID inside the private parent.
+
+On Linux, `hostbook store-migration-writers CHECKOUT STATE LEGACY_UID...`
+inspects the proposed checkout, regular Git directory, state tree and their
+ancestors. It evaluates the named UIDs, supplementary groups, POSIX ACL masks,
+inherited ACLs and sticky-directory replacement rights. The result describes
+direct filesystem access. The migration still needs separately verified
+quiescence and delegated service authority for those identities. A shared
+cutover also needs effective server policy for the exact branch. Keep the
+original registration and both recovery credentials when evidence is missing.

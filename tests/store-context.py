@@ -120,7 +120,7 @@ class StoreContextTest(unittest.TestCase):
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
                          "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
                          "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
-                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py", "store_migration_backup.py"):
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py", "store_migration_backup.py", "store_migration_writers.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -231,6 +231,35 @@ class StoreContextTest(unittest.TestCase):
                          ("shared","unresolved","preserve-and-rediscover"))
         self.assertFalse(failed["cutover_ready"])
 
+    def test_migration_writer_inspection_requires_distinct_uid_and_protected_ancestry(self):
+        f = self.migration_case()
+        state = self.root/"new private state"; state.mkdir(mode=0o700)
+        def inspect(uid):
+            output = subprocess.check_output([f.app,"store-migration-writers",f.legacy,state,str(uid)],env=f.env)
+            return json.loads(output)
+        # The command under test is a new cold action. Exercise real account lookup in disposable Linux only.
+        if sys.platform != "linux" or not os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME"):
+            self.skipTest("requires an isolated Linux account for a distinct native UID")
+        import pwd
+        self.assertEqual(Path(pwd.getpwuid(os.geteuid()).pw_dir),Path("/fixture-home"))
+        same = inspect(os.geteuid())
+        self.assertEqual(same["filesystem_permissions"],"access-remains")
+        other = pwd.getpwnam("nobody").pw_uid
+        safe = inspect(other)
+        self.assertEqual(safe["filesystem_permissions"],"checked")
+        self.assertFalse(safe["cutover_ready"])
+        self.assertIn("verify-delegated-service-authority",safe["blockers"])
+        self.root.chmod(0o777)
+        try:
+            self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+        finally:
+            self.root.chmod(0o700)
+        child = f.legacy/"team.conf"
+        import struct
+        entries = [(1,6,0xffffffff),(2,6,other),(4,0,0xffffffff),(16,6,0xffffffff),(32,0,0xffffffff)]
+        os.setxattr(child,"system.posix_acl_access",struct.pack("<I",2)+b"".join(struct.pack("<HHI",*v) for v in entries))
+        self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+
     def test_migration_backup_reopens_original_index_worktree_config_and_private_files(self):
         from store_migration_backup import backup, restore
         f = self.migration_case()
@@ -247,6 +276,13 @@ class StoreContextTest(unittest.TestCase):
         (f.legacy/"ignored").write_bytes(b"synthetic ignored")
         (f.legacy/"untracked").write_bytes(b"synthetic untracked")
         (f.legacy/"untracked").chmod(0o640)
+        if sys.platform == "linux":
+            import struct
+            entries = [(1,6,0xffffffff),(2,4,65534),(4,0,0xffffffff),(16,4,0xffffffff),(32,0,0xffffffff)]
+            acl = struct.pack("<I",2)+b"".join(struct.pack("<HHI",*entry) for entry in entries)
+            os.setxattr(f.legacy/"untracked","system.posix_acl_access",acl)
+        elif sys.platform == "darwin":
+            subprocess.run(["/bin/chmod","+a","everyone deny execute",f.legacy/"untracked"],env=f.env,check=True)
         source = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
         expected = snapshot(f.legacy)
         output = self.root/"private backup"; output.mkdir(mode=0o700)
@@ -260,6 +296,11 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(list(stage.iterdir()),[])
         recovered = restore(output,ident,stage,code,recovery=True)
         self.assertEqual(snapshot(recovered/"checkout"),expected)
+        if sys.platform == "linux":
+            self.assertEqual(os.getxattr(recovered/"checkout/untracked","system.posix_acl_access"),acl)
+        elif sys.platform == "darwin":
+            listing = subprocess.check_output(["/bin/ls","-led",recovered/"checkout/untracked"],env=f.env)
+            self.assertIn(b"everyone deny execute",listing)
         self.assertEqual((recovered/"state/history").read_bytes(),(state/"history").read_bytes())
         self.assertEqual((recovered/"settings/config").read_bytes(),(settings/"config").read_bytes())
         self.assertEqual((recovered/"ssh").read_bytes(),ssh.read_bytes())
@@ -307,6 +348,10 @@ class StoreContextTest(unittest.TestCase):
         with patch.object(migration,"materialize",side_effect=detach), self.assertRaises((OSError,StoreContextError)):
             migration.backup(*args)
         self.assertFalse(any(not p.name.startswith(".") for p in output.iterdir()))
+        readonly = f.legacy/"readonly"; readonly.mkdir(mode=0o700)
+        (readonly/"original").write_bytes(b"synthetic readonly")
+        readonly.chmod(0o555)
+        self.addCleanup(readonly.chmod,0o700)
         ident = migration.backup(*args)
         def interrupted(*inputs,**options):
             materialize(*inputs,**options)
