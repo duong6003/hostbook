@@ -120,7 +120,7 @@ class StoreContextTest(unittest.TestCase):
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
                          "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
                          "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
-                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py"):
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -3485,6 +3485,56 @@ with prepare_candidate(load,plan,mapping) as candidate:
         with recovery_root(f.load()) as root:
             for row in last["stores"]:
                 require_idle(root,f.load(),row["store_id"])
+
+    def test_operator_status_and_cancel_only_effect_free_original_transfer(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        f = self.transfer_case()
+        src,dst = f.vaults.source.checkout,f.vaults.destination.checkout
+        before = (snapshot(src),snapshot(dst))
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"prepared")
+        events = []
+        def unused(*_):
+            self.fail("read-only status asked for a secret or confirmation")
+        def secret(role):
+            return {"backup":pw,"recovery":code}[role]
+        def confirm(details):
+            return details["transaction_id"] == ident and details["action"] == "cancel"
+        self.assertEqual(run_recovery(f.load,"status",ident,unused,unused,events.append),0)
+        self.assertEqual(events[-1]["checkpoint"],"prepared")
+        self.assertEqual(events[-1]["hosts"],f.plan.host_keys())
+        self.assertNotIn("phrases",json.dumps(events))
+        if os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME") == "1":
+            import pwd
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            self.assertTrue(Path("/.dockerenv").is_file())
+            self.assertIn(home,(Path("/fixture-home"),Path("/home/hostbook-fixture")))
+            self.assertFalse((home/".config").exists())
+            approval = self.write_local_approval(home)
+            self.addCleanup(approval.parent.parent.rmdir)
+            self.addCleanup(approval.parent.rmdir)
+            self.addCleanup(approval.unlink)
+            env = dict(f.shared.env,HOME=str(home),PATH=str(Path(sys.executable).parent)+":/usr/bin:/bin")
+            observed = subprocess.check_output([f.shared.app,"store-transfer-recover",ident,"status"],
+                                               cwd=self.root,env=env,stdin=subprocess.DEVNULL)
+            self.assertEqual(json.loads(observed),events[-1])
+        with self.assertRaisesRegex(StoreContextError,"ownership|busy"):
+            run_recovery(f.load,"cancel",ident,secret,confirm,events.append)
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"cancel",ident,secret,lambda _:False,events.append)
+        self.assertEqual(run_recovery(f.load,"cancel",ident,secret,confirm,events.append),0)
+        self.assertEqual(events[-1],{"transaction_id":ident,"checkpoint":"cancelled"})
+        last,opened = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((last["effects"],last["attempts"]),([],[]))
+        self.assertEqual(opened["next_effect"],"none")
+        self.assertEqual((snapshot(src),snapshot(dst)),before)
+        with recovery_root(f.load()) as root:
+            for store in last["stores"]:
+                require_idle(root,f.load(),store["store_id"])
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

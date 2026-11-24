@@ -441,3 +441,14 @@ project, group memberships and history. Its previous settings and selected
 credential remain independently recoverable. A PROD source or destination
 requires its exact alias. A stable host ID already present in the destination
 requires reconciliation with the original transfer evidence.
+
+Use `hostbook store-transfer-recover TRANSACTION_ID status` to inspect the
+selected checkpoint, the two registered host selections, and recorded local
+effects and senders. Status reads the device journal without unlocking a vault.
+Use `cancel` to release a prepared, effect-free transfer after the original
+owner exits. Both recovery envelopes remain available. Use `resume` for a
+verified destination-confirmed transfer. This asks for fresh operator approval,
+the protected transaction credentials and the destination vault passphrase.
+The original Git proposals and sender receipt identify the move. If the
+destination, original shared branch, source work, or sender proof changes,
+the participating stores remain fenced.

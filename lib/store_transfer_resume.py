@@ -7,11 +7,12 @@ from dataclasses import asdict, replace
 from store_checkout import durable_file, tree
 from store_context import (Generations, open_directory, parse_directory_binding, parse_json, require, resolved_store,
                            require_approval_file, require_private_directory, valid_id)
-from store_journal import private_json, publication_receipt
+from store_journal import classify, private_json, publication_receipt
+from store_publish import recovery_root
 from store_read import local_inputs
 from store_receive import fetch_from_fd, git
 from store_transfer import DestinationCandidate, ObservedStore, TransferPlan
-from store_transfer_apply import advance, displaced_destination, transfer_gates
+from store_transfer_apply import advance, displaced_destination, selected, transfer_gates
 from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCredential, private_workspace, read_mapping_end
 from store_transfer_intent import local_descriptors, reopen_intent, wire
 from store_transfer_owner import new_owner
@@ -118,6 +119,52 @@ def restored_candidate(plan, manifest):
         yield candidate,mapping
 
 
+def transfer_status(load, ident):
+    require(valid_id(ident),"invalid transfer transaction ID")
+    account = load()
+    with recovery_root(account) as root,open_directory(root,("transactions",ident)) as tx:
+        require_private_directory(tx,"transfer transaction")
+        _,released = classify(tx,account,ident,"transactions")
+        selector = private_json(tx,"current.json")
+        with open_directory(tx,("records",)) as history:
+            record = private_json(history,str(selector["sequence"])+".json")
+        require(record["operation"] == "transfer","unexpected recovery operation")
+        with recovery_root(load()) as fresh,open_directory(fresh,("transactions",ident)) as named:
+            require(load() == account and os.path.samestat(os.fstat(tx),os.fstat(named)),"original transfer directory changed")
+            selected(named,account,record)
+        return {"transaction_id":ident,"checkpoint":record["checkpoint"],"sequence":record["sequence"],
+                "stores":[{key:row[key] for key in ("store_id","role")} for row in record["stores"]],
+                "hosts":record["hosts"],"effects":[{key:e[key] for key in ("effect_id","outcome")} for e in record["effects"]],
+                "attempts":[{key:a[key] for key in ("attempt_id","sender_state","outcome")} for a in record["attempts"]],
+                "fenced":not released}
+
+
+def cancel_prepared(load, ident, password, code, confirm):
+    record,manifest = reopen_intent(load,ident,password)
+    require(record["operation"] == "transfer" and record["checkpoint"] == "prepared"
+            and not record["attempts"] and not record["effects"] and manifest["next_effect"] == "destination-save",
+            "transfer already has a data effect and needs reconciliation")
+    plan = restored_plan(load(),record,manifest)
+    details = {"action":"cancel","transaction_id":ident,"checkpoint":"prepared",
+               "source":plan.source.context.store_id,"destination":plan.destination.context.store_id}
+    require(confirm(details) is True,"explicit transfer cancellation confirmation required")
+    with transfer_gates(load,plan,record,manifest,recovery=True) as (tx,verify):
+        def unchanged():
+            require(load() == plan.account,"transfer account approval changed")
+            lease = os.stat("owner.lease",dir_fd=tx,follow_symlinks=False)
+            require(manifest["lease"] == {"device":lease.st_dev,"inode":lease.st_ino},"transfer ownership lease changed")
+            require("senders" not in os.listdir(tx),"unrecorded transfer sender requires reconciliation")
+        unchanged()
+        owner,start = new_owner()
+        previous = {"owner":record["owner"],"native_start":manifest["native_start"],"sequence":record["sequence"]}
+        current,_,proof = advance(tx,plan.account,record,manifest,dict(record,owner=owner,checkpoint="cancelled"),
+            dict(manifest,native_start=start,next_effect="none",previous_owners=manifest.get("previous_owners",[])+[previous]),
+            password,code,observe=unchanged)
+        verify(current)
+        proof()
+    return {"transaction_id":ident,"checkpoint":"cancelled"}
+
+
 def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
     require(valid_id(ident),"invalid transfer transaction ID")
     record,manifest = reopen_intent(load,ident,password)
@@ -125,10 +172,14 @@ def resume_confirmed(load, ident, password, code, read_passphrase, confirm):
             and len(record["effects"]) == 1 and record["effects"][0]["outcome"] == "observed"
             and manifest["next_effect"] == "source-removal","transfer needs separate reconciliation before resuming")
     plan = restored_plan(load(),record,manifest)
-    public = dict(manifest["comparison"],transaction_id=ident,checkpoint=record["checkpoint"])
+    public = dict(manifest["comparison"])
+    public.update(plan.comparison())
+    public.update(transaction_id=ident,action="resume",checkpoint=record["checkpoint"])
     aliases = public.get("required_aliases",[])
     if public["requires_typed_alias"] and not aliases:
         aliases = [public["source"]["name"]]
+    public["required_aliases"] = aliases
+    public.setdefault("retained_destination_groups",[])
     answer = confirm(public)
     require((([answer] if isinstance(answer,str) else answer) == aliases) if aliases else answer is True,
             "explicit transfer confirmation required")

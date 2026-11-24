@@ -134,11 +134,35 @@ def review_arguments(details):
     return args
 
 
-def transfer_command(args):
-    require(len(args) in (14,15,18),"provide both registered selections, destination alias, credential name and create or reuse")
+def run_recovery(load, action, ident, secret, confirm, emit):
+    from store_transfer_resume import cancel_prepared, resume_confirmed, transfer_status
+    require(action in ("status","resume","cancel"),"unknown transfer recovery action")
+    status = transfer_status(load,ident)
+    emit(status)
+    if action == "status":
+        return 0
+    require(status["fenced"],"transfer has already finished")
+    password,code = secret("backup"),secret("recovery")
+    if action == "cancel":
+        result = cancel_prepared(load,ident,password,code,confirm)
+    else:
+        result = resume_confirmed(load,ident,password,code,lambda _:secret("destination"),confirm)
+    emit(result)
+    return 0 if result["checkpoint"] in ("completed","cancelled") else 75
+
+
+def transfer_command(args, *, recovery=False):
+    if recovery:
+        require(len(args) == 2 and args[1] in ("status","cancel","resume"),"provide the original transaction ID and status, cancel or resume")
+    else:
+        require(len(args) in (14,15,18),"provide both registered selections, destination alias, credential name and create or reuse")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
     def load():
         return load_approved_account(home)
+    def emit(data):
+        print(json.dumps(data),flush=True)
+    if recovery and args[1] == "status":
+        return run_recovery(load,"status",args[0],None,None,emit)
     account = load()
     locations = [(directory,cellar.with_name("fzf") if cellar else None) for directory,cellar in age_installations()]
     hostbook = Path(__file__).resolve().parents[1]/"hostbook"
@@ -166,10 +190,17 @@ def transfer_command(args):
             return prompt_passphrase(labels[role]+" ")
         def confirm(details):
             require(picker() == binary and load() == account,"transfer confirmation context changed")
-            proc = subprocess.run([*command,*review_arguments(details)],env=env,stdout=subprocess.PIPE)
+            if details.get("action") == "cancel":
+                review = ["_store_transfer_cancel",details["transaction_id"],details["source"],details["destination"]]
+            else:
+                review = review_arguments(details)
+            terminal_env = dict(env,HOSTBOOK_REVIEW_TRANSACTION=details.get("transaction_id",""))
+            proc = subprocess.run([*command,*review],env=terminal_env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
-            if details["requires_typed_alias"]:
+            if details.get("requires_typed_alias"):
                 return proc.stdout.decode().splitlines()
             return not proc.stdout
-        return run_transfer(load,args,secret,confirm,lambda data:print(json.dumps(data),flush=True))
+        if recovery:
+            return run_recovery(load,args[1],args[0],secret,confirm,emit)
+        return run_transfer(load,args,secret,confirm,emit)

@@ -83,7 +83,7 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  store-transfer|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
+  store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       guard_python_path || exit 64
       exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" "$@"
@@ -3162,6 +3162,10 @@ fi
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
+  _store_transfer_cancel)
+    [ "$#" -eq 4 ] || exit 65
+    at "$(t transfer_title)"
+    UI_HEAD="$(t transfer_cancel_scope "$2" "$3" "$4")" ui_confirm --danger --default=false --affirmative "$(t key_confirm)" --negative "$(t cancel)" "$(t transfer_cancel_question)";;
   _store_transfer_review)
     [ "$#" -ge 15 ] || exit 65
     at "$(t transfer_title)"
@@ -3172,6 +3176,7 @@ case ${1:-} in
       *) exit 65;;
     esac
     head="$(t "$from" "$2" "$3")$NL$(t "$to" "$4" "$5")$NL$(t "$publish" "$6")$NL$action$NL$(t transfer_retained "$8")"
+    [ -z "${HOSTBOOK_REVIEW_TRANSACTION:-}" ] || head="$(t transfer_resume_id "$HOSTBOOK_REVIEW_TRANSACTION")$NL$head"
     case ${12} in
       keep-both) head="$head$NL$(t transfer_keep_both "${13}" "${14}" "$4")";;
       update)
