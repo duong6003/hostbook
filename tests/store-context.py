@@ -2938,6 +2938,27 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                                                                        ciphertext) == b"fixture mapped password")
         self.assertEqual(snapshot(self.root), before)
 
+    def test_transfer_candidate_requires_the_fetched_vault_and_reused_credential(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        meta, age = (v.destination.vault/("existing."+suffix) for suffix in ("meta","age"))
+        meta.write_bytes(b"type=password\n")
+        age.write_bytes(v.seal(v.destination,b"fixture mapped password"))
+        def rejected(mapping):
+            before = snapshot(self.root)
+            with self.assertRaisesRegex(StoreContextError, "accepted destination"):
+                with prepare_candidate(f.load,f.plan,mapping):
+                    self.fail("unverified destination mapping")
+            self.assertEqual(snapshot(self.root), before)
+        reused = stage_credential(f.load,v.src,replace(v.dst,name="existing"),v.unlock,reuse_existing=True)
+        rejected(reused)
+        meta.unlink()
+        age.unlink()
+        (v.destination.vault/"vault.recovery.age").write_bytes((v.destination.vault/"vault.key.age").read_bytes())
+        rejected(stage_credential(f.load,v.src,v.dst,v.unlock))
+
     def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
         library = Path(__file__).resolve().parents[1]/"lib"
         script = """

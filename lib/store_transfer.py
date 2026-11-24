@@ -243,6 +243,22 @@ def route_chains(store_id, identity, files, local):
     return chains
 
 
+def verify_accepted_mapping(stage, existing, mapping):
+    observed = mapping.destination_before
+    vault, record = observed.vault, observed.record
+    expected = {"vault.pub":vault.recipient, "vault.key.age":vault.password_envelope,
+                "vault.recovery.age":vault.recovery_envelope}
+    name = mapping.destination.name
+    for suffix, data in (("meta",record.metadata if record else None), ("age",record.ciphertext if record else None),
+                         ("pub",record.public_key if record else None)):
+        expected[name+"."+suffix] = data
+    for name, data in expected.items():
+        oid = existing.get("secrets/"+name)
+        require((oid is None and data is None) or
+                (oid is not None and data is not None and git(stage,"cat-file","blob",oid.decode()) == data),
+                "accepted destination vault or credential differs from the reviewed mapping")
+
+
 @contextmanager
 def prepare_candidate(load, plan, mapping):
     """Build a destination-only regular Git commit in private staging and verify its SSH effects."""
@@ -300,6 +316,8 @@ def prepare_candidate(load, plan, mapping):
             require_plain_receiver(remote)
             require(fetch_direct(stage,remote,dst.ref,"refs/hostbook/base") == dst.base, "destination remote advanced")
         existing = tree(stage,dst.base,git)
+        if mapping:
+            verify_accepted_mapping(stage,existing,mapping)
         require(all(path == IDENTITY or path not in existing for path in changes), "destination file is occupied")
         for path, data in dst.files.items():
             require(path in existing and git(stage,"cat-file","blob",existing[path].decode()) == data,
