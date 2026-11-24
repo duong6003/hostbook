@@ -364,7 +364,7 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
         return launch_reserved(load_account, account, recovery, ctx, expected, stage, target_fd, reservation)
 
 
-def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed, bundle, attempt, binding_id, retry_of=None):
+def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed, bundle, attempt, binding_id, retry_of=None, *, resolution=None):
     expected, store_id = ctx.generations, ctx.store_id
     record = {"format":"hostbook-control", "version":1, "record_id":attempt, "device_id":account.device_id,
               "root_id":account.recovery_root_id, "sequence":1, "previous_sequence":0, "store_id":store_id,
@@ -394,6 +394,10 @@ def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed,
                 "generations":asdict(expected), "bare_repository":dict(asdict(target),path=str(target.path)),
                 "lease_device":lease_info.st_dev, "lease_inode":lease_info.st_ino, "host_id":host_id,
                 "bundle_sha256":digest.hexdigest()}
+    if resolution is not None:
+        require(retry_of is None,"a conflict resolution cannot also be an unchanged retry")
+        record["detail"]["resolution"] = resolution
+        evidence["resolution"] = resolution
     if retry_of is not None:
         durable_file(edit, "retry.json", json_bytes({"original_attempt":retry_of}))
     durable_file(edit, "binding.json", json_bytes(evidence))
@@ -474,8 +478,10 @@ def read_attempt(recovery, account, store_id, attempt, repair=False):
 def attempt_binding(edit, account, original):
     require_private_directory(edit, "publication evidence")
     record = private_json(edit, "binding.json")
+    link = original["detail"].get("resolution")
     fields(record, "version binding_id store_id device_id target_id uid ref generations bare_repository "
-                   "lease_device lease_inode host_id bundle_sha256")
+                   "lease_device lease_inode host_id bundle_sha256" + (" resolution" if link is not None else ""))
+    require(record.get("resolution") == link,"original resolution evidence changed")
     fields(record["generations"], "registration checkout connection policy")
     detail = original["detail"]
     require(type(record["version"]) is int and record["version"] == 1 and record["device_id"] == account.device_id

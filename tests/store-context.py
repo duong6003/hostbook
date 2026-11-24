@@ -1810,6 +1810,36 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(view["candidate"]["address"],"192.0.2.88")
         self.assertEqual(snapshot(self.recovery),before)
 
+    def test_conditional_address_resolution_keeps_exact_rejected_original_until_accepted(self):
+        import store_conflict,store_mode,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("Host db\n  HostName 192.0.2.33\n  Port 2222\n")
+        view = store_conflict.compare(load,store,self.generations,ident)
+        args = (load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"])
+        original_bundle = (self.recovery/"edits"/ident/"proposal.bundle").read_bytes()
+        remote = f.git(f.remote,"rev-parse","refs/heads/main")
+        other = snapshot(self.root/"shared b")
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,view["base_revision"])
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            rejected = store_conflict.resolve(*args,remote)
+        self.assertEqual(rejected["outcome"],"not-accepted")
+        self.assertNotEqual(rejected["attempt_id"],ident)
+        self.assertEqual(store_mode.change_mode(load,store,self.generations,"two-way")["pending"],[ident])
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main"),remote)
+        self.assertEqual((self.recovery/"edits"/ident/"proposal.bundle").read_bytes(),original_bundle)
+        done = store_conflict.resolve(*args,remote)
+        self.assertEqual(done["outcome"],"accepted")
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main^"),remote)
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),"Host db\n  HostName 192.0.2.88\n  Port 2222")
+        self.assertNotIn("pending",store_mode.change_mode(load,store,self.generations,"two-way"))
+        self.assertEqual(snapshot(self.root/"shared b"),other)
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,remote)
+
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
         publish("Host db\n  HostName 192.0.2.2\nHost web\n  HostName 192.0.2.44\n", add_host=True)

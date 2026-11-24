@@ -91,7 +91,22 @@ def mode_records(recovery, account, store_id, pointer):
                             retry = private_json(edit, "retry.json")
                         except FileNotFoundError:
                             retry = None
-                    if retry:
+                    if "resolution" in first["detail"]:
+                        require(retry is None,"conflict resolution cannot also be a retry")
+                        link = first["detail"]["resolution"]
+                        origin = candidate_record(recovery,account,store_id,link["original_attempt"])
+                        with open_directory(recovery,("edits",ident)) as folder:
+                            new = attempt_binding(folder,account,first)
+                        original,_ = read_attempt(recovery,account,store_id,origin["attempt_id"])
+                        with open_directory(recovery,("edits",origin["attempt_id"])) as folder:
+                            old = attempt_binding(folder,account,original)
+                        require("resolution" not in original["detail"] and
+                                (link["original_base"],link["original_proposal"]) == (origin["base_oid"],origin["proposed_oid"])
+                                and all(old[k] == new[k] for k in ("store_id","device_id","target_id","ref","bare_repository","uid","host_id"))
+                                and all(old["generations"][k] == new["generations"][k] for k in ("registration","checkout","connection")),
+                                "original conflict resolution binding changed")
+                        retries[ident] = (origin,tail["detail"]["outcome"])
+                    elif retry:
                         fields(retry, "original_attempt")
                         require(valid_id(retry["original_attempt"]), "invalid retry evidence")
                         origin = candidate_record(recovery, account, store_id, retry["original_attempt"])

@@ -553,3 +553,11 @@ and base. Its output shows the base, candidate and remote literal host settings,
 including credential names and the exact revisions. It preserves the checkout,
 both versions and the retained attempt. An unavailable or changed binding
 requires fresh observation.
+
+For an ordinary same-host address conflict, append
+`use-candidate-address CANDIDATE_OID REMOTE_OID` using the displayed revisions.
+The new conditional commit changes the address on top of the observed remote
+version and preserves its other settings. A changed ref requires a new review.
+A rejected resolution leaves the original candidate available, and an
+uncertain sender must be settled against its original branch. The operation
+reports the publication outcome independently of local checkout adoption.

@@ -51,7 +51,16 @@ def control(record, prior):
                     "invalid transition progression")
         return {store}, phase in ("applied", "cancelled")
     require(record["operation"] == "publish", "unknown control operation")
-    fields(detail, "attempt_id connection_generation connection_binding_id base_oid proposed_oid sender_state outcome")
+    fields(detail, "attempt_id connection_generation connection_binding_id base_oid proposed_oid sender_state outcome" +
+           (" resolution" if "resolution" in detail else ""))
+    if "resolution" in detail:
+        link = detail["resolution"]
+        fields(link,"action original_attempt original_base original_proposal")
+        require(link["action"] == "use-candidate-address" and valid_id(link["original_attempt"])
+                and link["original_attempt"] != detail["attempt_id"] and all(
+                    isinstance(link[k],str) and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})",link[k])
+                    for k in ("original_base","original_proposal")),"invalid publication resolution")
+
     for name in ("attempt_id", "connection_binding_id"):
         primary_id(detail, name)
     require(positive(detail["connection_generation"]) and all(isinstance(detail[k], str)
@@ -61,7 +70,7 @@ def control(record, prior):
     drained = attempt_outcome(detail)
     if prior:
         old = prior["detail"]
-        require(not attempt_outcome(old) and all(old[k] == detail[k] for k in detail
+        require(set(old) == set(detail) and not attempt_outcome(old) and all(old[k] == detail[k] for k in detail
                 if k not in ("sender_state", "outcome")) and not
                 (old["outcome"] == "uncertain" and detail["outcome"] == "reserved"), "invalid publication progression")
     else:
