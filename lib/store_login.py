@@ -41,15 +41,24 @@ def tool_ancestry(directory, target):
     return dict.fromkeys((directory, *directory.parents, target, *target.parents))
 
 
+@dataclass(frozen=True)
+class ToolScope:
+    """Directory bindings excluded from program lookup before any store has been enrolled."""
+    excluded: frozenset
+
+
 def verified_age_tools(account):
     return verified_programs(account, age_installations(), AGE_PROGRAMS,
                              "registered login requires age, age-keygen and batchpass in an approved tool directory")
 
 
 def verified_programs(account, installations, programs, unavailable, *, cellar_only=False):
-    protected = {(item.device, item.inode) for item in (account.root, account.state, account.recovery)}
-    for checkout in account.checkouts.values():
-        protected.update((item.device, item.inode) for item in (checkout.root, checkout.git_dir, checkout.git_common_dir))
+    if isinstance(account,ToolScope):
+        protected = account.excluded
+    else:
+        protected = {(item.device, item.inode) for item in (account.root, account.state, account.recovery)}
+        for checkout in account.checkouts.values():
+            protected.update((item.device, item.inode) for item in (checkout.root, checkout.git_dir, checkout.git_common_dir))
     owners = (0, os.geteuid())
     for directory, cellar in installations:
         try:

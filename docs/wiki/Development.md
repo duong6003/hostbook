@@ -508,3 +508,14 @@ absent, structurally complete or requires reconciliation. Independently
 created vaults and different envelopes remain separate. A missing branch or
 unavailable remote leaves discovery unresolved. Remote history remains
 accessible to prior recipients after any later local migration.
+
+The migration backup API currently seals four explicitly named, disjoint
+inputs from a private checkout without a vault. These are the whole checkout,
+the legacy state directory, Hostbook's settings directory and one SSH config
+file. It verifies both independent recovery credentials, reconstructs the
+original bytes, modes, owners and supported native metadata in private staging,
+and rechecks the source before publishing the encrypted backup. Restore creates
+a fresh directory beneath a separate private root and refuses an occupied
+name. Active scratch, unknown state, linked data, unsupported metadata and
+oversized recovery sets require separate review. External SSH dependencies and
+writer exclusion still need verification before any registration cutover.

@@ -231,6 +231,45 @@ class StoreContextTest(unittest.TestCase):
                          ("shared","unresolved","preserve-and-rediscover"))
         self.assertFalse(failed["cutover_ready"])
 
+    def test_migration_backup_reopens_original_index_worktree_config_and_private_files(self):
+        from store_migration_backup import backup, restore
+        f = self.migration_case()
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700)
+        settings.mkdir(mode=0o700)
+        (state/"history").write_text("original\n")
+        (settings/"config").write_text("lang=en\n")
+        ssh.write_text("Host outside\n  HostName 192.0.2.19\n")
+        (f.legacy/"team.conf").write_text("Host original\n  HostName 192.0.2.20\n")
+        f.git("add","team.conf")
+        (f.legacy/"team.conf").write_text("Host original\n  HostName 192.0.2.21\n")
+        (f.legacy/".gitignore").write_text("ignored\n")
+        (f.legacy/"ignored").write_bytes(b"synthetic ignored")
+        (f.legacy/"untracked").write_bytes(b"synthetic untracked")
+        (f.legacy/"untracked").chmod(0o640)
+        source = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
+        expected = snapshot(f.legacy)
+        output = self.root/"private backup"; output.mkdir(mode=0o700)
+        stage = self.root/"private restore"; stage.mkdir(mode=0o700)
+        password,code = b"synthetic backup phrase",b"independent synthetic recovery"
+        ident = backup(source,output,password,code)
+        self.assertEqual(snapshot(f.legacy),expected)
+        self.assertNotIn(b"synthetic ignored",b"".join(p.read_bytes() for p in output.rglob("*") if p.is_file()))
+        with self.assertRaises(StoreContextError):
+            restore(output,ident,stage,b"wrong passphrase")
+        self.assertEqual(list(stage.iterdir()),[])
+        recovered = restore(output,ident,stage,code,recovery=True)
+        self.assertEqual(snapshot(recovered/"checkout"),expected)
+        self.assertEqual((recovered/"state/history").read_bytes(),(state/"history").read_bytes())
+        self.assertEqual((recovered/"settings/config").read_bytes(),(settings/"config").read_bytes())
+        self.assertEqual((recovered/"ssh").read_bytes(),ssh.read_bytes())
+        self.assertEqual(subprocess.check_output(["/usr/bin/git","show",":team.conf"],cwd=recovered/"checkout",env=f.env),
+                         b"Host original\n  HostName 192.0.2.20\n")
+        self.assertEqual(snapshot(f.legacy),expected)
+        with self.assertRaises((OSError,StoreContextError)):
+            restore(output,ident,stage,code,recovery=True)
+        self.assertEqual(snapshot(recovered/"checkout"),expected)
+
     def test_migration_inspection_distinguishes_locked_partial_and_damaged_vault_without_prompts(self):
         v = self.transfer_vaults()
         f = self.migration_case()
