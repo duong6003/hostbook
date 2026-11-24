@@ -83,7 +83,7 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
+  store-migration-inspect|store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       guard_python_path || exit 64
       exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" "$@"

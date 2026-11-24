@@ -120,7 +120,7 @@ class StoreContextTest(unittest.TestCase):
                          "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
                          "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
                          "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
-                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py"):
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -137,6 +137,70 @@ class StoreContextTest(unittest.TestCase):
         }, default=os.fspath))
         approval.chmod(0o600)
         return approval
+
+    def migration_case(self):
+        legacy = self.root/"legacy source"
+        legacy.mkdir(mode=0o700)
+        env = dict(PATH=str(Path(sys.executable).parent)+":/usr/bin:/bin",HOME=str(self.root/"isolated-home"),
+                   HOSTBOOK_DIR=str(legacy),HOSTBOOK_STATE=str(self.root/"legacy-state"),
+                   HOSTBOOK_SSH_CONFIG=str(self.root/"legacy-ssh"),XDG_CONFIG_HOME=str(self.root/"legacy-settings"),
+                   GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_GLOBAL=os.devnull,GIT_TERMINAL_PROMPT="0",GIT_OPTIONAL_LOCKS="0",
+                   GIT_AUTHOR_NAME="Synthetic",GIT_AUTHOR_EMAIL="synthetic@invalid",GIT_COMMITTER_NAME="Synthetic",
+                   GIT_COMMITTER_EMAIL="synthetic@invalid",LC_ALL="C")
+        def git(*args):
+            return subprocess.check_output(["/usr/bin/git",*args],cwd=legacy,env=env,stderr=subprocess.PIPE).strip()
+        git("init","-q","--template=")
+        git("symbolic-ref","HEAD","refs/heads/main")
+        (legacy/"team.conf").write_text("Host original\n  HostName 192.0.2.18\n")
+        git("add",".")
+        git("commit","-qm","Original host")
+        app = self.installed_launcher()
+        def inspect(*args):
+            return json.loads(subprocess.check_output([app,"store-migration-inspect",str(legacy),*args],cwd=self.root,env=env,stderr=subprocess.PIPE))
+        return SimpleNamespace(legacy=legacy,env=env,git=git,inspect=inspect)
+
+    def test_installed_migration_inspection_keeps_private_or_configured_shared_source_pristine(self):
+        f = self.migration_case()
+        original = snapshot(f.legacy)
+        private = f.inspect()
+        self.assertEqual(private["role"],"private-default")
+        self.assertEqual(private["vault"],"absent")
+        self.assertEqual(private["revision"],f.git("rev-parse","HEAD").decode())
+        self.assertFalse(private["cutover_ready"])
+        self.assertEqual(snapshot(f.legacy),original)
+        f.git("remote","add","origin","https://synthetic:never-report@offline.invalid/team")
+        shared = snapshot(f.legacy)
+        row = f.inspect()
+        self.assertEqual((row["role"],row["remote_count"],row["remote_observation"]),("shared",1,"not-contacted"))
+        self.assertIn("verify-shared-vault-and-ref-policy",row["blockers"])
+        self.assertNotIn("never-report",json.dumps(row))
+        self.assertEqual(snapshot(f.legacy),shared)
+        (f.legacy/".git/packed-refs").symlink_to(self.root/"unavailable-packed-refs")
+        unresolved = f.inspect()
+        self.assertEqual((unresolved["role"],unresolved["remote_count"]),("shared",1))
+        self.assertIn("inspect-original-git-configuration",unresolved["blockers"])
+        (f.legacy/".git/packed-refs").unlink()
+        f.git("remote","add","second","file:///not-selected")
+        self.assertIn("choose-exact-remote",f.inspect()["blockers"])
+        f.git("remote","remove","origin"); f.git("remote","remove","second")
+        f.git("config","include.path","unresolved-policy.conf")
+        self.assertEqual(f.inspect()["role"],"ambiguous")
+
+    def test_migration_inspection_distinguishes_locked_partial_and_damaged_vault_without_prompts(self):
+        v = self.transfer_vaults()
+        f = self.migration_case()
+        vault = f.legacy/"secrets"
+        shutil.copytree(v.source.vault,vault)
+        self.assertEqual(f.inspect()["vault"],"locked-unverified")
+        ciphertext = (vault/"vault.key.age").read_bytes()
+        (vault/"vault.recovery.age").rename(self.root/"withheld-recovery")
+        self.assertEqual(f.inspect()["vault"],"partial")
+        (self.root/"withheld-recovery").rename(vault/"vault.recovery.age")
+        (vault/"vault.pub").write_text("not a native recipient\n")
+        snapshot_before = snapshot(f.legacy)
+        self.assertEqual(f.inspect()["vault"],"damaged")
+        self.assertEqual((vault/"vault.key.age").read_bytes(),ciphertext)
+        self.assertEqual(snapshot(f.legacy),snapshot_before)
 
     def test_legacy_writers_reject_managed_checkout_before_bootstrap(self):
         app = Path(__file__).resolve().parents[1] / "hostbook"

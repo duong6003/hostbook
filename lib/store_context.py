@@ -994,6 +994,9 @@ def main(args):
         if action in ("_store_add", "store-add", "_store_import", "store-import"):
             from store_private import private_command
             return private_command(action, args[1:])
+        if action == "store-migration-inspect":
+            from store_migration import inspection_command
+            return inspection_command(args[1:])
         if action in ("store-transfer","store-transfer-recover"):
             from store_transfer_command import transfer_command
             return transfer_command(args[1:],recovery=action == "store-transfer-recover")

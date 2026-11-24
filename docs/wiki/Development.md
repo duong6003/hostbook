@@ -486,3 +486,15 @@ definitive shared rejection, the original branch, private copy and recovery
 data remain available. Keep both checkouts and the device journal together.
 An unobserved or partially applied local effect requires reconciliation of its
 original ref, index, worktree and exchange files before release.
+
+## Legacy migration inspection
+
+Run `hostbook store-migration-inspect /absolute/path/to/legacy-checkout` for a
+local inventory. It reports the checkout binding, checked-out branch and
+revision when readable, configured remote count, prior remote-ref evidence and
+the local vault's structural condition. A configured remote remains shared
+while offline or when other Git evidence is unreadable. Unresolved includes or
+multiple remotes require a decision before migration can continue. The command
+reads the original files without contacting a remote, assigning IDs, creating
+a vault or changing the checkout. A locked vault still requires independent
+unlock and validation. No inspection result authorizes cutover.
