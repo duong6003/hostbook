@@ -87,9 +87,9 @@ def inspect_paths(checkout,state,uids):
     def observation():
         identities = memberships()
         evidence,seen = [],set()
-        grant = None
+        grant,future = None,None
         def check(fd,role,reachable,child=None):
-            nonlocal grant
+            nonlocal grant,future
             current = os.fstat(fd)
             acl = linux_acl(fd,"system.posix_acl_access")
             inherited = linux_acl(fd,"system.posix_acl_default") if stat.S_ISDIR(current.st_mode) else ()
@@ -106,6 +106,8 @@ def inspect_paths(checkout,state,uids):
                     writable = bits & 3 == 3 and (not current.st_mode & stat.S_ISVTX or uid == child.st_uid)
                 else:
                     writable = bits & 3 == 3 if stat.S_ISDIR(current.st_mode) else bool(bits & 2)
+                if child is None and uid in searchable and inherited and access_bits(current,inherited,uid,groups) & 2:
+                    future = future or role
                 if uid == current.st_uid or writable:
                     grant = grant or role
             return mid,searchable
@@ -146,13 +148,17 @@ def inspect_paths(checkout,state,uids):
                 walk(fd,role,mount_id(fd),reachable)
             finally:
                 os.close(fd)
-        return grant,evidence,identities
+        return grant,evidence,identities,future
     try:
         first = observation()
         require(observation() == first,"writer access evidence changed")
     except (KeyError,OSError,StoreContextError,RecursionError):
         return result("unknown","resource-or-principal-binding")
-    return result("access-remains",first[0]) if first[0] else result("checked","checkout-git-state-and-ancestors")
+    report = result("access-remains",first[0]) if first[0] else result("checked","checkout-git-state-and-ancestors")
+    report["inherited_write"] = first[3]
+    if first[3]:
+        report["blockers"].append("review-inherited-write-access")
+    return report
 
 
 def writer_command(args):

@@ -262,6 +262,13 @@ class StoreContextTest(unittest.TestCase):
         self.root.chmod(0o711); f.legacy.chmod(0o711)
         try:
             self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+            os.removexattr(child,"system.posix_acl_access")
+            child.chmod(0o600)
+            os.setxattr(f.legacy,"system.posix_acl_default",struct.pack("<I",2)+b"".join(struct.pack("<HHI",*v) for v in entries))
+            future = inspect(other)
+            self.assertEqual(future["filesystem_permissions"],"checked")
+            self.assertEqual(future["inherited_write"],"checkout")
+            self.assertIn("review-inherited-write-access",future["blockers"])
         finally:
             self.root.chmod(0o700); f.legacy.chmod(0o700)
 
