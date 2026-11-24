@@ -994,6 +994,9 @@ def main(args):
         if action in ("_store_add", "store-add", "_store_import", "store-import"):
             from store_private import private_command
             return private_command(action, args[1:])
+        if action == "store-transfer-preview":
+            from store_transfer import preview_command
+            return preview_command(args[1:])
         if action in ("_store_mode", "store-mode"):
             from store_mode import mode_command
             return mode_command(action, args[1:])

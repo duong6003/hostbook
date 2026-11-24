@@ -116,7 +116,9 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py",
+                         "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
+                         "store_transfer.py", "store_transfer_credentials.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -2769,6 +2771,57 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         with self.assertRaises(StoreContextError):
             vault.open_secret(f.identities[f.src.store_id], staged.ciphertext)
         self.assertEqual(before, snapshot(self.root))
+
+    def test_transfer_preview_classifies_stable_id_name_and_endpoint_without_exposing_source_text(self):
+        from store_transfer import preview
+        source_id = new_id()
+        f = self.prepare_receive()
+        self.assertEqual(f.receive().returncode, 0)
+        src = self.write_route(0, source_id, "# private fixture note\n# secret: login\nHost DB\n"
+                               "  Hostname 192.0.2.2\n  ProxyJump relay.example\n", name="DB")
+        f.git(src.checkout,"init","-q","--template=")
+        f.git(src.checkout,"symbolic-ref","HEAD","refs/heads/main")
+        f.git(src.checkout,"add",".")
+        f.git(src.checkout,"commit","-qm","Fixture selected source")
+        dst = self.resolve(1)
+        def observe(alias="DB"):
+            return preview(lambda: self.account,src.store_id,self.generations,source_id,
+                           dst.store_id,self.generations,alias).comparison()
+        before = snapshot(self.root)
+        result = observe()
+        self.assertEqual(result["source"]["host_id"], source_id)
+        self.assertEqual(result["source"]["proxyjump"], "relay.example")
+        self.assertEqual(result["source"]["credential"], "login")
+        self.assertNotIn("private fixture note", json.dumps(result))
+        self.assertEqual(result["matches"][0]["reasons"], ["alias","endpoint"])
+        self.assertEqual(result["destination"]["proposed_host_id"], source_id)
+        self.assertEqual(result["publications"], [{"store_id":dst.store_id,"ref":"refs/heads/main","effect":"destination-save"}])
+        self.assertEqual(observe("separate")["matches"][0]["reasons"], ["endpoint"])
+        self.assertEqual(snapshot(self.root), before)
+        if os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME") == "1":
+            import pwd
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            self.assertIn(home, (Path("/fixture-home"),Path("/home/hostbook-fixture")))
+            self.assertTrue(Path("/.dockerenv").is_file())
+            self.assertFalse((home/".config").exists())
+            approval = self.write_local_approval(home)
+            self.addCleanup(approval.parent.parent.rmdir)
+            self.addCleanup(approval.parent.rmdir)
+            self.addCleanup(approval.unlink)
+            result = subprocess.run([f.app,"store-transfer-preview",src.store_id,"1","2","3","4",source_id,
+                                     dst.store_id,"1","2","3","4","DB"],cwd=self.root/"shared b",env=f.env,
+                                    capture_output=True,check=True,timeout=15)
+            self.assertEqual(json.loads(result.stdout), observe())
+        identity = dst.checkout/".hostbook/identity.json"
+        data = json.loads(identity.read_bytes())
+        existing_key = data["hosts"][0]["host_id"]
+        data["hosts"][0]["host_id"] = source_id
+        identity.write_text(json.dumps(data))
+        f.git(dst.checkout,"add",".hostbook/identity.json")
+        f.git(dst.checkout,"commit","-qm","Fixture same host ID")
+        f.git(dst.checkout,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        self.assertNotEqual(existing_key, source_id)
+        self.assertEqual(observe("separate")["matches"][0]["reasons"], ["stable-id","endpoint"])
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
