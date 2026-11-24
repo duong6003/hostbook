@@ -51,7 +51,19 @@ def control(record, prior):
                     "invalid transition progression")
         return {store}, phase in ("applied", "cancelled")
     require(record["operation"] == "publish", "unknown control operation")
-    fields(detail, "attempt_id connection_generation connection_binding_id base_oid proposed_oid sender_state outcome")
+    fields(detail, "attempt_id connection_generation connection_binding_id base_oid proposed_oid sender_state outcome" +
+           (" resolution" if "resolution" in detail else ""))
+    if "resolution" in detail:
+        link = detail["resolution"]
+        fields(link,"action original_attempt original_base original_proposal"+(" review_id" if "review_id" in link else ""))
+        if "review_id" in link:
+            require(isinstance(link["review_id"],str) and re.fullmatch(r"[a-f0-9]{64}",link["review_id"]),
+                    "invalid confirmed conflict comparison")
+        require(link["action"] in ("use-candidate-address","restore-candidate") and valid_id(link["original_attempt"])
+                and link["original_attempt"] != detail["attempt_id"] and all(
+                    isinstance(link[k],str) and re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})",link[k])
+                    for k in ("original_base","original_proposal")),"invalid publication resolution")
+
     for name in ("attempt_id", "connection_binding_id"):
         primary_id(detail, name)
     require(positive(detail["connection_generation"]) and all(isinstance(detail[k], str)
@@ -61,7 +73,7 @@ def control(record, prior):
     drained = attempt_outcome(detail)
     if prior:
         old = prior["detail"]
-        require(not attempt_outcome(old) and all(old[k] == detail[k] for k in detail
+        require(set(old) == set(detail) and not attempt_outcome(old) and all(old[k] == detail[k] for k in detail
                 if k not in ("sender_state", "outcome")) and not
                 (old["outcome"] == "uncertain" and detail["outcome"] == "reserved"), "invalid publication progression")
     else:
@@ -155,6 +167,114 @@ def transaction(record, prior):
     return (None if op == "migration" and not complete else stores), complete
 
 
+def publication_receipt(stores, attempt):
+    role = next(row["role"] for row in stores if row["store_id"] == attempt["store_id"])
+    return dict(attempt,published_role=role)
+
+
+def sender_receipt(sender):
+    original = private_json(sender,"outcome.json")
+    try:
+        observed = private_json(sender,"observed-outcome.json")
+    except FileNotFoundError:
+        return original
+    require(original.get("outcome") == "uncertain" and original.get("sender_state") == "quiescent"
+            and valid_id(original.get("evidence_id")) and valid_id(observed.get("evidence_id"))
+            and original["evidence_id"] != observed["evidence_id"] and observed == dict(original,
+            outcome="accepted",evidence_id=observed["evidence_id"]),"inconsistent reconciled sender outcome")
+    return observed
+
+
+def completion_receipt(record, version=2):
+    receipt = {"version":version,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
+               "payload_id":record["payload_id"],"effects":[row["evidence_id"] for row in record["effects"]],
+               "attempts":[row["evidence_id"] for row in record["attempts"]]}
+    if version == 2:
+        receipt["publication"] = publication_receipt(record["stores"],record["attempts"][0])
+    return receipt
+
+def retained_envelopes(folder, record):
+    from store_transfer_recovery import capture
+    with open_directory(folder,("recovery",)) as generations,open_directory(folder,("payloads",)) as payloads:
+        require_private_directory(generations,"transfer recovery generations")
+        with open_directory(generations,(str(record["recovery_generation"]),)) as envelopes:
+            files,_ = capture(envelopes,payloads,record["payload_id"],("vault.key.age","vault.recovery.age"))
+            if not re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}\n",files.pop("vault.pub")):
+                return False
+            if not all(data.startswith(b"-----BEGIN AGE ENCRYPTED FILE-----\n")
+                       and data.endswith(b"-----END AGE ENCRYPTED FILE-----\n") for data in files.values()):
+                return False
+    return True
+
+
+def rollback_receipt(record):
+    return {"version":1,"transaction_id":record["transaction_id"],"sequence":record["sequence"],
+            "payload_id":record["payload_id"],"destination_effect":record["effects"][0]["evidence_id"],
+            "compensation":record["effects"][1]["evidence_id"]}
+
+
+def verified_rollback(folder, record, prior):
+    if (record["operation"] != "transfer" or not prior or prior["checkpoint"] != "rollback-pending"
+            or record["attempts"] or prior["attempts"] or record["sequence"] < 3):
+        return False
+    dst = next(row["store_id"] for row in record["stores"] if row["role"] == "destination")
+    effects = record["effects"]
+    if (len(effects) != 2 or len(prior["effects"]) != 2 or prior["effects"][0] != effects[0]
+            or any(e["store_id"] != dst or e["outcome"] != "observed" or not valid_id(e["evidence_id"]) for e in effects)
+            or prior["effects"][1] != dict(effects[1],outcome="intended",evidence_id=None)
+            or any(record[key] != prior[key] for key in ("stores","hosts","owner","collection"))
+            or record["collection"] != {"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}):
+        return False
+    try:
+        with open_directory(folder,("records",)) as history:
+            for seq in range(prior["previous_sequence"],0,-1):
+                original = private_json(history,str(seq)+".json")
+                if original["sequence"] != seq or original["previous_sequence"] != seq-1:
+                    return False
+                if original["checkpoint"] != "rollback-pending":
+                    break
+                if (original["effects"] != prior["effects"] or original["attempts"] or any(original[k] != prior[k]
+                        for k in ("hosts","stores","owner","collection"))):
+                    return False
+            return (original["checkpoint"] == "destination-confirmed" and original["effects"] == effects[:1] and not original["attempts"]
+                    and all(original[k] == record[k] for k in ("hosts","stores"))
+                    and private_json(folder,"rollback.json") == rollback_receipt(record) and retained_envelopes(folder,record))
+    except (OSError,StoreContextError):
+        return False
+
+
+def verified_completion(folder, record, prior):
+    if (record["operation"] != "transfer" or not prior or prior["checkpoint"] != "source-confirmed"
+            or any(prior[key] != record[key] for key in ("stores","hosts","owner","effects","attempts","collection"))):
+        return False
+    roles = {s["role"]:s["store_id"] for s in record["stores"]}
+    effects,attempts = record["effects"],record["attempts"]
+    if (len(effects) != 2 or [e["store_id"] for e in effects] != [roles["destination"],roles["source"]]
+            or any(e["outcome"] != "observed" or not valid_id(e["evidence_id"]) for e in effects)
+            or len(attempts) != 1 or attempts[0]["store_id"] not in roles.values()
+            or attempts[0]["outcome"] != "accepted" or attempts[0]["sender_state"] != "quiescent"
+            or record["collection"] != {"decision_id":None,"payload_state":"retained","payload_ids":[],"recovery_generations":[]}):
+        return False
+    attempt = attempts[0]
+    try:
+        if not retained_envelopes(folder,record):
+            return False
+        with open_directory(folder,("senders",attempt["attempt_id"])) as sender:
+            require_private_directory(sender,"transfer sender")
+            completion = private_json(folder,"completion.json")
+            observed = sender_receipt(sender)
+            full = publication_receipt(record["stores"],attempt)
+            if completion == completion_receipt(record):
+                return observed == full
+            if completion != completion_receipt(record,1):
+                return False
+            # Earlier format-1 completions used the brief receipt only for a destination send.
+            brief = {key:attempt[key] for key in ("attempt_id","evidence_id","sender_state","outcome")}
+            return observed == full or (attempt["store_id"] == roles["destination"] and observed == brief)
+    except (OSError,StoreContextError):
+        return False
+
+
 def classify(folder, account, ident, kind):
     key = "record_id" if kind == "control" else "transaction_id"
     selector = private_json(folder, "current.json")
@@ -178,6 +298,10 @@ def classify(folder, account, ident, kind):
                     "invalid recovery revision")
             check_owner(record["owner"])
             scope, terminal = (control if kind == "control" else transaction)(record, prior)
+            if kind == "transactions" and record["checkpoint"] == "completed":
+                terminal = verified_completion(folder,record,prior)
+            if kind == "transactions" and record["checkpoint"] == "rolled-back":
+                terminal = verified_rollback(folder,record,prior)
             if kind == "transactions" and record["checkpoint"] in TERMINAL and not terminal:
                 unsettled_terminal = True
                 if scope is None:
@@ -192,7 +316,21 @@ def classify(folder, account, ident, kind):
         return affected, terminal and not unsettled_terminal and selector["sequence"] == len(names)
 
 
-def require_idle(recovery_fd, account, store_id, transition=None, sender=None):
+def selected_transfer(folder, history, selector, record, finishing=None):
+    seq = record["sequence"]
+    if selector["sequence"] != seq or private_json(history,f"{seq}.json") != record:
+        return False
+    count = len(os.listdir(history))
+    if count == seq:
+        return True
+    if count != seq+1 or (record["checkpoint"],finishing) not in (("rollback-pending","rolled-back"),("source-confirmed","completed")):
+        return False
+    successor = private_json(history,f"{seq+1}.json")
+    verify = verified_rollback if finishing == "rolled-back" else verified_completion
+    return successor["checkpoint"] == finishing and verify(folder,successor,record)
+
+
+def require_idle(recovery_fd, account, store_id, transition=None, sender=None, *, transfer=None, finishing=None):
     for kind in ("transactions", "control"):
         try:
             container = os.open(kind, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=recovery_fd)
@@ -209,6 +347,12 @@ def require_idle(recovery_fd, account, store_id, transition=None, sender=None):
                     except (TypeError, KeyError) as exc:
                         raise StoreContextError("invalid recovery record") from exc
                     own = False
+                    if (transfer is not None and kind == "transactions" and ident == transfer["transaction_id"]
+                            and transfer["operation"] == "transfer" and scope is not None and store_id in scope
+                            and scope == {row["store_id"] for row in transfer["stores"]}):
+                        selected = private_json(folder,"current.json")
+                        with open_directory(folder,("records",)) as history:
+                            own = selected_transfer(folder,history,selected,transfer,finishing)
                     if (transition is not None and kind == "control" and ident == transition["record_id"]
                             and scope == {store_id} and transition["operation"] == "registration-transition"):
                         with open_directory(folder, ("records",)) as history:

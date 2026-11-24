@@ -37,7 +37,12 @@ IDENTITY = ".hostbook/identity.json"
 def git_result(cwd, *args, data=b"", pass_fds=()):
     cmd = [GIT, "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
            "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "fetch.fsckObjects=true", *args]
-    with subprocess.Popen(cmd, cwd=cwd, env=SAFE_ENV, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    directory_fd = cwd if isinstance(cwd,int) else None
+    if directory_fd is not None:
+        pass_fds = (*pass_fds,directory_fd)
+    with subprocess.Popen(cmd, cwd=cwd if directory_fd is None else None, env=SAFE_ENV,
+                          preexec_fn=None if directory_fd is None else lambda: os.fchdir(directory_fd),
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, pass_fds=pass_fds) as child:
         try:
             out, _ = child.communicate(data, timeout=30)
@@ -140,7 +145,7 @@ def publish_receive_marker(store_fd, record):
 
 
 @contextmanager
-def receive_binding(account, store_id, expected, own_record=None):
+def receive_binding(account, store_id, expected, own_record=None, *, transfer=None):
     with resolved_store(account, store_id, expected) as (context, checkout, root_fd, state_fd):
         require(context.kind == "shared" and context.effective_mode in ("receive-only", "two-way")
                 and context.transition_id is None, "a connected unfenced shared store is required")
@@ -148,27 +153,34 @@ def receive_binding(account, store_id, expected, own_record=None):
                 "receive requires a regular Git checkout")
         with bound_directory(root_fd, path_parts(account.root.path, account.recovery.path), account.recovery,
                              "invalid recovery root") as recovery_fd:
-            require_idle(recovery_fd, account, store_id)
-        parts = path_parts(account.state.path, context.status.parent)
-        with open_directory(state_fd, parts) as settings:
-            require_private_directory(settings, "connection settings")
-            record = parse_json(read_file(settings, "target.json", 16384, require_approval_file))
-            fields(record, "version store_id target_id connection_generation ref uid bare_repository")
-            require(type(record["version"]) is int and record["version"] == 1 and record["store_id"] == store_id
-                    and record["target_id"] == context.target_id and record["ref"] == context.ref
-                    and type(record["connection_generation"]) is int
-                    and record["connection_generation"] == expected.connection and type(record["uid"]) is int
-                    and record["uid"] == os.geteuid(), "registered transport binding mismatch")
-            target = parse_directory_binding(record["bare_repository"])
-            groups = [(target,), (account.state,), (account.recovery,)]
-            groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
-            verify_path_isolation(root_fd, account.root.path, groups)
-            with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
-                                 "registered transport changed") as target_fd:
-                with open_directory(state_fd, parts[:3]) as store_fd:
-                    require_private_directory(store_fd, "store state")
-                    require_no_receive_pending(store_fd, own_record)
-                    yield context, target, target_fd, store_fd, checkout
+            require_idle(recovery_fd, account, store_id, transfer=transfer)
+        with registered_target(account,context,root_fd,state_fd) as (target,target_fd):
+            with open_directory(state_fd,("stores","v1",store_id)) as store_fd:
+                require_private_directory(store_fd, "store state")
+                require_no_receive_pending(store_fd, own_record)
+                yield context, target, target_fd, store_fd, checkout
+
+
+@contextmanager
+def registered_target(account,context,root_fd,state_fd):
+    """Open the currently named transport target from a freshly resolved registration."""
+    parts = path_parts(account.state.path, context.status.parent)
+    with open_directory(state_fd, parts) as settings:
+        require_private_directory(settings, "connection settings")
+        record = parse_json(read_file(settings, "target.json", 16384, require_approval_file))
+        fields(record, "version store_id target_id connection_generation ref uid bare_repository")
+        require(type(record["version"]) is int and record["version"] == 1 and record["store_id"] == context.store_id
+                and record["target_id"] == context.target_id and record["ref"] == context.ref
+                and type(record["connection_generation"]) is int
+                and record["connection_generation"] == context.generations.connection and type(record["uid"]) is int
+                and record["uid"] == os.geteuid(), "registered transport binding mismatch")
+        target = parse_directory_binding(record["bare_repository"])
+        groups = [(target,), (account.state,), (account.recovery,)]
+        groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
+        verify_path_isolation(root_fd, account.root.path, groups)
+        with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
+                             "registered transport changed") as target_fd:
+            yield target, target_fd
 
 
 @contextmanager
@@ -181,7 +193,7 @@ def absolute_directory(path):
         os.close(root)
 
 
-def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None, read_passphrase=None):
+def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_account=None, read_passphrase=None, review_routes=None):
     git(stage, "merge-base", "--is-ancestor", base, tip)
     changed = set(git(stage, "diff", "--no-renames", "--name-only", "-z", base, tip).split(b"\0")[:-1])
     incoming_files = tree(stage, tip, git)
@@ -226,7 +238,9 @@ def verify_incoming(stage, tip, base, store_id, local, requested=None, *, vault_
     prepared, _ = managed_credentials(files, incoming["hosts"])
     with ssh_view(prepared, local) as config:
         for host in incoming["hosts"]:
-            route = effective(config, host["name"])
+            route = effective(config, host["name"],complete=review_routes is not None)
+            if review_routes is not None:
+                review_routes[host["host_id"]] = route
             if requested and host["name"] in requested:
                 for key, value in requested[host["name"]].items():
                     require(route[key] == value, "imported host differs from the reviewed OpenSSH route")

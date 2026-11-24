@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import tempfile
 from uuid import uuid4
@@ -16,7 +17,7 @@ from store_context import (JSON_LIMIT, Generations, acquire_local_lock, entry_ge
                            staged_local_file, store_writer, sync_local, valid_id, validate_entry, verify_state_directory)
 from store_journal import check_owner, control as validate_control, classify, private_json, require_idle
 from store_publish import attempt_binding, boot_id, read_attempt, json_bytes, recovery_root, select_record, sync_named
-from store_receive import absolute_directory, fetch_from_fd, git, oid, receive, receive_binding, require_no_receive_pending, verify_incoming
+from store_receive import absolute_directory, fetch_from_fd, git, oid, receive, receive_binding, registered_target, require_no_receive_pending, verify_incoming
 from store_read import local_inputs
 import store_publish
 
@@ -91,7 +92,22 @@ def mode_records(recovery, account, store_id, pointer):
                             retry = private_json(edit, "retry.json")
                         except FileNotFoundError:
                             retry = None
-                    if retry:
+                    if "resolution" in first["detail"]:
+                        require(retry is None,"conflict resolution cannot also be a retry")
+                        link = first["detail"]["resolution"]
+                        origin = candidate_record(recovery,account,store_id,link["original_attempt"])
+                        with open_directory(recovery,("edits",ident)) as folder:
+                            new = attempt_binding(folder,account,first)
+                        original,_ = read_attempt(recovery,account,store_id,origin["attempt_id"])
+                        with open_directory(recovery,("edits",origin["attempt_id"])) as folder:
+                            old = attempt_binding(folder,account,original)
+                        require("resolution" not in original["detail"] and
+                                (link["original_base"],link["original_proposal"]) == (origin["base_oid"],origin["proposed_oid"])
+                                and all(old[k] == new[k] for k in ("store_id","device_id","target_id","ref","bare_repository","uid","host_id"))
+                                and all(old["generations"][k] == new["generations"][k] for k in ("registration","checkout","connection")),
+                                "original conflict resolution binding changed")
+                        retries[ident] = (origin,tail["detail"]["outcome"])
+                    elif retry:
                         fields(retry, "original_attempt")
                         require(valid_id(retry["original_attempt"]), "invalid retry evidence")
                         origin = candidate_record(recovery, account, store_id, retry["original_attempt"])
@@ -120,13 +136,21 @@ def decision(recovery, first):
         record = private_json(folder, "decision.json")
         require(hashlib.sha256(json_bytes(record)).hexdigest() == plan["decision_sha256"],
                 "mode decision evidence changed")
-    fields(record, "action candidates" + (" send_attempt" if record.get("action") in ("send-confirmed","drain") else ""))
+    fields(record, "action candidates" + (" send_attempt" if record.get("action") in ("send-confirmed","drain") else "")
+           + (" reviewed_remote" if record.get("action") == "keep-remote" else ""))
+    if record["action"] == "keep-remote":
+        reviewed = record["reviewed_remote"]
+        fields(reviewed,"revision ref review_id"+(" ssh_inputs" if "ssh_inputs" in reviewed else ""))
+        require(len(record["candidates"]) == 1 and reviewed["ref"] == record["candidates"][0]["ref"]
+                and isinstance(reviewed["revision"],str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",reviewed["revision"])
+                and isinstance(reviewed["review_id"],str) and re.fullmatch(r"[0-9a-f]{64}",reviewed["review_id"]),
+                "invalid reviewed remote decision")
     if record["action"] == "send-confirmed":
         require(valid_id(record["send_attempt"]) and len(record["candidates"]) == 1, "invalid confirmed sender")
     if record["action"] == "drain":
         require(valid_id(record["send_attempt"]) and not record["candidates"], "invalid admitted sender")
-    require(record["action"] in ("clean","discard-confirmed","send-confirmed","drain") and isinstance(record["candidates"],list)
-            and bool(record["candidates"]) == (record["action"] in ("discard-confirmed","send-confirmed")), "invalid mode decision")
+    require(record["action"] in ("clean","discard-confirmed","send-confirmed","drain","keep-remote") and isinstance(record["candidates"],list)
+            and bool(record["candidates"]) == (record["action"] in ("discard-confirmed","send-confirmed","keep-remote")), "invalid mode decision")
     return record
 
 
@@ -220,7 +244,7 @@ def recover_sender_links(recovery, account, store):
         os.close(drafts)
 
 
-def prepare_transition(recovery, account, entry, wanted, action, candidates, send_attempt=None):
+def prepare_transition(recovery, account, entry, wanted, action, candidates, send_attempt=None, *, reviewed_remote=None):
     ident = str(uuid4())
     old_id, new_id = str(uuid4()), str(uuid4())
     rec = {"format":"hostbook-control", "version":1, "record_id":ident, "device_id":account.device_id,
@@ -236,6 +260,8 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates, sen
             choice = {"action":action, "candidates":candidates}
             if send_attempt is not None:
                 choice["send_attempt"] = send_attempt
+            if reviewed_remote is not None:
+                choice["reviewed_remote"] = reviewed_remote
             saved = json_bytes(choice)
             durable_file(evidence, "decision.json", saved)
             durable_file(evidence, old_id, json_bytes(entry))
@@ -253,13 +279,36 @@ def prepare_transition(recovery, account, entry, wanted, action, candidates, sen
     return rec, rec
 
 
-def finish_record(recovery, first, tail, phase):
+def verify_kept_remote(account,recovery,entry,choice):
+    source, = choice["candidates"]
+    store = entry["store_id"]
+    require(candidate_record(recovery,account,store,source["attempt_id"],verify_bundle=True) == source,
+            "retained candidate changed")
+    original,_ = read_attempt(recovery,account,store,source["attempt_id"])
+    reviewed = choice["reviewed_remote"]
+    with open_directory(recovery,("edits",source["attempt_id"])) as edit:
+        evidence = attempt_binding(edit,account,original)
+    with resolved_store(account,store,entry_generations(entry)) as (ctx,_,root,state):
+        inputs = []
+        local_inputs(state,store,inputs)
+        require(inputs == reviewed.get("ssh_inputs"),"reviewed SSH input changed")
+        with registered_target(account,ctx,root,state) as (target,remote):
+            require(ctx.target_id == evidence["target_id"] and ctx.ref == reviewed["ref"] == evidence["ref"]
+                    and evidence["bare_repository"] == dict(asdict(target),path=str(target.path))
+                    and all(getattr(ctx.generations,key)==evidence["generations"][key] for key in
+                            ("registration","connection","checkout"))
+                    and direct_ref(remote,ctx.ref)==reviewed["revision"],"reviewed remote changed before disposition")
+
+
+def finish_record(recovery, first, tail, phase, before_commit=None):
     with open_directory(recovery, ("control", first["record_id"])) as control:
         if tail["sequence"] == 1:
             tail = dict(first, sequence=2, previous_sequence=1, detail=dict(first["detail"], phase=phase))
             with open_directory(control, ("records",)) as history:
                 with staged_local_file(control, "2.json", json_bytes(tail)) as temp:
                     sync_named(control, temp)
+                    if before_commit:
+                        before_commit()
                     rename_guarded(control, temp, history, "2.json", exchange=False)
                     sync_local(history)
         require(tail["detail"]["phase"] == phase, "transition decision changed")
@@ -280,7 +329,7 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     require(old["store_id"] == entry["store_id"] and old["kind"] == "shared" and old["transition_id"] is None
             and old["effective_mode"] in ("two-way", "receive-only") and wanted in ("two-way", "receive-only")
             and (wanted != old["effective_mode"] or (wanted == "two-way" and choice["action"] in
-                ("send-confirmed","discard-confirmed"))) and proposed == dict(old, effective_mode=wanted,
+                ("send-confirmed","discard-confirmed","keep-remote"))) and proposed == dict(old, effective_mode=wanted,
                 policy_generation=old["policy_generation"]+3), "invalid mode plan")
     fenced = dict(old, transition_id=ident, policy_generation=old["policy_generation"]+1)
     changed = dict(fenced, effective_mode=wanted, policy_generation=fenced["policy_generation"]+1)
@@ -314,6 +363,11 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
         require(entry == fenced, "unsettled sender crossed the publication fence")
         return entry
     pending_after_drain = choice["action"] == "drain" and mode_records(recovery, account, entry["store_id"], ident)[1]
+    if choice["action"] == "keep-remote" and entry == changed and (tail["detail"]["phase"] == "cancelled" or
+            (tail["sequence"] == 1 and requested == "cancel")):
+        finish_record(recovery,first,tail,"cancelled")
+        replace_entry(state,account,changed,proposed,verify)
+        return proposed
     if tail["detail"]["phase"] == "cancelled" or (entry == fenced and (requested == "cancel" or
                                                   outcome == "not-accepted" or pending_after_drain)):
         require(entry == fenced, "cancelled transition changed its effective mode")
@@ -323,7 +377,13 @@ def apply_transition(state, recovery, account, entry, active, requested, verify)
     if entry == fenced:
         require(tail["detail"]["phase"] == "fenced", "effective transition update missing")
         replace_entry(state, account, fenced, changed, verify)
-    finish_record(recovery, first, tail, "applied")
+    if choice["action"] == "keep-remote":
+        def reviewed():
+            verify(changed)
+            verify_kept_remote(account,recovery,changed,choice)
+        finish_record(recovery,first,tail,"applied",reviewed)
+    else:
+        finish_record(recovery, first, tail, "applied")
     replace_entry(state, account, changed, proposed, verify)
     return proposed
 

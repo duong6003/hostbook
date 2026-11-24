@@ -115,8 +115,12 @@ def prepare_proposal(stage, base, tip, store_id, host_id, address, attempt, sign
     updated = b"".join(lines)
     next(source for source in identity["sources"] if source["path"] == path)["sha256"] = hashlib.sha256(updated).hexdigest()
     identity["generation"] += 1
+    return commit_changes(stage,tip,{path:updated,IDENTITY:json.dumps(identity,ensure_ascii=False).encode()+b"\n"},attempt)
+
+
+def commit_changes(stage,tip,changes,attempt):
     git(stage, "read-tree", tip)
-    for name, data in ((path, updated), (IDENTITY, json.dumps(identity, ensure_ascii=False).encode() + b"\n")):
+    for name,data in changes.items():
         blob = git(stage, "hash-object", "-w", "--stdin", data=data).strip().decode()
         git(stage, "update-index", "--add", "--cacheinfo", "100644", blob, name)
     root = oid(stage, git(stage, "write-tree").strip().decode())
@@ -364,7 +368,7 @@ def publish_reserved(load_account, account, ctx, target, target_fd, binding, hos
         return launch_reserved(load_account, account, recovery, ctx, expected, stage, target_fd, reservation)
 
 
-def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed, bundle, attempt, binding_id, retry_of=None):
+def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed, bundle, attempt, binding_id, retry_of=None, *, resolution=None):
     expected, store_id = ctx.generations, ctx.store_id
     record = {"format":"hostbook-control", "version":1, "record_id":attempt, "device_id":account.device_id,
               "root_id":account.recovery_root_id, "sequence":1, "previous_sequence":0, "store_id":store_id,
@@ -394,6 +398,10 @@ def reserve_edit(opened, recovery, account, ctx, target, host_id, tip, proposed,
                 "generations":asdict(expected), "bare_repository":dict(asdict(target),path=str(target.path)),
                 "lease_device":lease_info.st_dev, "lease_inode":lease_info.st_ino, "host_id":host_id,
                 "bundle_sha256":digest.hexdigest()}
+    if resolution is not None:
+        require(retry_of is None,"a conflict resolution cannot also be an unchanged retry")
+        record["detail"]["resolution"] = resolution
+        evidence["resolution"] = resolution
     if retry_of is not None:
         durable_file(edit, "retry.json", json_bytes({"original_attempt":retry_of}))
     durable_file(edit, "binding.json", json_bytes(evidence))
@@ -474,8 +482,10 @@ def read_attempt(recovery, account, store_id, attempt, repair=False):
 def attempt_binding(edit, account, original):
     require_private_directory(edit, "publication evidence")
     record = private_json(edit, "binding.json")
+    link = original["detail"].get("resolution")
     fields(record, "version binding_id store_id device_id target_id uid ref generations bare_repository "
-                   "lease_device lease_inode host_id bundle_sha256")
+                   "lease_device lease_inode host_id bundle_sha256" + (" resolution" if link is not None else ""))
+    require(record.get("resolution") == link,"original resolution evidence changed")
     fields(record["generations"], "registration checkout connection policy")
     detail = original["detail"]
     require(type(record["version"]) is int and record["version"] == 1 and record["device_id"] == account.device_id
@@ -497,7 +507,12 @@ def observe_attempt(account, edit, original, evidence):
         # The exclusive sender lease is already held. Launch always follows the durable marker.
         return "not-accepted"
     require(started == original["record_id"].encode(), "incomplete send marker")
-    target = parse_directory_binding(evidence["bare_repository"])
+    return observe_original_ref(account,parse_directory_binding(evidence["bare_repository"]),evidence["ref"],
+                                original["detail"]["base_oid"],original["detail"]["proposed_oid"])
+
+
+def observe_original_ref(account, target, ref, base, proposal):
+    """Observe only the originally admitted, direct branch and the proposal's exact parent."""
     with verified_account(account) as (root, _state):
         groups = [(target,), (account.state,), (account.recovery,)]
         groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
@@ -508,9 +523,8 @@ def observe_attempt(account, edit, original, evidence):
             with tempfile.TemporaryDirectory(prefix="settle-", dir=account.state.path) as folder:
                 stage = Path(folder)
                 git(stage, "init", "-q", "--bare", "--template=")
-                tip = fetch_direct(stage, directory, evidence["ref"], "refs/hostbook/observed")
-                proposal = original["detail"]["proposed_oid"]
-                if tip == proposal and git(stage, "show", "-s", "--format=%P", proposal).strip().decode() == original["detail"]["base_oid"]:
+                tip = fetch_direct(stage, directory, ref, "refs/hostbook/observed")
+                if tip == proposal and git(stage, "show", "-s", "--format=%P", proposal).strip().decode() == base:
                     return "accepted"
     return "uncertain"
 

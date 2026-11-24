@@ -304,6 +304,26 @@ the snapshot before caching. The passphrase uses an inherited pipe and the
 identity stays in memory. This API is for scoped consumers. The CLI and the
 legacy Keychain, Secret Service and SSH agent flows still require integration.
 
+The transfer writer prepares a credential with `stage_credential` in
+`lib/store_transfer_credentials.py`. The two `CredentialRef` values bind
+store IDs, expected registration/checkout/connection/policy generations and
+the chosen credential names. The passphrase callback receives one store ID
+at a time. Both vaults must already exist and have distinct recipients.
+Password records and normalized OpenSSH Ed25519, RSA and ECDSA private keys
+are supported, including legacy unencrypted RSA and EC PEM and PKCS#8 keys. A fresh
+private SSH agent verifies the public key by signing.
+
+By default the destination name must be free. Explicit `reuse_existing=True`
+requires compatible metadata and equal decrypted material. A new mapping
+provides transient, owner-only encrypted files through `private_files`.
+Leaving the context removes the staging directory. A reused mapping keeps the
+existing destination files. The transfer writer rechecks the pinned inputs
+under both store gates before installing a candidate, then calls
+`verify_saved` to reopen and decrypt the actual destination record before
+considering source removal. Transaction intent, protected recovery, mutation
+authorization and publication belong to the transfer writer. The staging
+object stays in process and source credentials remain available to other hosts.
+
 The test suite's installed account case requires a disposable system
 account whose effective home is an empty `/fixture-home`. Set
 `HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.
@@ -374,3 +394,188 @@ Vietnamese label from `lang/vi.sh` in parentheses where a reader of that UI need
 The macOS real SSH gap remains: the Linux fixture requires Docker, and enabling a
 system SSH server or changing user credentials on a runner would require a separate
 isolated fixture. See [Getting started](Getting-started) for manual removal steps.
+
+### Explicit registered host transfer
+
+`hostbook store-transfer-preview SOURCE R C N P HOST_ID DESTINATION R C N P [ALIAS]`
+prints a structured comparison. Each store has its own registration, checkout,
+connection and policy generation arguments. The comparison includes the selected
+stable host ID, proposed alias, matching destination hosts, other users of the
+source credential, and the shared ref that would receive the change.
+
+`hostbook store-transfer SOURCE R C N P HOST_ID DESTINATION R C N P ALIAS CREDENTIAL create`
+moves one independently declared host in either direction between a clean private
+checkout and a clean, current two-way shared checkout backed by an approved local
+bare Git repository.
+Use `reuse` in place of `create` to select an existing destination credential
+whose metadata and decrypted value match. Both stores need existing, distinct
+vaults. The source host and any explicitly replaced destination host must each
+occupy their own project file. A new destination uses a free alias. The command
+accepts one managed key or password and currently requires empty source groups.
+
+The command prints the current comparison, prompts on the controlling terminal
+for the vault passwords and a separately kept transaction password and recovery
+code, then shows a confirmation. PROD hosts require their source alias typed
+exactly. The prepared JSON result identifies the transaction before the first
+checkout effect. A shared destination must accept its exact conditional update
+before private removal. A private destination must be durable and its credential
+must decrypt before the shared source removal is prepared and conditionally
+published. An intervening shared update preserves its remote host. Other source hosts
+retain their original credential. A completed result follows verification of
+both checkouts. An interrupted or uncertain move retains its protected journal
+and fences the participating stores for reconciliation.
+
+When the comparison reports a different host ID with the same effective login,
+address and port, choose a distinct free destination alias and review both
+revisions. Append `keep-both EXISTING_DESTINATION_HOST_ID SOURCE_REVISION DESTINATION_REVISION`
+to the transfer command to preserve the existing record and create the incoming
+host under that alias. Append `cancel` to leave both stores untouched. Updated
+revisions require another comparison.
+
+
+To update a different destination host at the same endpoint, pass its existing
+alias and append `update EXISTING_DESTINATION_HOST_ID SOURCE_REVISION DESTINATION_REVISION`.
+The confirmation compares approved OpenSSH settings, the existing and proposed
+credential mapping, and destination groups. Update retains that host's ID, alias,
+project, group memberships and history. Its previous settings and selected
+credential remain independently recoverable. A PROD source or destination
+requires its exact alias. A stable host ID already present in the destination
+requires reconciliation with the original transfer evidence.
+
+Use `hostbook store-transfer-recover TRANSACTION_ID status` to inspect the
+selected checkpoint, the two registered host selections, and recorded local
+effects and senders. Status reads the device journal without unlocking a vault.
+Use `cancel` to release a prepared, effect-free transfer after the original
+owner exits. Both recovery envelopes remain available. Use `resume` for a
+verified preparation, original destination save, destination-confirmed transfer, or a shared source whose removal was already accepted by its original branch. This asks for fresh operator approval,
+the protected transaction credentials and the destination vault passphrase.
+The original Git proposals and sender receipt identify the move. If the
+destination, original shared branch, source work, or sender proof changes,
+the participating stores remain fenced.
+
+
+Use `settle` after an interrupted publication to inspect its original sender
+and exact bound branch. This records the outcome without sending or changing
+either checkout. A started send with a different observed tip remains uncertain.
+An exact proposal tip with its original direct parent can establish acceptance
+after sender exit. An accepted result retains the historical receipt at the
+local-save checkpoint. `resume` rechecks that destination and branch before
+continuing.
+
+
+For a confirmed host saved privately while its shared source
+is still intact, `rollback` appends a private compensation commit. It restores
+the prior host selection with a fresh identity generation, checks the original
+shared host and decryptable credential, and removes a transfer-created mapping
+only when the restored host set does not reference it. Both vault passphrases
+and the original transaction credentials are required. Recovery retains the
+original encrypted snapshots and the displaced inodes in the private checkout.
+For an explicit update, rollback restores the selected prior destination stanza,
+stable ID, group memberships and verified previous credential. A PROD rollback
+requires typing the private alias it will change.
+If the private inverse has already reached its exact recorded tip, repeating
+`rollback` validates the original inverse bundle, index, tree and displaced
+inodes before selecting the terminal record. A partial inverse or changed
+captured file remains fenced and retains its protected evidence.
+
+When the source removal was observed locally, `resume` verifies the saved
+private destination, original shared branch and captured source files. It
+publishes an unattempted shared source removal once, or uses the original
+accepted destination receipt to finish a private source removal. After a
+definitive shared rejection, the original branch, private copy and recovery
+data remain available. Keep both checkouts and the device journal together.
+An unobserved or partially applied local effect requires reconciliation of its
+original ref, index, worktree and exchange files before release.
+
+## Legacy migration inspection
+
+Run `hostbook store-migration-inspect /absolute/path/to/legacy-checkout` for a
+local inventory. It reports the checkout binding, checked-out branch and
+revision when readable, configured remote count, prior remote-ref evidence and
+the local vault's structural condition. A configured remote remains shared
+while offline or when other Git evidence is unreadable. Unresolved includes or
+multiple remotes require a decision before migration can continue. The command
+reads the original files without contacting a remote, assigning IDs, creating
+a vault or changing the checkout. A locked vault still requires independent
+unlock and validation. No inspection result authorizes cutover.
+
+To inspect an explicitly selected regular local bare repository, append
+`--inspect-local /absolute/path/to/repository.git refs/heads/main`. Its path
+must match the selected checkout's one configured remote URL. Inspection
+copies bounded SHA-1 Git objects into a private temporary repository and
+checks the original direct branch. It reports whether the remote vault is
+absent, structurally complete or requires reconciliation. Independently
+created vaults and different envelopes remain separate. A missing branch or
+unavailable remote leaves discovery unresolved. Remote history remains
+accessible to prior recipients after any later local migration.
+
+The migration backup API currently seals four explicitly named, disjoint
+inputs from a private checkout. These are the whole checkout,
+the legacy state directory, Hostbook's settings directory and one SSH config
+file. It verifies both independent recovery credentials, reconstructs the
+original bytes, modes, owners and supported native metadata in private staging,
+and rechecks the source before publishing the encrypted backup. Restore creates
+a fresh directory beneath a separate private root and refuses an occupied
+name. Active scratch, unknown state, linked data, unsupported metadata and
+oversized recovery sets require separate review. External SSH dependencies and
+writer exclusion still need verification before any registration cutover.
+
+When a complete existing vault is present, backup also checks its original
+password and recovery envelopes, opens each credential in memory, and repeats
+that proof on the isolated restore. A key record must match its stored public
+key. The encrypted archive keeps the original ciphertext and envelopes. Local
+Git history must be self-contained. Restore verification runs native Git
+integrity checks against the private copy, including staged objects.
+
+Run `hostbook store-migration-backup CHECKOUT STATE SETTINGS SSH_CONFIG BACKUPS`
+with absolute original locations and a separate existing owner-only directory
+for encrypted backups. Keep the returned backup ID. To stage a private copy
+after a restart, run
+`hostbook store-migration-restore BACKUPS BACKUP_ID PRIVATE_PARENT code`.
+Use `password` for the other envelope. Hostbook requests credentials on the
+terminal. The restore appears under the backup ID inside the private parent.
+
+On Linux, `hostbook store-migration-writers CHECKOUT STATE LEGACY_UID...`
+inspects the proposed checkout, regular Git directory, state tree and their
+ancestors. It evaluates the named UIDs, supplementary groups, POSIX ACL masks,
+inherited ACLs and sticky-directory replacement rights. The result describes
+direct filesystem access. The migration still needs separately verified
+quiescence and delegated service authority for those identities. A shared
+cutover also needs effective server policy for the exact branch. Keep the
+original registration and both recovery credentials when evidence is missing.
+
+## Shared edit conflict comparison
+
+Run `hostbook store-conflict STORE REGISTRATION CHECKOUT CONNECTION POLICY ATTEMPT`
+to compare a definitively rejected edit with the current direct branch. The
+comparison binds the original candidate bundle to its store, host, connection
+and base. Its output shows the base, candidate and remote literal host settings,
+including credential names and the exact revisions. It preserves the checkout,
+both versions and the retained attempt. An unavailable or changed binding
+requires fresh observation.
+
+For an ordinary same-host address conflict, append
+`use-candidate-address CANDIDATE_OID REMOTE_OID REVIEW_ID` using the displayed revisions and comparison ID.
+The new conditional commit changes the address on top of the observed remote
+version and preserves its other settings. A changed ref requires a new review.
+A rejected resolution leaves the original candidate available, and an
+uncertain sender must be settled against its original branch. The operation
+reports the publication outcome independently of local checkout adoption.
+
+`keep-remote` binds an explicit choice to the displayed remote revision and
+comparison ID. It retires the exact private candidate through the store control
+journal, including when the remote deleted the host. It leaves the branch and
+checkout byte-for-byte intact. `cancel` preserves the candidate for later.
+Use the returned policy generation for subsequent store operations.
+
+After a verified remote deletion, `restore-candidate CANDIDATE_OID REMOTE_OID REVIEW_ID`
+can publish the edited host with its original stable ID. This supports a standalone
+host without a credential or jump, an absent or unoccupied original project, and
+no existing jump routes or group membership involving the selection. Hostbook
+checks the effective SSH settings of the restored host and the other hosts before
+publishing. An unsupported restoration leaves the original candidate available.
+
+Keeping the remote version rechecks the exact registered local bare branch and
+the reviewed local SSH inputs when recording the final decision. If either
+changes during an interrupted decision, cancel the outstanding mode transition
+with the current policy generation and review the retained edit again.

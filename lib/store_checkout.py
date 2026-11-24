@@ -322,7 +322,9 @@ def append_reflog(git_fd, ref, base, tip, enabled):
 
 
 def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage,
-                 before, after, verify_binding, filemode, log_updates, capture, paths):
+                 before, after, verify_binding, filemode, log_updates, capture, paths, *, install=None):
+    if install is None:
+        install = install_sources
     candidate = (stage / "index").read_bytes()
     parts = ref.split("/")
     with make_parents(git_fd, parts[:-1]) as refs:
@@ -334,7 +336,7 @@ def fast_forward(checkout_fd, git_fd, ref, base, tip, original_index, stage,
                 check_worktree(checkout_fd, before, filemode)
                 install_git_pack(git_fd, stage)
                 verify_binding()
-                install_sources(checkout_fd, capture, paths, before, after, filemode)
+                install(checkout_fd, capture, paths, before, after, filemode)
                 verify_binding()
                 set_index()
                 append_reflog(git_fd, ref, base, tip, log_updates)

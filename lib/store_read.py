@@ -30,6 +30,7 @@ SSH_OPTIONS = frozenset("""
     requesttty serveralivecountmax serveraliveinterval tcpkeepalive user
 """.split())
 LOCAL_OPTIONS = SSH_OPTIONS | {"stricthostkeychecking"}
+EFFECTIVE_OPTIONS = LOCAL_OPTIONS - {"host", "match", "hostname", "user", "port", "proxyjump"}
 INLINE_COMMENT = re.compile(r"(?:^|[ 	])#")
 DIRECTIVE = re.compile(r"([A-Za-z][A-Za-z0-9]*)(?:[ \t]+=?[ \t]*|=[ \t]*)(.*)")
 SSH_USER = re.compile(r"[A-Za-z0-9._@+-]+")
@@ -175,18 +176,26 @@ def managed_credentials(files, hosts):
     return snapshots, credentials
 
 
-def local_inputs(state_fd, store_id):
+def local_inputs(state_fd, store_id, evidence=None):
     try:
         with open_directory(state_fd, ("stores", "v1", store_id, "ssh")) as fd:
             require_private_directory(fd, "approved SSH inputs")
             selected = []
+            def verify(fd, info):
+                require_approval_file(fd, info)
+                if evidence is not None:
+                    evidence.append([info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns])
             for name in ("config", "known_hosts", "global_known_hosts"):
                 try:
-                    selected.append(read_file(fd, name, JSON_LIMIT, require_approval_file))
+                    selected.append(read_file(fd, name, JSON_LIMIT, verify))
                 except FileNotFoundError:
                     selected.append(None)
+                    if evidence is not None:
+                        evidence.append(None)
             return tuple(selected)
     except FileNotFoundError:
+        if evidence is not None:
+            evidence.extend([None]*3)
         return None, None, None
 
 
@@ -240,7 +249,7 @@ def ssh_view(files, local):
         yield config
 
 
-def effective(computed, alias, options=()):
+def effective(computed, alias, options=(), *, complete=False):
     import subprocess
 
     require(not alias.startswith("-"), "invalid SSH alias")
@@ -250,14 +259,20 @@ def effective(computed, alias, options=()):
                                 stderr=subprocess.DEVNULL, timeout=5, check=True, text=True)
     except (OSError, subprocess.SubprocessError):
         raise StoreContextError("OpenSSH could not resolve the selected route") from None
-    fields = {}
+    fields, settings = {}, {}
     for line in result.stdout.splitlines():
         name, _, value = line.partition(" ")
         if name in ("hostname", "user", "port", "proxyjump"):
             fields[name] = value
+        elif complete and name in EFFECTIVE_OPTIONS:
+            settings[name] = value
     require({"hostname", "user", "port"} <= fields.keys(), "incomplete OpenSSH route")
     jump = fields.get("proxyjump", "")
     fields["proxyjump"] = render_jumps(jump, logical=True) if jump else ""
+    if complete:
+        required = EFFECTIVE_OPTIONS - {"preferredauthentications"}
+        require(required <= settings.keys(), "incomplete native SSH connection settings")
+        fields["settings"] = tuple(sorted(settings.items()))
     return fields
 
 

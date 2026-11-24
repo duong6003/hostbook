@@ -83,7 +83,7 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
-  _store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
+  store-conflict|store-migration-inspect|store-migration-writers|store-migration-backup|store-migration-restore|store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       guard_python_path || exit 64
       exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" "$@"
@@ -113,6 +113,19 @@ IS_MAC=; LOCK_TOOL=flock; case $OSTYPE in darwin*) IS_MAC=1; LOCK_TOOL=lockf;; e
 private_dir(){ legacy_destinations "$1" && mkdir -p "$1" && chmod 700 "$1"; }
 DIR=${HOSTBOOK_DIR:-$HOME/ssh-hosts}
 case ${1:-} in
+  _store_migration_labels)
+    [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
+    HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-en} lang_load
+    for key in migration_backup_pw migration_backup_repeat migration_code migration_code_repeat migration_original_pw migration_original_code migration_vault_pw migration_vault_code; do t "$key"; printf '\n'; done
+    exit 0;;
+  _store_transfer_labels)
+    [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
+    HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
+    printf '%s\n' "$FZF_MIN"
+    backup=transfer_backup_pw; recovery=transfer_recovery_code
+    if [ "${2:-}" = recover ]; then backup=transfer_existing_backup; recovery=transfer_existing_code; fi
+    for key in transfer_source_pw transfer_destination_pw "$backup" transfer_backup_repeat "$recovery" transfer_code_repeat; do t "$key"; printf '\n'; done
+    exit 0;;
   add|import)
     if [ "${BASH_SOURCE[0]}" = "$0" ] && legacy_authority_present &&
        guard_python -I -B -S "$LEGACY_GUARD_LIB" _registered_selection "$DIR" >/dev/null 2>&1; then
@@ -3156,6 +3169,82 @@ fi
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
+  _store_conflict_confirm)
+    [ "$#" -eq 9 ] || exit 65
+    case $6 in use-candidate-address) decision=$(t conflict_use_address);; keep-remote) decision=$(t conflict_keep_remote);; restore-candidate) decision=$(t conflict_restore_candidate);; *) exit 65;; esac
+    at "$(t conflict_title)"
+    head=$(t conflict_scope "$2" "$3")$NL$(t conflict_versions "$4" "$5")$NL$(t conflict_addresses "$8" "$9")$NL$decision
+    IFS=, read -r -a required <<< "$7"
+    for alias in "${required[@]}"; do
+      typed=$(UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t conflict_title)" "" "equals:$alias" "$(t delete_type_rule "$alias")" "" "$head") || exit 1
+      [ "$typed" = "$alias" ] || exit 1
+      printf '%s\n' "$typed"
+    done;;
+  _store_transfer_rollback)
+    [ "$#" -ge 15 ] && [ $(( ($#-15) % 3 )) -eq 0 ] || exit 65
+    at "$(t transfer_title)"
+    head="$(t transfer_rollback_source "$2" "$3" "$4")$NL$(t transfer_rollback_destination "$5" "$6")"
+    {
+      t transfer_destination_key "$7" "$8" "$9"; echo
+      t transfer_rollback_inverse "${10}"; echo
+      case ${13} in keep) t transfer_rollback_reuse "${12}";; remove) t transfer_rollback_remove "${12}";; *) exit 65;; esac; echo
+      if [ "${14}" = update ]; then
+        t transfer_credential_change "${12}" "${15}"; echo
+        shift 15
+        while [ "$#" -gt 0 ]; do t transfer_setting_change "$1" "$2" "$3"; echo; shift 3; done
+      fi
+    } | ui_fzf "$(ui_head "$head")" --no-input --wrap --prompt='› ' \
+          --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")" --bind 'esc:abort' >/dev/null || exit 1
+    if [ -n "${11}" ]; then
+      IFS=, read -r -a required <<< "${11}"
+      for alias in "${required[@]}"; do
+        typed=$(UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t transfer_title)" "" "equals:$alias" "$(t delete_type_rule "$alias")" "" "$head") || exit 1
+        [ "$typed" = "$alias" ] || exit 1
+        printf '%s\n' "$typed"
+      done
+    else
+      UI_HEAD=$head ui_confirm --danger --default=false --affirmative "$(t key_confirm)" --negative "$(t cancel)" "$(t transfer_rollback_question)"
+    fi;;
+  _store_transfer_cancel)
+    [ "$#" -eq 4 ] || exit 65
+    at "$(t transfer_title)"
+    UI_HEAD="$(t transfer_cancel_scope "$2" "$3" "$4")" ui_confirm --danger --default=false --affirmative "$(t key_confirm)" --negative "$(t cancel)" "$(t transfer_cancel_question)";;
+  _store_transfer_review)
+    [ "$#" -ge 15 ] || exit 65
+    at "$(t transfer_title)"
+    action=$(t transfer_create "$7"); [ "$9" != reuse ] || action=$(t transfer_reuse "$7")
+    case ${11} in
+      private) from=transfer_from; to=transfer_to; publish=transfer_publish; question=transfer_question;;
+      shared) from=transfer_from_shared; to=transfer_to_private; publish=transfer_publish_source; question=transfer_question_private;;
+      *) exit 65;;
+    esac
+    head="$(t "$from" "$2" "$3")$NL$(t "$to" "$4" "$5")$NL$(t "$publish" "$6")$NL$action$NL$(t transfer_retained "$8")"
+    [ -z "${HOSTBOOK_REVIEW_TRANSACTION:-}" ] || head="$(t transfer_resume_id "$HOSTBOOK_REVIEW_TRANSACTION" "$HOSTBOOK_REVIEW_CHECKPOINT")$NL$head"
+    case ${12} in
+      keep-both) head="$head$NL$(t transfer_keep_both "${13}" "${14}" "$4")";;
+      update)
+        head="$head$NL$(t transfer_update "${13}" "${14}")"
+        [ -z "${15}" ] || head="$head$NL$(t transfer_keep_groups "${15}")"
+        [ "$#" -ge 21 ] && [ $(( ($#-21) % 3 )) -eq 0 ] || exit 65
+        (
+          t transfer_source_key "${16}" "${17}" "${18}"; echo
+          t transfer_destination_key "${14}" "${19}" "${20}"; echo
+          t transfer_credential_change "${21}" "$7"; echo
+          shift 21
+          while [ "$#" -gt 0 ]; do t transfer_setting_change "$1" "$2" "$3"; echo; shift 3; done
+        ) | ui_fzf "$(ui_head "$head")" --no-input --wrap --prompt='› ' \
+              --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")" --bind 'esc:abort' >/dev/null || exit 1;;
+    esac
+    if [ -n "${10}" ]; then
+      IFS=, read -r -a required <<< "${10}"
+      for alias in "${required[@]}"; do
+        typed=$(UI_TONE=danger UI_ENTER="$(t key_confirm)" ui_field "$(t transfer_title)" "" "equals:$alias" "$(t delete_type_rule "$alias")" "" "$head") || exit 1
+        [ "$typed" = "$alias" ] || exit 1
+        printf '%s\n' "$typed"
+      done
+    else
+      UI_HEAD=$head ui_confirm --danger --default=false --affirmative "$(t move_yes "$2")" --negative "$(t cancel)" "$(t "$question" "$2")"
+    fi;;
   _footer_data) cmd_footer_data;;
   _list) cmd_list;; _preview) cmd_preview "$2";; _header) cmd_header;; _footer) cmd_footer "${2:-}";; _footers) cmd_footers "$2" "${3:-}";;
   _connect) ensure_index; while :; do connect "$2" pane; rc=$?; [ $rc -eq 255 ] || exit $rc

@@ -116,7 +116,11 @@ class StoreContextTest(unittest.TestCase):
             (app / "lib").mkdir(parents=True)
             shutil.copy2(source / "hostbook", app / "hostbook")
             shutil.copy2(source / "lib/store_context.py", app / "lib/store_context.py")
-            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py", "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py"):
+            for name in ("store_read.py", "store_login.py", "store_vault.py", "store_receive.py", "store_checkout.py",
+                         "store_journal.py", "store_publish.py", "store_mode.py", "store_private.py",
+                         "store_transfer.py", "store_transfer_credentials.py", "store_transfer_command.py",
+                         "store_transfer_intent.py", "store_transfer_recovery.py", "store_transfer_owner.py",
+                         "store_transfer_apply.py", "store_transfer_publish.py", "store_transfer_remove.py", "store_transfer_resume.py", "store_transfer_rollback.py", "store_migration.py", "store_migration_backup.py", "store_migration_writers.py", "store_conflict.py"):
                 shutil.copy2(source / "lib" / name, app / "lib" / name)
             launcher = self.root / "bin" / "hostbook"
             launcher.parent.mkdir()
@@ -133,6 +137,365 @@ class StoreContextTest(unittest.TestCase):
         }, default=os.fspath))
         approval.chmod(0o600)
         return approval
+
+    def migration_case(self):
+        legacy = self.root/"legacy source"
+        legacy.mkdir(mode=0o700)
+        env = dict(PATH=str(Path(sys.executable).parent)+":/usr/bin:/bin",HOME=str(self.root/"isolated-home"),
+                   HOSTBOOK_DIR=str(legacy),HOSTBOOK_STATE=str(self.root/"legacy-state"),
+                   HOSTBOOK_SSH_CONFIG=str(self.root/"legacy-ssh"),XDG_CONFIG_HOME=str(self.root/"legacy-settings"),
+                   GIT_CONFIG_NOSYSTEM="1",GIT_CONFIG_GLOBAL=os.devnull,GIT_TERMINAL_PROMPT="0",GIT_OPTIONAL_LOCKS="0",
+                   GIT_AUTHOR_NAME="Synthetic",GIT_AUTHOR_EMAIL="synthetic@invalid",GIT_COMMITTER_NAME="Synthetic",
+                   GIT_COMMITTER_EMAIL="synthetic@invalid",LC_ALL="C")
+        def git(*args):
+            return subprocess.check_output(["/usr/bin/git",*args],cwd=legacy,env=env,stderr=subprocess.PIPE).strip()
+        git("init","-q","--template=")
+        git("symbolic-ref","HEAD","refs/heads/main")
+        (legacy/"team.conf").write_text("Host original\n  HostName 192.0.2.18\n")
+        git("add",".")
+        git("commit","-qm","Original host")
+        app = self.installed_launcher()
+        def inspect(*args):
+            return json.loads(subprocess.check_output([app,"store-migration-inspect",str(legacy),*args],cwd=self.root,env=env,stderr=subprocess.PIPE))
+        return SimpleNamespace(legacy=legacy,env=env,git=git,inspect=inspect,app=app)
+
+    def test_installed_migration_inspection_keeps_private_or_configured_shared_source_pristine(self):
+        f = self.migration_case()
+        original = snapshot(f.legacy)
+        private = f.inspect()
+        self.assertEqual(private["role"],"private-default")
+        self.assertEqual(private["vault"],"absent")
+        self.assertEqual(private["revision"],f.git("rev-parse","HEAD").decode())
+        self.assertFalse(private["cutover_ready"])
+        self.assertEqual(snapshot(f.legacy),original)
+        f.git("remote","add","origin","https://synthetic:never-report@offline.invalid/team")
+        shared = snapshot(f.legacy)
+        row = f.inspect()
+        self.assertEqual((row["role"],row["remote_count"],row["remote_observation"]),("shared",1,"not-contacted"))
+        self.assertIn("verify-shared-vault-and-ref-policy",row["blockers"])
+        self.assertNotIn("never-report",json.dumps(row))
+        self.assertEqual(snapshot(f.legacy),shared)
+        (f.legacy/".git/packed-refs").symlink_to(self.root/"unavailable-packed-refs")
+        unresolved = f.inspect()
+        self.assertEqual((unresolved["role"],unresolved["remote_count"]),("shared",1))
+        self.assertIn("inspect-original-git-configuration",unresolved["blockers"])
+        (f.legacy/".git/packed-refs").unlink()
+        child = f.legacy/"nested"
+        child.mkdir()
+        nested = json.loads(subprocess.check_output([f.app,"store-migration-inspect",str(child)],env=f.env))
+        self.assertEqual(nested["role"],"ambiguous")
+        self.assertIn("select-original-checkout-root",nested["blockers"])
+        f.git("config","branch.main.remote","missing")
+        self.assertIn("choose-exact-remote",f.inspect()["blockers"])
+        f.git("config","--unset","branch.main.remote")
+        f.git("config","--add","remote.origin.pushurl","https://separate.invalid")
+        self.assertIn("choose-exact-remote",f.inspect()["blockers"])
+        f.git("config","--unset","remote.origin.pushurl")
+        f.git("remote","add","second","file:///not-selected")
+        self.assertIn("choose-exact-remote",f.inspect()["blockers"])
+        f.git("remote","remove","origin"); f.git("remote","remove","second")
+        f.git("config","include.path","unresolved-policy.conf")
+        self.assertEqual(f.inspect()["role"],"ambiguous")
+
+    def test_migration_observes_only_selected_local_bare_branch_before_deciding_vault(self):
+        v = self.transfer_vaults()
+        f = self.migration_case()
+        bare = self.root/"synthetic shared.git"
+        f.git("init","-q","--bare","--template=",str(bare))
+        f.git("remote","add","origin",bare.as_uri())
+        f.git("push","-qu","origin","main")
+        def observed():
+            return f.inspect("--inspect-local",str(bare),"refs/heads/main")
+        f.git("config","remote.origin.pushurl",bare.as_uri())
+        loose = next(p for p in (bare/"objects").glob("??/*") if p.is_file())
+        os.link(loose,self.root/"shared immutable Git object")
+        empty = observed()
+        self.assertEqual((empty["remote_vault"],empty["vault_decision"]),("absent","both-absent-unapproved"))
+        shutil.copytree(v.destination.vault,f.legacy/"secrets")
+        f.git("add","secrets")
+        f.git("commit","-qm","Synthetic shared vault")
+        f.git("push","-q","origin","main")
+        shutil.rmtree(f.legacy/"secrets")
+        before = snapshot(bare),snapshot(f.legacy)
+        existing = observed()
+        self.assertEqual((existing["remote_vault"],existing["vault_decision"]),("locked-unverified","unlock-existing-shared"))
+        self.assertEqual(existing["remote_revision"],f.git("rev-parse","HEAD").decode())
+        self.assertEqual((snapshot(bare),snapshot(f.legacy)),before)
+        shutil.copytree(v.source.vault,f.legacy/"secrets")
+        self.assertEqual(observed()["vault_decision"],"preserve-independent-vaults")
+        shutil.copyfile(v.destination.vault/"vault.pub",f.legacy/"secrets/vault.pub")
+        self.assertEqual(observed()["vault_decision"],"reconcile-vault-envelopes")
+        (bare/"refs/heads/main").unlink()
+        failed = observed()
+        self.assertEqual((failed["role"],failed["remote_observation"],failed["vault_decision"]),
+                         ("shared","unresolved","preserve-and-rediscover"))
+        self.assertFalse(failed["cutover_ready"])
+
+    def test_migration_writer_inspection_requires_distinct_uid_and_protected_ancestry(self):
+        f = self.migration_case()
+        state = self.root/"new private state"; state.mkdir(mode=0o700)
+        def inspect(uid):
+            output = subprocess.check_output([f.app,"store-migration-writers",f.legacy,state,str(uid)],env=f.env)
+            return json.loads(output)
+        # The command under test is a new cold action. Exercise real account lookup in disposable Linux only.
+        if sys.platform != "linux" or not os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME"):
+            self.skipTest("requires an isolated Linux account for a distinct native UID")
+        import pwd
+        self.assertEqual(Path(pwd.getpwuid(os.geteuid()).pw_dir),Path("/fixture-home"))
+        same = inspect(os.geteuid())
+        self.assertEqual(same["filesystem_permissions"],"access-remains")
+        other = pwd.getpwnam("nobody").pw_uid
+        safe = inspect(other)
+        self.assertEqual(safe["filesystem_permissions"],"checked")
+        self.assertFalse(safe["cutover_ready"])
+        self.assertIn("verify-delegated-service-authority",safe["blockers"])
+        self.root.chmod(0o777)
+        try:
+            self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+        finally:
+            self.root.chmod(0o700)
+        child = f.legacy/"team.conf"
+        import struct
+        entries = [(1,6,0xffffffff),(2,6,other),(4,0,0xffffffff),(16,6,0xffffffff),(32,0,0xffffffff)]
+        os.setxattr(child,"system.posix_acl_access",struct.pack("<I",2)+b"".join(struct.pack("<HHI",*v) for v in entries))
+        self.assertEqual(inspect(other)["filesystem_permissions"],"checked")
+        self.root.chmod(0o711); f.legacy.chmod(0o711)
+        try:
+            self.assertEqual(inspect(other)["filesystem_permissions"],"access-remains")
+            os.removexattr(child,"system.posix_acl_access")
+            child.chmod(0o600)
+            os.setxattr(f.legacy,"system.posix_acl_default",struct.pack("<I",2)+b"".join(struct.pack("<HHI",*v) for v in entries))
+            future = inspect(other)
+            self.assertEqual(future["filesystem_permissions"],"checked")
+            self.assertEqual(future["inherited_write"],"checkout")
+            self.assertIn("review-inherited-write-access",future["blockers"])
+        finally:
+            self.root.chmod(0o700); f.legacy.chmod(0o700)
+
+    def test_migration_backup_reopens_original_index_worktree_config_and_private_files(self):
+        from store_migration_backup import backup, restore
+        f = self.migration_case()
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700)
+        settings.mkdir(mode=0o700)
+        (state/"history").write_text("original\n")
+        (settings/"config").write_text("lang=en\n")
+        ssh.write_text("Host outside\n  HostName 192.0.2.19\n")
+        (f.legacy/"team.conf").write_text("Host original\n  HostName 192.0.2.20\n")
+        f.git("add","team.conf")
+        (f.legacy/"team.conf").write_text("Host original\n  HostName 192.0.2.21\n")
+        (f.legacy/".gitignore").write_text("ignored\n")
+        (f.legacy/"ignored").write_bytes(b"synthetic ignored")
+        (f.legacy/"untracked").write_bytes(b"synthetic untracked")
+        (f.legacy/"untracked").chmod(0o640)
+        if sys.platform == "linux":
+            import struct
+            entries = [(1,6,0xffffffff),(2,4,65534),(4,0,0xffffffff),(16,4,0xffffffff),(32,0,0xffffffff)]
+            acl = struct.pack("<I",2)+b"".join(struct.pack("<HHI",*entry) for entry in entries)
+            os.setxattr(f.legacy/"untracked","system.posix_acl_access",acl)
+        elif sys.platform == "darwin":
+            subprocess.run(["/bin/chmod","+a","everyone deny execute",f.legacy/"untracked"],env=f.env,check=True)
+        source = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
+        expected = snapshot(f.legacy)
+        output = self.root/"private backup"; output.mkdir(mode=0o700)
+        stage = self.root/"private restore"; stage.mkdir(mode=0o700)
+        password,code = b"synthetic backup phrase",b"independent synthetic recovery"
+        ident = backup(source,output,password,code)
+        self.assertEqual(snapshot(f.legacy),expected)
+        self.assertNotIn(b"synthetic ignored",b"".join(p.read_bytes() for p in output.rglob("*") if p.is_file()))
+        with self.assertRaises(StoreContextError):
+            restore(output,ident,stage,b"wrong passphrase")
+        self.assertEqual(list(stage.iterdir()),[])
+        recovered = restore(output,ident,stage,code,recovery=True)
+        self.assertEqual(snapshot(recovered/"checkout"),expected)
+        if sys.platform == "linux":
+            self.assertEqual(os.getxattr(recovered/"checkout/untracked","system.posix_acl_access"),acl)
+        elif sys.platform == "darwin":
+            listing = subprocess.check_output(["/bin/ls","-led",recovered/"checkout/untracked"],env=f.env)
+            self.assertIn(b"everyone deny execute",listing)
+        self.assertEqual((recovered/"state/history").read_bytes(),(state/"history").read_bytes())
+        self.assertEqual((recovered/"settings/config").read_bytes(),(settings/"config").read_bytes())
+        self.assertEqual((recovered/"ssh").read_bytes(),ssh.read_bytes())
+        self.assertEqual(subprocess.check_output(["/usr/bin/git","show",":team.conf"],cwd=recovered/"checkout",env=f.env),
+                         b"Host original\n  HostName 192.0.2.20\n")
+        self.assertEqual(snapshot(f.legacy),expected)
+        with self.assertRaises((OSError,StoreContextError)):
+            restore(output,ident,stage,code,recovery=True)
+        self.assertEqual(snapshot(recovered/"checkout"),expected)
+
+    def test_migration_backup_refuses_external_git_objects_and_revalidates_final_envelopes(self):
+        import store_migration_backup as migration
+        f = self.migration_case()
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700); settings.mkdir(mode=0o700); ssh.write_text("# fixture\n")
+        paths = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
+        output = self.root/"backups"; output.mkdir(mode=0o700)
+        target = self.root/"restore"; target.mkdir(mode=0o700)
+        alternate = self.root/"outside-objects"
+        objects = f.legacy/".git/objects"
+        objects.rename(alternate)
+        (objects/"info").mkdir(parents=True)
+        (objects/"info/alternates").write_text(str(alternate)+"\n")
+        baseline = snapshot(f.legacy)
+        args = (paths,output,b"fixture phrase",b"other fixture code")
+        with self.assertRaises(StoreContextError):
+            migration.backup(*args)
+        self.assertEqual(snapshot(f.legacy),baseline)
+        self.assertFalse(any(not p.name.startswith(".") for p in output.iterdir()))
+        # Draft backups pre-dating the Git preflight could retain an external pointer only.
+        with patch.object(migration,"verify_history"):
+            incomplete = migration.backup(*args)
+        with self.assertRaises(StoreContextError):
+            migration.restore(output,incomplete,target,args[2])
+        self.assertEqual(list(target.iterdir()),[])
+        shutil.rmtree(objects); alternate.rename(objects)
+        separate = self.root/"prior-archive"
+        (output/incomplete).rename(separate)
+        materialize = migration.materialize
+        def detach(*inputs,**options):
+            result = materialize(*inputs,**options)
+            pending, = (p for p in output.glob(".backup-*") if (p/"vault.recovery.age").exists())
+            (pending/"vault.recovery.age").rename(self.root/"withheld-backup-envelope")
+            return result
+        with patch.object(migration,"materialize",side_effect=detach), self.assertRaises((OSError,StoreContextError)):
+            migration.backup(*args)
+        self.assertFalse(any(not p.name.startswith(".") for p in output.iterdir()))
+        readonly = f.legacy/"readonly"; readonly.mkdir(mode=0o700)
+        (readonly/"original").write_bytes(b"synthetic readonly")
+        readonly.chmod(0o555)
+        self.addCleanup(readonly.chmod,0o700)
+        ident = migration.backup(*args)
+        def interrupted(*inputs,**options):
+            materialize(*inputs,**options)
+            raise StoreContextError("fixture interruption")
+        with patch.object(migration,"materialize",side_effect=interrupted), self.assertRaises(StoreContextError):
+            migration.restore(output,ident,target,args[2])
+        self.assertEqual(list(target.iterdir()),[])
+        def full_disk(fd,value):
+            if value.startswith(b"Host original"):
+                os.write(fd,value[:8])
+                raise OSError(28,"synthetic full disk")
+            os.write(fd,value)
+        with patch.object(migration,"write_stage_bytes",create=True,side_effect=full_disk), self.assertRaises(OSError):
+            migration.restore(output,ident,target,args[2])
+        self.assertEqual(list(target.iterdir()),[])
+
+    def test_installed_migration_backup_and_new_restore_prompt_use_private_terminal(self):
+        import pty
+        f = self.migration_case()
+        if not os.environ.get("HOSTBOOK_TEST_INSTALLED"):
+            source = Path(__file__).resolve().parents[1]
+            shutil.copytree(source/"lang",f.app.resolve().parent/"lang",dirs_exist_ok=True)
+            # A missing command on an older launcher can enter its legacy guard.
+            # Keep that fallback in this synthetic account on native test hosts.
+            home = Path(f.env["HOME"]); home.mkdir(mode=0o700)
+            launcher = f.app.resolve()
+            launcher.write_text(launcher.read_text().replace("local authority_home=~",'local authority_home="$HOME"')
+                                .replace("unset HOME","HOME="+str(home)))
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700); settings.mkdir(mode=0o700); ssh.write_text("# synthetic\n")
+        backup = self.root/"sealed"; backup.mkdir(mode=0o700)
+        restored = self.root/"private restore parent"; restored.mkdir(mode=0o700)
+        password,code = b"fixture-private-phrase",b"fixture-original-code"
+        def terminal(args,answers):
+            pid,fd = pty.fork()
+            if pid == 0:
+                os.execve(str(f.app),[str(f.app),*(str(arg) for arg in args)],dict(f.env,HOSTBOOK_LANG="en"))
+            complete = False
+            try:
+                output = bytearray()
+                for expected,answer in answers:
+                    seen = len(output)
+                    deadline = time.monotonic()+20
+                    while expected not in output[seen:]:
+                        self.assertTrue(select.select([fd],[],[],max(0,deadline-time.monotonic()))[0],"missing terminal prompt")
+                        chunk = os.read(fd,65536)
+                        self.assertTrue(chunk,"operator command ended before prompt")
+                        output.extend(chunk)
+                    os.write(fd,answer+b"\n")
+                while True:
+                    self.assertTrue(select.select([fd],[],[],25)[0],"operator command did not finish")
+                    try:
+                        chunk = os.read(fd,65536)
+                    except OSError as exc:
+                        if exc.errno == 5:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                _,status = os.waitpid(pid,0)
+                complete = True
+                self.assertEqual(status,0)
+                self.assertNotIn(password,output); self.assertNotIn(code,output)
+                return json.loads(bytes(output).splitlines()[-1])
+            finally:
+                if not complete:
+                    if os.waitpid(pid,os.WNOHANG) == (0,0):
+                        try: os.kill(pid,signal.SIGKILL)
+                        except ProcessLookupError: pass
+                        os.waitpid(pid,0)
+                os.close(fd)
+        row = terminal(["store-migration-backup",f.legacy,state,settings,ssh,backup],
+                       [(b"New migration backup password",password),(b"Repeat the migration backup password",password),
+                        (b"New migration recovery code",code),(b"Repeat the migration recovery code",code)])
+        self.assertEqual(row["checkpoint"],"backup-verified")
+        row = terminal(["store-migration-restore",backup,row["backup_id"],restored,"code"],
+                       [(b"Original migration recovery code",code)])
+        self.assertEqual(row["checkpoint"],"restored-private-copy")
+        self.assertEqual(snapshot(restored/row["backup_id"]/"checkout"),snapshot(f.legacy))
+
+    def test_migration_backup_checks_original_vault_envelopes_and_restored_credential(self):
+        from store_migration_backup import backup, restore
+        from store_vault import VaultUnlockCache
+        v = self.transfer_vaults()
+        f = self.migration_case()
+        shutil.copytree(v.source.vault,f.legacy/"secrets")
+        vault = f.legacy/"secrets"
+        value = b"synthetic private migration password"
+        (vault/"login.meta").write_text("type=password\n")
+        (vault/"login.age").write_bytes(v.seal(v.source,value))
+        original = snapshot(f.legacy)
+        state,settings,ssh = (self.root/name for name in ("legacy-state","legacy-settings","legacy-ssh"))
+        state.mkdir(mode=0o700); settings.mkdir(mode=0o700); ssh.write_text("# synthetic\n")
+        source = dict(checkout=f.legacy,state=state,settings=settings,ssh=ssh)
+        output = self.root/"sealed originals"; output.mkdir(mode=0o700)
+        stage = self.root/"restored private"; stage.mkdir(mode=0o700)
+        first,second = b"synthetic backup",b"independent restore"
+        user = v.unlock(v.source.store_id)
+        with self.assertRaises(StoreContextError):
+            backup(source,output,first,second,vault_access=(user,b"wrong"))
+        self.assertEqual(list(output.iterdir()),[])
+        ident = backup(source,output,first,second,vault_access=(user,b"fixture recovery"))
+        folder = restore(output,ident,stage,first)
+        restored = folder/"checkout/secrets"
+        engine = VaultUnlockCache(v.tools)
+        master = engine.open_identity((restored/"vault.recovery.age").read_bytes(),b"fixture recovery",(restored/"vault.pub").read_bytes())
+        self.assertTrue(engine.open_secret(master,(restored/"login.age").read_bytes()) == value)
+        self.assertEqual(snapshot(f.legacy),original)
+        self.assertNotIn(value,b"".join(p.read_bytes() for p in output.rglob("*") if p.is_file()))
+
+    def test_migration_inspection_distinguishes_locked_partial_and_damaged_vault_without_prompts(self):
+        v = self.transfer_vaults()
+        f = self.migration_case()
+        vault = f.legacy/"secrets"
+        shutil.copytree(v.source.vault,vault)
+        self.assertEqual(f.inspect()["vault"],"locked-unverified")
+        (vault/"synthetic.meta").write_bytes(b"type=key\n")
+        (vault/"synthetic.age").write_bytes(v.seal(v.source,b"synthetic opaque key"))
+        (vault/"synthetic.pub").write_bytes(b"ssh-ed25519 aGVsbG8=\n")
+        self.assertEqual(f.inspect()["vault"],"damaged")
+        for suffix in ("meta","age","pub"):
+            (vault/("synthetic."+suffix)).unlink()
+        ciphertext = (vault/"vault.key.age").read_bytes()
+        (vault/"vault.recovery.age").rename(self.root/"withheld-recovery")
+        self.assertEqual(f.inspect()["vault"],"partial")
+        (self.root/"withheld-recovery").rename(vault/"vault.recovery.age")
+        (vault/"vault.pub").write_text("not a native recipient\n")
+        snapshot_before = snapshot(f.legacy)
+        self.assertEqual(f.inspect()["vault"],"damaged")
+        self.assertEqual((vault/"vault.key.age").read_bytes(),ciphertext)
+        self.assertEqual(snapshot(f.legacy),snapshot_before)
 
     def test_legacy_writers_reject_managed_checkout_before_bootstrap(self):
         app = Path(__file__).resolve().parents[1] / "hostbook"
@@ -1390,6 +1753,220 @@ class StoreContextTest(unittest.TestCase):
             f.git(f.author, "commit", "-qam", "Independent remote fixture change")
             f.git(f.author, "push", "-q", str(f.remote), "HEAD:refs/heads/main")
         return f, edit, publish
+
+    def test_two_existing_hosts_edited_at_same_base_compose_on_exact_branch(self):
+        import store_read,store_publish
+        f, _, publish = self.prepare_edit()
+        first = "Host db\n  HostName 192.0.2.2\nHost web\n  HostName 192.0.2.44\n"
+        publish(first,add_host=True)
+        self.assertEqual(f.receive().returncode,0)
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        rows = store_read.refresh_routes(load,store,self.generations).strip().splitlines()
+        row, = [line.split("\t") for line in rows if line.split("\t")[2] == "db"]
+        publish(first.replace("192.0.2.44","192.0.2.45"))
+        origin = f.git(f.remote,"rev-parse","refs/heads/main")
+        result = store_publish.publish_address(load,store,self.generations,row[1],row[3],"192.0.2.88")
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main^"),origin)
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),
+                         first.strip().replace("192.0.2.2","192.0.2.88").replace("192.0.2.44","192.0.2.45"))
+
+    def test_conflict_review_uses_exact_rejected_edit_and_fresh_same_host_version(self):
+        import store_conflict,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("# synthetic-private-comment\nHost db\n  HostName 192.0.2.33\n  User analyst\n  Port 2222\n")
+        before = snapshot(f.store),snapshot(f.remote),snapshot(self.root/"shared b"),snapshot(self.recovery)
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(view["kind"],"same-host-edit")
+        self.assertEqual([view[k]["address"] for k in ("base","candidate","remote")],
+                         ["192.0.2.2","192.0.2.88","192.0.2.33"])
+        self.assertEqual(view["remote_revision"],f.git(f.remote,"rev-parse","refs/heads/main"))
+        self.assertEqual(view["attempt_id"],ident)
+        self.assertEqual(view["remote"]["user"],"analyst")
+        self.assertEqual(view["remote"]["port"],"2222")
+        self.assertEqual(view["base"]["port"],"22")
+        self.assertNotIn("synthetic-private-comment",json.dumps(view))
+        self.assertEqual((snapshot(f.store),snapshot(f.remote),snapshot(self.root/"shared b"),snapshot(self.recovery)),before)
+
+    def test_conflict_review_requires_complete_remote_deletion_and_retains_candidate(self):
+        import store_conflict,store_publish
+        f,edit,_ = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        manifest = f.author/".hostbook/identity.json"
+        prior = json.loads(manifest.read_bytes())
+        def publish(meta):
+            meta["generation"] += 1; manifest.write_text(json.dumps(meta))
+            f.git(f.author,"commit","-qam","Synthetic deletion evidence")
+            f.git(f.author,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        prior["hosts"] = []
+        publish(prior)
+        before = snapshot(self.recovery)
+        with self.assertRaises(StoreContextError):
+            store_conflict.compare(load,store,self.generations,ident)
+        (f.author/"team.conf").write_text("# empty project\n")
+        prior["sources"][0]["sha256"] = hashlib.sha256((f.author/"team.conf").read_bytes()).hexdigest()
+        publish(prior)
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(view["kind"],"delete-versus-edit")
+        self.assertIsNone(view["remote"])
+        self.assertEqual(view["candidate"]["address"],"192.0.2.88")
+        self.assertEqual(snapshot(self.recovery),before)
+        pristine = snapshot(f.remote),snapshot(f.store)
+        kept = store_conflict.resolve(load,store,self.generations,ident,"keep-remote",
+                                     view["candidate_revision"],view["remote_revision"],view["review_id"])
+        self.assertEqual(kept["outcome"],"kept-remote")
+        self.assertEqual((snapshot(f.remote),snapshot(f.store)),pristine)
+        import store_mode
+        current = Generations(**kept["generations"])
+        self.assertNotIn("pending",store_mode.change_mode(load,store,current,"two-way"))
+        decisions = [json.loads(p.read_bytes()) for p in self.recovery.glob("modes/*/decision.json")]
+        self.assertEqual([d["reviewed_remote"]["revision"] for d in decisions if "reviewed_remote" in d],
+                         [view["remote_revision"]])
+
+    def test_keep_remote_rechecks_review_before_retirement_and_allows_cancel(self):
+        import store_conflict,store_mode,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("Host db\n  HostName 192.0.2.33\n")
+        view = store_conflict.compare(load,store,self.generations,ident)
+        replace = store_mode.replace_entry
+        def advance(state,account,old,new,verify):
+            replace(state,account,old,new,verify)
+            if old["transition_id"] and new["transition_id"]:
+                publish("Host db\n  HostName 192.0.2.42\n")
+        with patch.object(store_mode,"replace_entry",advance),self.assertRaises(StoreContextError):
+            store_conflict.resolve(load,store,self.generations,ident,"keep-remote",view["candidate_revision"],
+                                   view["remote_revision"],view["review_id"])
+        expected = Generations(**dict(vars(self.generations),policy=self.generations.policy+2))
+        with self.assertRaises(StoreContextError):
+            store_mode.change_mode(load,store,expected,"two-way")
+        cancelled = store_mode.change_mode(load,store,expected,"cancel")
+        self.assertEqual(store_mode.change_mode(load,store,Generations(**cancelled["generations"]),"two-way")["pending"],[ident])
+
+    def test_conditional_address_resolution_keeps_exact_rejected_original_until_accepted(self):
+        import store_conflict,store_mode,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("Host db\n  HostName 192.0.2.33\n  Port 2222\n")
+        view = store_conflict.compare(load,store,self.generations,ident)
+        args = (load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"])
+        original_bundle = (self.recovery/"edits"/ident/"proposal.bundle").read_bytes()
+        remote = f.git(f.remote,"rev-parse","refs/heads/main")
+        other = snapshot(self.root/"shared b")
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,view["base_revision"],view["review_id"])
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            rejected = store_conflict.resolve(*args,remote,view["review_id"])
+        self.assertEqual(rejected["outcome"],"not-accepted")
+        self.assertNotEqual(rejected["attempt_id"],ident)
+        self.assertEqual(store_mode.change_mode(load,store,self.generations,"two-way")["pending"],[ident])
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main"),remote)
+        self.assertEqual((self.recovery/"edits"/ident/"proposal.bundle").read_bytes(),original_bundle)
+        done = store_conflict.resolve(*args,remote,view["review_id"])
+        self.assertEqual(done["outcome"],"accepted")
+        self.assertEqual(f.git(f.remote,"rev-parse","refs/heads/main^"),remote)
+        self.assertEqual(f.git(f.remote,"show","refs/heads/main:team.conf"),"Host db\n  HostName 192.0.2.88\n  Port 2222")
+        self.assertNotIn("pending",store_mode.change_mode(load,store,self.generations,"two-way"))
+        self.assertEqual(snapshot(self.root/"shared b"),other)
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,remote,view["review_id"])
+
+    def test_address_resolution_preserves_rejected_edit_when_bound_credential_bytes_rotate(self):
+        import store_conflict,store_publish,store_read
+        v = self.transfer_vaults()
+        f,_,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        label = "# secret: login\nHost db\n  HostName 192.0.2.2\n"
+        def add_record(repo,rev):
+            for name in ("vault.pub","vault.key.age","vault.recovery.age"):
+                (repo/"secrets"/name).write_bytes((v.destination.vault/name).read_bytes())
+            (repo/"secrets/login.meta").write_bytes(b"type=password\n")
+            (repo/"secrets/login.age").write_bytes(rev)
+        # Align the already verified vault envelopes in the three original Git states.
+        first = v.seal(v.destination,b"synthetic first value")
+        add_record(f.author,first)
+        f.git(f.author,"add","secrets")
+        publish(label)
+        f.git(f.store,"fetch","-q",str(f.remote),"refs/heads/main")
+        f.git(f.store,"merge","--ff-only","FETCH_HEAD")
+        row = store_read.refresh_routes(load,store,self.generations).splitlines()[0].split("\t")
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = store_publish.publish_address(load,store,self.generations,row[1],row[3],"192.0.2.88")["attempt_id"]
+        (f.author/"secrets/login.age").write_bytes(v.seal(v.destination,b"synthetic rotated value"))
+        f.git(f.author,"add","secrets/login.age")
+        publish(label.replace("192.0.2.2","192.0.2.33"))
+        view = store_conflict.compare(load,store,self.generations,ident)
+        before = snapshot(f.remote),snapshot(self.recovery)
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"],view["remote_revision"],view["review_id"])
+        self.assertEqual((snapshot(f.remote),snapshot(self.recovery)),before)
+        self.assertNotIn("synthetic rotated value",json.dumps(view))
+
+    def test_conflict_decision_binds_local_effective_user_and_only_selected_prod_alias(self):
+        import store_conflict,store_publish
+        f,edit,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        publish("Host db\n  HostName 192.0.2.33\n# tags: prod\nHost web\n  HostName 192.0.2.77\n",add_host=True)
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(view["required_aliases"],[])
+        ssh = self.state/"stores/v1"/store/"ssh"
+        ssh.mkdir(mode=0o700)
+        (ssh/"config").write_text("Host db\n  User another-operator\n")
+        (ssh/"config").chmod(0o600)
+        args = load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"],view["remote_revision"]
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,view["review_id"])
+        current = store_conflict.compare(load,store,self.generations,ident)
+        self.assertNotEqual(view["review_id"],current["review_id"])
+        self.assertEqual(current["remote"]["user"],"another-operator")
+        publish("# tags: prod\n\nHost db\n  HostName 192.0.2.33\nHost web\n  HostName 192.0.2.77\n")
+        prod = store_conflict.compare(load,store,self.generations,ident)
+        self.assertEqual(prod["required_aliases"],["db"])
+        args = (*args[:-1],prod["remote_revision"],prod["review_id"])
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(*args,confirm_prod=lambda *_:["web"])
+        self.assertEqual(store_conflict.resolve(*args,confirm_prod=lambda *_:["db"])["outcome"],"accepted")
+
+    def test_deleted_remote_host_needs_explicit_restore_and_preserves_current_project(self):
+        import store_conflict,store_publish
+        f,edit,_ = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = edit()["attempt_id"]
+        manifest = f.author/".hostbook/identity.json"
+        meta = json.loads(manifest.read_bytes())
+        key = meta["hosts"][0]["host_id"]
+        meta["hosts"] = []; meta["generation"] += 1
+        note = b"# remote project note\n"
+        (f.author/"team.conf").write_bytes(note)
+        meta["sources"][0]["sha256"] = hashlib.sha256(note).hexdigest()
+        manifest.write_text(json.dumps(meta))
+        f.git(f.author,"commit","-qam","Remote deleted selected host")
+        f.git(f.author,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        view = store_conflict.compare(load,store,self.generations,ident)
+        self.assertIn("restore-candidate",view["choices"])
+        local = snapshot(f.store)
+        result = store_conflict.resolve(load,store,self.generations,ident,"restore-candidate",
+                                        view["candidate_revision"],view["remote_revision"],view["review_id"])
+        self.assertEqual(result["outcome"],"accepted")
+        tip = f.git(f.remote,"rev-parse","refs/heads/main")
+        self.assertEqual(f.git(f.remote,"rev-parse",tip+"^"),view["remote_revision"])
+        self.assertIn("HostName 192.0.2.88",f.git(f.remote,"show",tip+":team.conf"))
+        self.assertIn(note.decode().strip(),f.git(f.remote,"show",tip+":team.conf"))
+        saved = json.loads(f.git(f.remote,"show",tip+":.hostbook/identity.json"))
+        self.assertEqual([(host["name"],host["host_id"]) for host in saved["hosts"]],[("db",key)])
+        self.assertEqual(snapshot(f.store),local)
 
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
@@ -2711,6 +3288,2145 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         self.assertEqual(list(context.status.parent.iterdir()), [context.status])
         current = self.resolve(1, generations=replace(self.generations, connection=4))
         self.assertFalse(current.status.exists())
+
+    def transfer_vaults(self):
+        from store_login import verified_age_tools
+        from store_transfer_credentials import CredentialRef
+        tools, _ = verified_age_tools(self.account)
+        def age(name, args=(), data=b"", passphrase=None):
+            with ExitStack() as stack:
+                env = {"PATH": str(tools)}
+                inherited = ()
+                if passphrase is not None:
+                    reader, writer = os.pipe()
+                    stack.callback(os.close, reader)
+                    with os.fdopen(writer, "wb") as output:
+                        output.write(passphrase)
+                    inherited = (reader,)
+                    env["AGE_PASSPHRASE_FD"] = str(reader)
+                return subprocess.run([tools/name, *args], input=data, env=env, pass_fds=inherited,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      check=True, timeout=30).stdout
+        source, destination = self.resolve(0), self.resolve(1)
+        passwords = {}
+        identities = {}
+        recipients = {}
+        for context in (source, destination):
+            identity = age("age-keygen")
+            recipient = age("age-keygen", ["-y"], identity)
+            password = ("fixture " + context.store_id).encode()
+            passwords[context.store_id] = password
+            identities[context.store_id] = identity
+            recipients[context.store_id] = recipient.strip().decode()
+            (context.vault/"vault.pub").write_bytes(recipient)
+            for name, phrase in (("vault.key.age", password), ("vault.recovery.age", b"fixture recovery")):
+                (context.vault/name).write_bytes(age("age", ["-a","-e","-j","batchpass"], identity, phrase))
+        def seal(context, value):
+            return age("age", ["-a","-e","-r",recipients[context.store_id]], value)
+        return SimpleNamespace(source=source, destination=destination, seal=seal, identities=identities,
+                               tools=tools, unlock=passwords.__getitem__,
+                               src=CredentialRef(source.store_id, self.generations, "login"),
+                               dst=CredentialRef(destination.store_id, self.generations, "login"))
+
+    def test_transfer_stages_password_only_for_its_verified_destination(self):
+        from store_transfer_credentials import stage_credential
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        value = b"synthetic transfer fixture"
+        old_ciphertext = f.seal(f.source, value)
+        (f.source.vault/"login.age").write_bytes(old_ciphertext)
+        (f.source.vault/"login.meta").write_bytes(b"type=password\ncreated=2026-02-20\n")
+        before = snapshot(self.root)
+        staged = stage_credential(lambda: self.account, f.src, f.dst, f.unlock)
+        self.assertEqual(staged.metadata, (f.source.vault/"login.meta").read_bytes())
+        self.assertIsNone(staged.public_key)
+        self.assertNotEqual(staged.ciphertext, old_ciphertext)
+        vault = VaultUnlockCache(f.tools)
+        self.assertTrue(vault.open_secret(f.identities[f.dst.store_id], staged.ciphertext) == value)
+        with self.assertRaises(StoreContextError):
+            vault.open_secret(f.identities[f.src.store_id], staged.ciphertext)
+        self.assertEqual(before, snapshot(self.root))
+
+    def test_transfer_preview_classifies_stable_id_name_and_endpoint_without_exposing_source_text(self):
+        from store_transfer import preview
+        source_id = new_id()
+        f = self.prepare_receive()
+        self.assertEqual(f.receive().returncode, 0)
+        src = self.write_route(0, source_id, "# private fixture note\n# secret: login\nHost DB\n"
+                               "  Hostname 192.0.2.2\n  ProxyJump relay.example\n", name="DB")
+        f.git(src.checkout,"init","-q","--template=")
+        f.git(src.checkout,"symbolic-ref","HEAD","refs/heads/main")
+        f.git(src.checkout,"add",".")
+        f.git(src.checkout,"commit","-qm","Fixture selected source")
+        dst = self.resolve(1)
+        def observe(alias="DB"):
+            return preview(lambda: self.account,src.store_id,self.generations,source_id,
+                           dst.store_id,self.generations,alias).comparison()
+        before = snapshot(self.root)
+        result = observe()
+        self.assertEqual(result["source"]["host_id"], source_id)
+        self.assertEqual(result["source"]["proxyjump"], "relay.example")
+        self.assertEqual(result["source"]["credential"], "login")
+        self.assertNotIn("private fixture note", json.dumps(result))
+        self.assertEqual(result["matches"][0]["reasons"], ["alias","endpoint"])
+        self.assertEqual(result["destination"]["proposed_host_id"], source_id)
+        self.assertEqual(result["publications"], [{"store_id":dst.store_id,"ref":"refs/heads/main","effect":"destination-save"}])
+        self.assertEqual(observe("separate")["matches"][0]["reasons"], ["endpoint"])
+        self.assertEqual(snapshot(self.root), before)
+        if os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME") == "1":
+            import pwd
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            self.assertIn(home, (Path("/fixture-home"),Path("/home/hostbook-fixture")))
+            self.assertTrue(Path("/.dockerenv").is_file())
+            self.assertFalse((home/".config").exists())
+            approval = self.write_local_approval(home)
+            self.addCleanup(approval.parent.parent.rmdir)
+            self.addCleanup(approval.parent.rmdir)
+            self.addCleanup(approval.unlink)
+            result = subprocess.run([f.app,"store-transfer-preview",src.store_id,"1","2","3","4",source_id,
+                                     dst.store_id,"1","2","3","4","DB"],cwd=self.root/"shared b",env=f.env,
+                                    capture_output=True,check=True,timeout=15)
+            self.assertEqual(json.loads(result.stdout), observe())
+        identity = dst.checkout/".hostbook/identity.json"
+        data = json.loads(identity.read_bytes())
+        existing_key = data["hosts"][0]["host_id"]
+        data["hosts"][0]["host_id"] = source_id
+        identity.write_text(json.dumps(data))
+        f.git(dst.checkout,"add",".hostbook/identity.json")
+        f.git(dst.checkout,"commit","-qm","Fixture same host ID")
+        f.git(dst.checkout,"push","-q",str(f.remote),"HEAD:refs/heads/main")
+        self.assertNotEqual(existing_key, source_id)
+        self.assertEqual(observe("separate")["matches"][0]["reasons"], ["stable-id","endpoint"])
+        import store_transfer
+        original = store_transfer.effective
+        def change_mode(config, alias, **options):
+            route = original(config, alias,**options)
+            if alias == "db":
+                self.entries[1]["policy_generation"] += 1
+                self.save_registry()
+            return route
+        with patch.object(store_transfer, "effective", side_effect=change_mode):
+            with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+                observe()
+
+    def test_transfer_endpoint_compares_literal_ip_and_exact_login(self):
+        from store_read import effective, ssh_view
+        from store_transfer import endpoint
+        conf = (b"Host long\n HostName 2001:0db8:0:0:0:0:0:1\n User Mixed\n Port 23\n"
+                b"Host short\n HostName 2001:db8::1\n User Mixed\n Port 23\n")
+        with ssh_view([conf], (None,None,None)) as config:
+            first, second = (effective(config, name) for name in ("long","short"))
+        self.assertEqual(endpoint(first), endpoint(second))
+        self.assertEqual(endpoint(dict(first,hostname="2001:0db8:0:0:0:0:0:1")), endpoint(second))
+        self.assertNotEqual(endpoint(first), endpoint(dict(second,user="mixed")))
+        self.assertNotEqual(endpoint(first), endpoint(dict(second,port="22")))
+
+    def test_transaction_vault_reopens_complete_manifest_from_either_independent_envelope(self):
+        from store_transfer_recovery import seal_payload, read_payload, verify_backup
+        from store_login import verified_age_tools
+        from store_checkout import durable_file
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        password, code = b"independent fixture password", b"independent fixture recovery"
+        manifest = b'{"credential":"synthetic private fixture","host":"source.invalid"}'
+        payload_id = new_id()
+        sealed = seal_payload(self.account, manifest, password, code)
+        before = snapshot(self.root)
+        with tempfile.TemporaryDirectory(dir=self.root) as scratch:
+            directory = os.open(scratch,store_context.DIRECTORY_FLAGS)
+            try:
+                for name, data in (("vault.pub",sealed.recipient), ("vault.key.age",sealed.password_envelope),
+                                   ("vault.recovery.age",sealed.recovery_envelope), (payload_id+".age",sealed.ciphertext)):
+                    durable_file(directory, name, data)
+                for phrase, recovery in ((password,False),(code,True)):
+                    self.assertTrue(read_payload(self.account,directory,directory,payload_id,phrase,
+                                                 recovery=recovery) == manifest)
+                verify_backup(self.account,directory,directory,payload_id,password,code,manifest)
+                backup = Path(scratch)/"vault.recovery.age"
+                backup.unlink()
+                self.assertTrue(read_payload(self.account,directory,directory,payload_id,password) == manifest)
+                with self.assertRaises(FileNotFoundError):
+                    verify_backup(self.account,directory,directory,payload_id,password,code,manifest)
+                durable_file(directory,"vault.recovery.age",sealed.recovery_envelope)
+                open_secret = VaultUnlockCache.open_secret
+                def change_permission(cache, identity, ciphertext):
+                    os.fchmod(directory,0o755)
+                    return open_secret(cache,identity,ciphertext)
+                try:
+                    with patch.object(VaultUnlockCache,"open_secret",change_permission):
+                        with self.assertRaisesRegex(StoreContextError, "private"):
+                            verify_backup(self.account,directory,directory,payload_id,password,code,manifest)
+                finally:
+                    os.fchmod(directory,0o700)
+                with self.assertRaises(StoreContextError):
+                    read_payload(self.account,directory,directory,payload_id,f.unlock(f.src.store_id))
+                vault = VaultUnlockCache(verified_age_tools(self.account)[0])
+                for identity in f.identities.values():
+                    with self.assertRaises(StoreContextError):
+                        vault.open_secret(identity,sealed.ciphertext)
+                (Path(scratch)/(payload_id+".age")).write_bytes(sealed.ciphertext[:60])
+                with self.assertRaises(StoreContextError):
+                    read_payload(self.account,directory,directory,payload_id,password)
+            finally:
+                os.close(directory)
+        self.assertEqual(snapshot(self.root), before)
+
+    def transfer_case(self, *, shared_credential=False, prod=False):
+        from store_transfer import preview
+        vaults = self.transfer_vaults()
+        host = new_id()
+        self.write_route(0, host, ("# tags: prod\n" if prod else "")+"# secret: login\nHost source-one\n  HostName 192.0.2.61\n"
+                         "  User fixture\n  Port 2210\n  ProxyJump relay.example\n", name="source-one")
+        if shared_credential:
+            other = b"# secret: login\nHost stays\n  HostName 192.0.2.77\n"
+            folder = vaults.source.checkout
+            (folder/"stays.conf").write_bytes(other)
+            sidecar = folder/".hostbook/identity.json"
+            data = json.loads(sidecar.read_bytes())
+            data["sources"].append({"path":"stays.conf","sha256":hashlib.sha256(other).hexdigest()})
+            data["hosts"].append({"host_id":new_id(),"name":"stays","bindings":[
+                {"path":"stays.conf","host_ordinal":1,"token_ordinal":1}]})
+            sidecar.write_text(json.dumps(data))
+        (vaults.source.vault/"login.age").write_bytes(vaults.seal(vaults.source,b"fixture mapped password"))
+        (vaults.source.vault/"login.meta").write_bytes(b"type=password\n")
+        shared = self.prepare_receive()
+        self.assertEqual(shared.receive().returncode, 0)
+        for args in (("init","-q","--template="), ("symbolic-ref","HEAD","refs/heads/main"), ("add","."),
+                     ("commit","-qm","Fixture private source")):
+            shared.git(vaults.source.checkout,*args)
+        self.entries[1]["effective_mode"] = "two-way"
+        self.save_registry()
+        load = lambda: self.account
+        plan = preview(load,vaults.src.store_id,self.generations,host,vaults.dst.store_id,self.generations,"moved")
+        return SimpleNamespace(plan=plan, shared=shared, vaults=vaults, load=load, host=host)
+
+    def probable_duplicate(self, alias, *, previous=False):
+        from store_transfer import preview
+        f = self.transfer_case()
+        src,dst = f.vaults.source,f.vaults.destination
+        raw = b"Host db\n  HostName 192.0.2.61\n  User fixture\n  Port 2210\n  ServerAliveInterval 17\n"
+        if previous:
+            raw = b"# tags: prod\n# secret: original-login\n"+raw
+            (dst.vault/"original-login.age").write_bytes(f.vaults.seal(dst,b"original host fixture password"))
+            (dst.vault/"original-login.meta").write_bytes(b"type=password\n")
+            (dst.checkout/"groups.tsv").write_bytes(b"watched\tsync\tdb\n")
+        (dst.checkout/"team.conf").write_bytes(raw)
+        path = dst.checkout/".hostbook/identity.json"
+        identity = json.loads(path.read_bytes())
+        identity["sources"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+        identity["generation"] += 1
+        path.write_text(json.dumps(identity))
+        f.shared.git(dst.checkout,"add","--all"); f.shared.git(dst.checkout,"commit","-qm","Independent host at same endpoint")
+        f.shared.git(dst.checkout,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+        f.plan = preview(f.load,src.store_id,src.generations,f.host,dst.store_id,dst.generations,alias)
+        f.target = identity["hosts"][0]["host_id"]
+        f.args = [src.store_id,"1","2","3","4",f.host,dst.store_id,"1","2","3","4",alias,"mapped-login","create"]
+        answers = {"source":f.vaults.unlock(src.store_id),"destination":f.vaults.unlock(dst.store_id),
+                   "backup":b"operator backup","recovery":b"independent recovery"}
+        f.secret = lambda role:answers[role.removesuffix("-repeat")]
+        return f
+
+    def test_explicit_keep_both_preserves_existing_host_and_requires_current_reviewed_revisions(self):
+        from store_transfer_command import run_transfer
+        f = self.probable_duplicate("distinct-db")
+        reviewed = f.plan.comparison()
+        self.assertEqual(reviewed["destination"]["revision"],f.plan.destination.base)
+        self.assertEqual(reviewed["matches"][0]["host_id"],f.target)
+        self.assertIn("keep-both",reviewed["choices"])
+        before = snapshot(self.root)
+        def no_secret(_):
+            self.fail("denied or cancelled decision requested a secret")
+        with self.assertRaises(StoreContextError):
+            run_transfer(f.load,f.args,no_secret,no_secret,lambda _:None)
+        self.assertEqual(run_transfer(f.load,f.args+["cancel"],no_secret,no_secret,lambda _:None),0)
+        with self.assertRaisesRegex(StoreContextError,"reviewed revisions"):
+            run_transfer(f.load,f.args+["keep-both",f.target,"0"*40,f.plan.destination.base],no_secret,no_secret,lambda _:None)
+        self.assertEqual(snapshot(self.root),before)
+        saved = []
+        def confirm(observation):
+            self.assertEqual(observation["decision"],"keep-both")
+            self.assertEqual(observation["chosen_destination_id"],f.target)
+            return True
+        new_args = f.args+["keep-both",f.target,f.plan.source.base,f.plan.destination.base]
+        self.assertEqual(run_transfer(f.load,new_args,f.secret,confirm,saved.append),0)
+        self.assertEqual(saved[-1]["checkpoint"],"completed")
+        rows = json.loads(f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))["hosts"]
+        self.assertEqual({row["host_id"]:row["name"] for row in rows},{f.target:"db",f.host:"distinct-db"})
+        self.assertEqual(f.shared.git(f.shared.remote,"show","main:team.conf"),
+                         f.shared.git(f.shared.remote,"show",f.plan.destination.base+":team.conf"))
+
+    def test_explicit_update_keeps_destination_key_name_group_history_and_recoverable_prior_credential(self):
+        from store_transfer_command import run_transfer
+        from store_transfer_intent import reopen_intent
+        f = self.probable_duplicate("db",previous=True)
+        dst = f.vaults.destination
+        prior = (dst.checkout/"team.conf").read_bytes()
+        credential = (dst.vault/"original-login.age").read_bytes()
+        group = (dst.checkout/"groups.tsv").read_bytes()
+        history = self.state/"stores"/"v1"/dst.store_id/"history.tsv"
+        history.write_text(dst.store_id+"\t"+f.target+"\t7\n")
+        past = history.read_bytes()
+        reviewed = []
+        def confirm(observation):
+            self.assertEqual(observation["decision"],"update")
+            self.assertEqual(observation["chosen_destination_id"],f.target)
+            self.assertEqual(observation["destination"]["proposed_host_id"],f.target)
+            self.assertEqual(observation["matches"][0]["credential"],"original-login")
+            self.assertNotIn("original host fixture password",json.dumps(observation))
+            self.assertEqual(observation["required_aliases"],["db"])
+            self.assertEqual(observation["connection_changes"]["serveraliveinterval"],{"existing":"17","proposed":"0"})
+            self.assertEqual(observation["retained_destination_groups"],["watched"])
+            return "db"
+        arguments = f.args+["update",f.target,f.plan.source.base,f.plan.destination.base]
+        with self.assertRaisesRegex(StoreContextError,"explicit transfer confirmation"):
+            run_transfer(f.load,arguments,f.secret,lambda _:True,lambda _:None)
+        self.assertEqual((dst.checkout/"team.conf").read_bytes(),prior)
+        self.assertEqual(run_transfer(f.load,arguments,f.secret,confirm,reviewed.append),0)
+        ident = reviewed[-1]["transaction_id"]
+        record,protected = reopen_intent(f.load,ident,b"independent recovery",recovery=True)
+        self.assertEqual([row["host_id"] for row in record["hosts"]],[f.host,f.target])
+        self.assertEqual(record["checkpoint"],"completed")
+        self.assertEqual((dst.checkout/"groups.tsv").read_bytes(),group)
+        self.assertEqual(history.read_bytes(),past)
+        self.assertEqual((dst.vault/"original-login.age").read_bytes(),credential)
+        self.assertEqual(protected["credentials"]["prior_destination"]["name"],"original-login")
+        import base64
+        self.assertEqual(base64.b64decode(protected["credentials"]["prior_destination"]["age"]),credential)
+        self.assertEqual(base64.b64decode(protected["credentials"]["prior_destination"]["value"]),b"original host fixture password")
+        old_id = next(row["snapshot_id"] for row in record["stores"] if row["role"]=="destination")
+        self.assertEqual(base64.b64decode(protected["snapshots"][old_id]["files"]["team.conf"]),prior)
+        latest = json.loads(f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))
+        self.assertEqual([(row["host_id"],row["name"]) for row in latest["hosts"]],[(f.target,"db")])
+        new_doc = f.shared.git(f.shared.remote,"show","main:team.conf")
+        self.assertIn("# secret: mapped-login",new_doc)
+        self.assertIn("ProxyJump relay.example",new_doc)
+        self.assertNotIn("ServerAliveInterval 17",new_doc)
+        self.assertFalse((f.vaults.source.checkout/"team.conf").exists())
+
+    def test_replacing_a_duplicate_preserves_a_late_save_to_its_actual_old_destination_inode(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        from store_transfer_publish import publish_destination
+        f = self.probable_duplicate("db")
+        plan = f.plan.choose("update",f.target,f.plan.source.base,f.plan.destination.base)
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,replace(v.dst,name="new-mapping"),v.unlock)
+        pw,code = b"backup fixture",b"recovery fixture"
+        prior = snapshot(v.source.checkout)
+        dest = v.destination.checkout
+        with prepare_candidate(f.load,plan,mapped) as candidate:
+            ident = prepare_intent(f.load,plan,candidate,mapped,v.unlock,pw,code,lambda _:True)
+            with (dest/"team.conf").open("ab",buffering=0) as editor:
+                save_destination(f.load,ident,plan,candidate,mapped,v.unlock,pw,code)
+                editor.write(b"# later independent save\n")
+                os.fsync(editor.fileno())
+            with self.assertRaisesRegex(StoreContextError,"local changes"):
+                publish_destination(f.load,ident,plan,candidate,mapped,v.unlock,pw,code)
+        record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["attempts"],[])
+        self.assertEqual(record["checkpoint"],"destination-saved")
+        self.assertEqual(snapshot(v.source.checkout),prior)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),plan.destination.base)
+        self.assertTrue((dest/".git").joinpath(*manifest["destination_runtime"],"1").read_bytes().endswith(b"# later independent save\n"))
+
+    def reverse_transfer_case(self):
+        from store_transfer import preview
+        from store_transfer_credentials import CredentialRef
+        seed = self.transfer_case()
+        v,shared = seed.vaults,seed.shared
+        src,dst = v.destination,v.source
+        raw = b"# secret: team-key\nHost db\n  HostName 192.0.2.2\n  User fixture\n"
+        (src.checkout/"team.conf").write_bytes(raw)
+        path = src.checkout/".hostbook/identity.json"
+        identity = json.loads(path.read_bytes())
+        identity["generation"] += 1
+        identity["sources"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+        path.write_text(json.dumps(identity))
+        (src.vault/"team-key.age").write_bytes(v.seal(src,b"shared fixture password"))
+        (src.vault/"team-key.meta").write_bytes(b"type=password\n")
+        shared.git(src.checkout,"add","--all")
+        shared.git(src.checkout,"commit","-qm","Shared host uses its own fixture credential")
+        shared.git(src.checkout,"push","-q",str(shared.remote),"HEAD:refs/heads/main")
+        host = identity["hosts"][0]["host_id"]
+        plan = preview(seed.load,src.store_id,src.generations,host,dst.store_id,dst.generations,"personal-db")
+        return SimpleNamespace(plan=plan,load=seed.load,shared=shared,v=v,src=src,dst=dst,
+            original=CredentialRef(src.store_id,src.generations,"team-key"),
+            mapped=CredentialRef(dst.store_id,dst.generations,"db-credential"))
+
+    def test_reverse_transfer_confirms_saved_decryptable_private_destination_before_touching_shared_source(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publish
+        f = self.reverse_transfer_case()
+        mapped = stage_credential(f.load,f.original,f.mapped,f.v.unlock)
+        pw,code = b"reverse backup fixture",b"reverse recovery fixture"
+        before,remote = snapshot(f.src.checkout),snapshot(f.shared.remote)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,f.v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            result = publish.confirm_private_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            self.assertEqual(result["checkpoint"],"destination-confirmed")
+            record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+            self.assertEqual(record["attempts"],[])
+            self.assertEqual(manifest["confirmed_destination"],candidate.proposed)
+            self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),candidate.proposed)
+            self.assertEqual(f.shared.git(f.src.checkout,"rev-parse","HEAD"),f.plan.source.base)
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.source.base)
+            mapped.verify_saved(f.load,f.v.unlock)
+        self.assertEqual(snapshot(f.src.checkout),before)
+        self.assertEqual(snapshot(f.shared.remote),remote)
+
+    def check_shared_source_publication(self, refused, *, editor=False):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publisher
+        import store_transfer_remove as removal
+        f = self.reverse_transfer_case()
+        mapped = stage_credential(f.load,f.original,f.mapped,f.v.unlock)
+        pw,code = b"reverse backup fixture",b"reverse recovery fixture"
+        send = publisher.send
+        attempted = []
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,f.v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            publisher.confirm_private_destination(f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code)
+            before = snapshot(f.dst.checkout)
+            source_vault = snapshot(f.src.vault)
+            args = f.load,ident,f.plan,candidate,mapped,f.v.unlock,pw,code
+            result = removal.remove_source(*args)
+            self.assertEqual(result["checkpoint"],"source-removed-local")
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.source.base)
+            self.assertFalse((f.src.checkout/"team.conf").exists())
+            if editor:
+                record,manifest = reopen_intent(f.load,ident,pw)
+                captured = (f.src.checkout/".git").joinpath(*manifest["source_runtime"],"source")
+                changed = captured.read_bytes()+b"# independent save through previously opened source\n"
+                captured.write_bytes(changed)
+                with self.assertRaisesRegex(StoreContextError,"local changes"):
+                    publisher.publish_source(*args)
+                self.assertEqual(captured.read_bytes(),changed)
+                self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.source.base)
+                self.assertEqual(reopen_intent(f.load,ident,pw)[0]["attempts"],[])
+                return
+            def checked(*call):
+                record,protected = reopen_intent(f.load,ident,pw)
+                attempt = record["attempts"][0]
+                self.assertEqual((attempt["store_id"],attempt["outcome"]),(f.src.store_id,"reserved"))
+                self.assertEqual((call[3],call[4],call[5]),(f.plan.source.ref,f.plan.source.base,candidate.source_proposed))
+                self.assertEqual(protected["publication"]["target"]["inode"],f.shared.remote.stat().st_ino)
+                if refused:
+                    f.shared.git(f.shared.author,"fetch","-q",str(f.shared.remote),"refs/heads/main")
+                    f.shared.git(f.shared.author,"merge","-q","--ff-only","FETCH_HEAD")
+                    (f.shared.author/"independent").write_text("unrelated independent update")
+                    f.shared.git(f.shared.author,"add","independent")
+                    f.shared.git(f.shared.author,"commit","-qm","Independent shared change")
+                    f.shared.git(f.shared.author,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+                attempted.append(attempt["attempt_id"])
+                return send(*call)
+            with patch.object(publisher,"send",side_effect=checked):
+                sent = publisher.publish_source(*args)
+            self.assertEqual(len(attempted),1)
+            self.assertEqual(snapshot(f.dst.checkout),before)
+            self.assertEqual(snapshot(f.src.vault),source_vault)
+            record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+            self.assertEqual(record["attempts"][0]["attempt_id"],attempted[0])
+            self.assertIn("source_bundle",manifest)
+            if refused:
+                self.assertEqual(sent["outcome"],"not-accepted")
+                self.assertEqual(record["checkpoint"],"source-removed-local")
+                self.assertIn("Host db",f.shared.git(f.shared.remote,"show","refs/heads/main:team.conf"))
+                self.assertEqual(f.shared.git(f.shared.remote,"show","main:independent"),"unrelated independent update")
+                with self.assertRaises(StoreContextError):
+                    removal.finish_shared_source(*args)
+                self.assertTrue((f.src.checkout/".git").joinpath(*manifest["source_runtime"],"source").is_file())
+            else:
+                self.assertEqual(sent["checkpoint"],"source-confirmed")
+                self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),candidate.source_proposed)
+                self.assertEqual(removal.finish_shared_source(*args)["checkpoint"],"completed")
+                self.assertEqual(f.shared.git(f.src.checkout,"status","--porcelain"),"")
+                from store_journal import require_idle
+                from store_publish import recovery_root
+                with recovery_root(self.account) as root:
+                    for ctx in (f.src,f.dst):
+                        require_idle(root,self.account,ctx.store_id)
+
+    def test_shared_source_publishes_exact_reviewed_removal_after_private_destination_is_verified(self):
+        self.check_shared_source_publication(False)
+
+    def test_shared_source_refusal_retains_remote_host_private_copy_and_encrypted_recovery(self):
+        self.check_shared_source_publication(True)
+
+    def test_shared_source_publication_preserves_an_edit_to_the_displaced_source(self):
+        self.check_shared_source_publication(False,editor=True)
+
+    def test_transfer_candidate_preserves_exact_id_settings_and_verified_destination_password(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_receive import git
+        from store_vault import VaultUnlockCache
+        f = self.transfer_case()
+        vaults = f.vaults
+        mapped = stage_credential(f.load,vaults.src,replace(vaults.dst,name="team-login"),vaults.unlock)
+        before = snapshot(self.root)
+        with prepare_candidate(f.load, f.plan, mapped) as candidate:
+            repo, proposed = candidate.stage, candidate.proposed
+            self.assertEqual(git(repo,"rev-parse",proposed+"^").decode().strip(), f.plan.destination.base)
+            sidecar = json.loads(git(repo,"show",proposed+":.hostbook/identity.json"))
+            selected = next(row for row in sidecar["hosts"] if row["host_id"] == f.host)
+            self.assertEqual(selected["name"], "moved")
+            document = git(repo,"show",proposed+":"+selected["bindings"][0]["path"])
+            self.assertIn(b"# secret: team-login\n",document)
+            self.assertIn(b"  ProxyJump relay.example\n",document)
+            ciphertext = git(repo,"show",proposed+":secrets/team-login.age")
+            self.assertTrue(VaultUnlockCache(vaults.tools).open_secret(vaults.identities[vaults.dst.store_id],
+                                                                       ciphertext) == b"fixture mapped password")
+            removal = candidate.source_proposed
+            self.assertEqual(git(candidate.source_stage,"rev-parse",removal+"^").decode().strip(),f.plan.source.base)
+            remaining = json.loads(git(candidate.source_stage,"show",removal+":.hostbook/identity.json"))
+            self.assertFalse(any(row["host_id"] == f.host for row in remaining["hosts"]))
+            removed = git(candidate.source_stage,"diff-tree","--no-commit-id","--name-only","--no-renames","-r",removal)
+            self.assertEqual(set(removed.decode().splitlines()),{".hostbook/identity.json",candidate.source_path})
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_transfer_candidate_requires_the_fetched_vault_and_reused_credential(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        meta, age = (v.destination.vault/("existing."+suffix) for suffix in ("meta","age"))
+        meta.write_bytes(b"type=password\n")
+        age.write_bytes(v.seal(v.destination,b"fixture mapped password"))
+        def rejected(mapping):
+            before = snapshot(self.root)
+            with self.assertRaisesRegex(StoreContextError, "accepted destination"):
+                with prepare_candidate(f.load,f.plan,mapping):
+                    self.fail("unverified destination mapping")
+            self.assertEqual(snapshot(self.root), before)
+        reused = stage_credential(f.load,v.src,replace(v.dst,name="existing"),v.unlock,reuse_existing=True)
+        rejected(reused)
+        meta.unlink()
+        age.unlink()
+        (v.destination.vault/"vault.recovery.age").write_bytes((v.destination.vault/"vault.key.age").read_bytes())
+        rejected(stage_credential(f.load,v.src,v.dst,v.unlock))
+
+    def test_transfer_candidate_requires_native_authentication_settings_for_host_and_jump(self):
+        from store_transfer import prepare_candidate, preview
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        local = self.state/"stores/v1"/v.dst.store_id/"ssh"
+        local.mkdir(mode=0o700)
+        config = local/"config"
+        for name in ("moved","relay.example"):
+            config.write_text(f"Host {name}\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n")
+            config.chmod(0o600)
+            plan = preview(f.load,v.src.store_id,self.generations,f.host,v.dst.store_id,self.generations,"moved")
+            before = snapshot(self.root)
+            with self.assertRaisesRegex(StoreContextError, "selected route"):
+                with prepare_candidate(f.load,plan,mapped):
+                    self.fail("incompatible native authentication admitted")
+            self.assertEqual(before,snapshot(self.root))
+
+    def test_transfer_candidate_rechecks_receiver_policy_after_preparation(self):
+        import store_transfer
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        hook = f.shared.remote/"hooks"/"update"
+        hook.parent.mkdir(exist_ok=True)
+        def change_policy(*args):
+            hook.touch(mode=0o700, exist_ok=True)
+            return original(*args)
+        original = store_transfer.tree
+        with patch.object(store_transfer,"tree",side_effect=change_policy):
+            with self.assertRaisesRegex(StoreContextError, "server hooks"):
+                with store_transfer.prepare_candidate(f.load,f.plan,mapped):
+                    self.fail("old receiver policy reused")
+
+    def test_confirmed_transfer_persists_independent_prepared_intent_before_either_checkout_changes(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        import base64
+        f = self.transfer_case()
+        v = f.vaults
+        mapping = stage_credential(f.load,v.src,replace(v.dst,name="team-login"),v.unlock)
+        branches = [v.source.checkout,v.destination.checkout,f.shared.remote,self.root/"shared b"]
+        before = [snapshot(root) for root in branches]
+        password, code = b"transaction fixture password", b"transaction fixture recovery code"
+        with prepare_candidate(f.load,f.plan,mapping) as candidate:
+            with self.assertRaisesRegex(StoreContextError, "confirmation"):
+                prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,password,code,lambda _:False)
+            self.assertFalse((self.recovery/"transactions").exists())
+            called = []
+            def confirm(comparison):
+                called.append(comparison)
+                return True
+            ident = prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,password,code,confirm)
+            self.assertEqual(len(called),1)
+            self.assertEqual(called[0]["destination_credential"],"team-login")
+            proposal = candidate.proposed
+        self.assertEqual([snapshot(root) for root in branches],before)
+        with recovery_root(self.account) as root:
+            for store in (v.src.store_id,v.dst.store_id):
+                with self.assertRaises(StoreContextError):
+                    require_idle(root,self.account,store)
+                hint = self.recovery/"stores"/store/(ident+".ref")
+                self.assertEqual(json.loads(hint.read_bytes()),{"version":1,"transaction_id":ident})
+            require_idle(root,self.account,self.entries[2]["store_id"])
+        record, manifest = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["checkpoint"],"prepared")
+        self.assertEqual(record["transaction_id"],ident)
+        self.assertEqual(manifest["proposed"],proposal)
+        self.assertEqual(manifest["destination_ref"],"refs/heads/main")
+        from store_transfer_owner import owner_lease
+        with recovery_root(self.account) as root, store_context.open_directory(root,("transactions",ident)) as tx:
+            with owner_lease(tx,record["owner"],manifest) as lease:
+                self.assertEqual(os.fstat(lease).st_ino,manifest["lease"]["inode"])
+        self.assertTrue(base64.b64decode(manifest["credentials"]["source"]["value"]) == b"fixture mapped password")
+        for expanded in manifest["credentials"].values():
+            self.assertNotIn("vault_identity", expanded.keys())
+        contents = json.dumps(manifest).encode()
+        self.assertFalse(any(base64.b64encode(identity) in contents for identity in v.identities.values()))
+        visible = self.recovery/"transactions"/ident
+        for file in visible.rglob("*"):
+            if file.is_file():
+                data = file.read_bytes()
+                self.assertFalse(any(secret in data for secret in (b"192.0.2.61",b"team-login",b"relay.example",
+                                                                   b"fixture mapped password",password,code)))
+        from store_transfer_recovery import read_payload
+        current = visible/"records/1.json"
+        def replace_during_unlock(*args, **kwargs):
+            result = read_payload(*args,**kwargs)
+            changed = dict(record, payload_id=new_id())
+            current.write_text(json.dumps(changed))
+            return result
+        with patch("store_transfer_intent.read_payload",side_effect=replace_during_unlock):
+            with self.assertRaisesRegex(StoreContextError, "changed"):
+                reopen_intent(f.load,ident,password)
+
+    def test_transfer_preview_cleans_private_ssh_view_on_termination(self):
+        library = Path(__file__).resolve().parents[1]/"lib"
+        script = """
+import signal, sys
+sys.path.insert(0,sys.argv[1])
+import store_transfer
+from store_read import ssh_view
+def wait(*_):
+    with ssh_view([b'# fixture note\\nHost fixture\\n HostName 192.0.2.7\\n'], (None,None,None)) as config:
+        print(config.parent,flush=True)
+        signal.pause()
+store_transfer.preview = wait
+store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2','3','4'])
+"""
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with subprocess.Popen([sys.executable,"-I","-B","-c",script,str(library)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True) as child:
+                self.assertTrue(select.select([child.stdout],[],[],5)[0])
+                folder = Path(child.stdout.readline().strip())
+                self.assertEqual(folder.parent.resolve(), Path("/tmp").resolve())
+                self.assertTrue(folder.name.startswith("hb-route-"))
+                self.addCleanup(shutil.rmtree, folder, True)
+                child.send_signal(sig)
+                child.wait(timeout=5)
+                self.assertFalse(folder.exists())
+
+    def interrupted_transfer_owner(self, case, step):
+        approval = self.root/"owner-account"
+        approval.mkdir(mode=0o700)
+        self.write_local_approval(approval)
+        child = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from store_context import Generations, load_approved_account
+from store_transfer import preview,prepare_candidate
+from store_transfer_credentials import CredentialRef,stage_credential
+from store_transfer_intent import prepare_intent
+from store_transfer_apply import save_destination
+from store_transfer_publish import publish_destination,confirm_private_destination,publish_source
+from store_transfer_remove import remove_source
+args=json.loads(sys.stdin.readline())
+if args['step'] == 'legacy-destination-confirmed':
+    import store_transfer_publish
+    from store_transfer import TransferPlan
+    store_transfer_publish.publication_receipt=lambda stores,attempt:{k:attempt[k] for k in ('attempt_id','evidence_id','sender_state','outcome')}
+    current=TransferPlan.comparison
+    def legacy(plan):
+        result=current(plan)
+        for k in ('decision','chosen_destination_id','choices','connection_changes'):
+            result.pop(k)
+        for role in ('source','destination'):
+            for k in ('revision','ref'):
+                result[role].pop(k,None)
+        return result
+    TransferPlan.comparison=legacy
+load=lambda:load_approved_account(Path(sys.argv[2]))
+g=Generations(*args['generations'])
+plan=preview(load,args['src'],g,args['host'],args['dst'],g,args['alias'])
+if args['decision']:
+    plan=plan.choose(*args['decision'])
+unlock=lambda store:args['phrases'][store].encode()
+pw,code=args['password'].encode(),args['code'].encode()
+mapping=stage_credential(load,CredentialRef(args['src'],g,args['original']),CredentialRef(args['dst'],g,args['mapped']),unlock)
+with prepare_candidate(load,plan,mapping) as candidate:
+    ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda review:review.get("required_aliases") or True)
+    if args['step']=='legacy-retire-partial':
+        import store_transfer_remove as removal
+        advance=removal.advance
+        def old_format(tx,account,record,manifest,next_record,next_manifest,*values,**options):
+            if next_record['checkpoint']=='source-removed-local':
+                next_manifest['source_evidence'].pop('exchange',None)
+            return advance(tx,account,record,manifest,next_record,next_manifest,*values,**options)
+        removal.advance=old_format
+    if args['step']=='send-before-receipt':
+        import store_transfer_publish
+        native=store_transfer_publish.send
+        def sent(*values):
+            assert native(*values)=='accepted'
+            print(ident,flush=True)
+            sys.stdin.readline()
+            raise SystemExit(0)
+        store_transfer_publish.send=sent
+    if args['step'] != 'prepared':
+        save_destination(load,ident,plan,candidate,mapping,unlock,pw,code)
+        if args['step'] != 'destination-saved':
+            apply=publish_destination if plan.destination.context.kind=='shared' else confirm_private_destination
+            result=apply(load,ident,plan,candidate,mapping,unlock,pw,code)
+            assert result['checkpoint']=='destination-confirmed'
+            if args['step'].startswith('inverse-'):
+                import store_transfer_rollback as inverse
+                advance=inverse.advance
+                def stopped(*values,**options):
+                    if values[4]['checkpoint']=='rolled-back' and args['step']=='inverse-applied':
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                    return advance(*values,**options)
+                inverse.advance=stopped
+                import store_transfer_apply as effects
+                write=effects.write_once
+                receipt_seen=[]
+                def stopped_write(*values):
+                    write(*values)
+                    name=values[2]
+                    if name=='rollback.json':
+                        receipt_seen.append(True)
+                    if receipt_seen and ((name=='rollback.json' and args['step']=='inverse-receipt') or
+                                         (name[0].isdigit() and args['step']=='inverse-history')):
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                effects.write_once=stopped_write
+                secret=lambda role:unlock(args['src'] if role=='source' else args['dst'])
+                inverse.rollback_private(load,ident,pw,code,secret,lambda _:True)
+            if args['step']=='private-completion-history':
+                import store_transfer_apply as effects
+                write=effects.write_once
+                seen=[]
+                def completed_write(*values):
+                    write(*values)
+                    if values[2]=='completion.json':
+                        seen.append(True)
+                    elif seen and values[2][0].isdigit():
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                effects.write_once=completed_write
+                remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+            if args['step']=='private-source-observed':
+                import store_transfer_remove as removal
+                advance=removal.advance
+                def observed_source(*values,**options):
+                    if values[4]['checkpoint']=='source-confirmed':
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                    return advance(*values,**options)
+                removal.advance=observed_source
+                remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+            if args['step']=='source-removed-local':
+                assert remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-removed-local'
+            if args['step'] in ('source-confirmed','completion-history') or 'retire-' in args['step']:
+                remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+                assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
+                if args['step']=='completion-history':
+                    import store_transfer_apply as effects,store_transfer_remove as removal
+                    write=effects.write_once
+                    seen=[]
+                    def stopped_write(*values):
+                        write(*values)
+                        if values[2]=='completion.json':
+                            seen.append(True)
+                        elif seen and values[2][0].isdigit():
+                            print(ident,flush=True)
+                            sys.stdin.readline()
+                            raise SystemExit(0)
+                    effects.write_once=stopped_write
+                    removal.finish_shared_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+                if 'retire-' in args['step']:
+                    import os,store_transfer_remove as removal,store_transfer_apply as effects
+                    def pause():
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                    original_rename=effects.rename_guarded
+                    def interrupted_rename(parent,source,target,name,**kwargs):
+                        original_rename(parent,source,target,name,**kwargs)
+                        if name=='verified-source' and args['step'].endswith('retire-partial'):
+                            pause()
+                    effects.rename_guarded=interrupted_rename
+                    removal.rename_guarded=interrupted_rename
+                    original_advance=removal.advance
+                    def interrupted_advance(*values,**kwargs):
+                        if values[4]['checkpoint']=='completed' and args['step']=='retire-finished':
+                            pause()
+                        return original_advance(*values,**kwargs)
+                    removal.advance=interrupted_advance
+                    removal.finish_shared_source(load,ident,plan,candidate,mapping,unlock,pw,code)
+    print(ident,flush=True)
+    sys.stdin.readline()
+"""
+        src,dst = case.plan.source.context.store_id,case.plan.destination.context.store_id
+        reverse = case.plan.source.context.kind == "shared"
+        original,mapped = (case.original.name,case.mapped.name) if reverse else ("login","team-login")
+        unlock = (case.v if reverse else case.vaults).unlock
+        pw,code = b"owner independent backup",b"other recovery fixture"
+        data = {"src":src,"dst":dst,"host":case.plan.host_id,"alias":case.plan.alias,"original":original,"mapped":mapped,
+                "decision":[case.plan.decision,case.plan.chosen_destination_id,case.plan.source.base,case.plan.destination.base] if case.plan.decision != "new" else [],"generations":[1,2,3,4],"step":step,
+                "password":pw.decode(),"code":code.decode(),"phrases":{key:unlock(key).decode() for key in (src,dst)}}
+        proc = subprocess.Popen([sys.executable,"-I","-B","-c",child,str(Path(__file__).resolve().parents[1]/"lib"),str(approval)],
+                                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=case.shared.env)
+        def stop():
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+            for stream in (proc.stdin,proc.stdout,proc.stderr):
+                stream.close()
+        self.addCleanup(stop)
+        proc.stdin.write(json.dumps(data).encode()+b"\n")
+        proc.stdin.flush()
+        self.assertTrue(select.select([proc.stdout],[],[],120)[0])
+        ident = proc.stdout.readline().strip().decode()
+        self.assertTrue(store_context.valid_id(ident))
+        return proc,ident,pw,code
+
+    def test_new_process_resumes_exact_confirmed_transfer_without_duplicate_publication(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        import store_transfer_publish
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        first,original = reopen_intent(f.load,ident,pw)
+        source = f.vaults.source.checkout
+        target = f.vaults.destination.checkout
+        before = snapshot(source)
+        dest = f.shared.git(target,"rev-parse","HEAD")
+        def confirm(row):
+            self.assertEqual(row["transaction_id"],ident)
+            self.assertEqual(row["destination"]["proposed_host_id"],f.host)
+            return True
+        with self.assertRaisesRegex(StoreContextError,"ownership|active|busy"):
+            resume_confirmed(f.load,ident,pw,code,f.vaults.unlock,confirm)
+        self.assertEqual(snapshot(source),before)
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            result = resume_confirmed(f.load,ident,pw,code,f.vaults.unlock,confirm)
+        self.assertEqual(result,{"transaction_id":ident,"checkpoint":"completed"})
+        last,protected = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(last["attempts"],first["attempts"])
+        self.assertNotEqual(last["owner"],first["owner"])
+        self.assertEqual(protected["previous_owners"][-1]["owner"],first["owner"])
+        self.assertEqual(f.shared.git(source,"rev-parse","HEAD"),original["source_proposed"])
+        self.assertEqual(f.shared.git(target,"rev-parse","HEAD"),dest)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),dest)
+        self.assertFalse((source/"team.conf").exists())
+        self.assertTrue((source/"stays.conf").is_file())
+
+    def test_resume_prior_forward_receipt_keeps_original_evidence_and_releases_completed_fences(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        f = self.transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"legacy-destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        first,original = reopen_intent(f.load,ident,pw)
+        prior = original["publication_evidence"]
+        self.assertEqual(set(prior),{"attempt_id","evidence_id","sender_state","outcome"})
+        result = resume_confirmed(f.load,ident,pw,code,f.vaults.unlock,lambda _:True)
+        self.assertEqual(result["checkpoint"],"completed")
+        last,recovered = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(last["attempts"],first["attempts"])
+        self.assertEqual(recovered["publication_evidence"],prior)
+        with recovery_root(f.load()) as root:
+            for row in last["stores"]:
+                require_idle(root,f.load(),row["store_id"])
+
+    def test_operator_status_and_cancel_only_effect_free_original_transfer(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        f = self.transfer_case()
+        src,dst = f.vaults.source.checkout,f.vaults.destination.checkout
+        before = (snapshot(src),snapshot(dst))
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"prepared")
+        events = []
+        def unused(*_):
+            self.fail("read-only status asked for a secret or confirmation")
+        def secret(role):
+            return {"backup":pw,"recovery":code}[role]
+        def confirm(details):
+            return details["transaction_id"] == ident and details["action"] == "cancel"
+        self.assertEqual(run_recovery(f.load,"status",ident,unused,unused,events.append),0)
+        self.assertEqual(events[-1]["checkpoint"],"prepared")
+        self.assertEqual(events[-1]["hosts"],f.plan.host_keys())
+        self.assertNotIn("phrases",json.dumps(events))
+        if os.environ.get("HOSTBOOK_TEST_DISPOSABLE_PASSWD_HOME") == "1":
+            import pwd
+            home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+            self.assertTrue(Path("/.dockerenv").is_file())
+            self.assertIn(home,(Path("/fixture-home"),Path("/home/hostbook-fixture")))
+            self.assertFalse((home/".config").exists())
+            approval = self.write_local_approval(home)
+            self.addCleanup(approval.parent.parent.rmdir)
+            self.addCleanup(approval.parent.rmdir)
+            self.addCleanup(approval.unlink)
+            env = dict(f.shared.env,HOME=str(home),PATH=str(Path(sys.executable).parent)+":/usr/bin:/bin")
+            observed = subprocess.check_output([f.shared.app,"store-transfer-recover",ident,"status"],
+                                               cwd=self.root,env=env,stdin=subprocess.DEVNULL)
+            self.assertEqual(json.loads(observed),events[-1])
+        with self.assertRaisesRegex(StoreContextError,"ownership|busy"):
+            run_recovery(f.load,"cancel",ident,secret,confirm,events.append)
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"cancel",ident,secret,lambda _:False,events.append)
+        self.assertEqual(run_recovery(f.load,"cancel",ident,secret,confirm,events.append),0)
+        self.assertEqual(events[-1],{"transaction_id":ident,"checkpoint":"cancelled"})
+        last,opened = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((last["effects"],last["attempts"]),([],[]))
+        self.assertEqual(opened["next_effect"],"none")
+        self.assertEqual((snapshot(src),snapshot(dst)),before)
+        with recovery_root(f.load()) as root:
+            for store in last["stores"]:
+                require_idle(root,f.load(),store["store_id"])
+
+        # A status reader sees one coherent selection even if completion races its scan.
+        import store_transfer_resume as resume
+        folder = self.recovery/"transactions"/ident
+        selector = folder/"current.json"
+        final_selector = selector.read_bytes()
+        selector.write_text(json.dumps({"version":1,"transaction_id":ident,"sequence":1}))
+        classify = resume.classify
+        switched = []
+        def finish_during_status(*args):
+            value = classify(*args)
+            if not switched:
+                switched.append(True)
+                selector.write_bytes(final_selector)
+            return value
+        with patch.object(resume,"classify",finish_during_status):
+            state = resume.transfer_status(f.load,ident)
+        self.assertEqual((state["checkpoint"],state["fenced"]),("cancelled",False))
+
+    def test_recovery_terminal_asks_for_existing_transfer_credentials_in_both_languages(self):
+        root = Path(__file__).resolve().parents[1]
+        for language,original in (("en","Original transfer"),("vi","ban đầu")):
+            env = dict(HOME=str(self.root),HOSTBOOK_DIR=str(self.root/"view"),HOSTBOOK_STATE=str(self.root/"ui-state"),
+                       HOSTBOOK_SSH_CONFIG=str(self.root/"ssh-config"),XDG_CONFIG_HOME=str(self.root/"ui-config"),
+                       PATH="/usr/bin:/bin",HOSTBOOK_LANG=language)
+            labels = subprocess.check_output(["/bin/bash",str(root/"hostbook"),"_store_transfer_labels","recover"],
+                                             env=env,text=True).splitlines()
+            self.assertIn(original,labels[3])
+            self.assertIn(original,labels[5])
+
+    def test_resume_prompt_identifies_the_prepared_checkpoint(self):
+        root = Path(__file__).resolve().parents[1]
+        for lang in ("en","vi"):
+            env = dict(HOME=str(self.root),HOSTBOOK_LANG=lang,PATH="/usr/bin:/bin")
+            label = subprocess.check_output(["/bin/bash","-c",
+                '. "$1"; printf "$L_transfer_resume_id" "$2" "$3"',"fixture",str(root/"lang"/(lang+".sh")),new_id(),"prepared"],
+                env=env,text=True)
+            self.assertIn("checkpoint prepared" if lang == "en" else "bước prepared",label)
+
+    def test_resume_reverse_after_original_removal_ack_retires_without_second_send(self):
+        import store_transfer_publish
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"source-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        original,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(original["checkpoint"],"source-confirmed")
+        self.assertEqual(manifest["publication_evidence"]["published_role"],"source")
+        events = []
+        def secret(role):
+            return {"destination":f.v.unlock(f.dst.store_id),"backup":pw,"recovery":code}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected duplicate publication")):
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append),0)
+        self.assertEqual(events[-1]["checkpoint"],"completed")
+        last,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(last["attempts"],original["attempts"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),manifest["proposed"])
+
+    def test_reverse_retirement_recovers_partial_rename_and_preserves_changed_displaced_inode(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"retire-partial")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        prior,manifest = reopen_intent(f.load,ident,pw)
+        slot = f.src.checkout/".git"/Path(*manifest["source_runtime"])
+        saved = slot/"verified-source"
+        original = saved.read_bytes()
+        saved.write_bytes(original+b"# concurrent saved text\n")
+        with self.assertRaises(StoreContextError):
+            resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)
+        self.assertEqual(saved.read_bytes(),original+b"# concurrent saved text\n")
+        self.assertTrue((slot/"0").is_file())
+        saved.write_bytes(original)
+        self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
+        self.assertEqual(list(slot.iterdir()),[])
+        completed,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(prior["attempts"],completed["attempts"])
+
+    def test_reverse_retirement_recovers_when_cleanup_finished_before_journal_advance(self):
+        from store_transfer_resume import resume_confirmed
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"retire-finished")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
+
+    def test_legacy_intact_exchange_is_durably_bound_before_first_retirement(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"legacy-retire-partial")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"source-confirmed")
+        self.assertTrue("exchange" in manifest["source_evidence"])
+        self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
+
+    def test_resume_prepared_original_proposals_and_stale_source_refusal(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"prepared")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        initial,protected = reopen_intent(f.load,ident,pw)
+        path = f.vaults.source.checkout/"team.conf"
+        original = path.read_bytes()
+        path.write_bytes(original+b"# unrelated concurrent change\n")
+        events = []
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append)
+        self.assertEqual(path.read_bytes(),original+b"# unrelated concurrent change\n")
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.shared.base)
+        path.write_bytes(original)
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append),0)
+        self.assertEqual(events[-1],{"transaction_id":ident,"checkpoint":"completed"})
+        final,_ = reopen_intent(f.load,ident,pw)
+        self.assertEqual(len(final["effects"]),2)
+        self.assertEqual(len(final["attempts"]),1)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),protected["proposed"])
+        self.assertEqual(f.shared.git(f.vaults.source.checkout,"rev-parse","HEAD"),protected["source_proposed"])
+
+    def test_reconcile_original_exact_branch_after_send_without_receipt_before_source_removal(self):
+        import store_transfer_publish
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"send-before-receipt")
+        before = snapshot(f.vaults.source.checkout)
+        original,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(original["attempts"][0]["outcome"],"reserved")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        shared,ref = f.shared,f.plan.shared.ref
+        self.assertEqual(shared.git(shared.remote,"rev-parse",ref),manifest["proposed"])
+        shared.git(shared.remote,"update-ref","-d",ref,manifest["proposed"])
+        events = []
+        def secret(role):
+            return {"destination":f.vaults.unlock(f.vaults.dst.store_id),"backup":pw,"recovery":code}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),75)
+            self.assertEqual(events[-1]["outcome"],"uncertain")
+            self.assertEqual(snapshot(f.vaults.source.checkout),before)
+            observed,_ = reopen_intent(f.load,ident,pw)
+            self.assertEqual((observed["attempts"][0]["outcome"],observed["attempts"][0]["sender_state"]),("uncertain","quiescent"))
+            sender = self.recovery/"transactions"/ident/"senders"/original["attempts"][0]["attempt_id"]
+            for name in ("outcome.json","send-started"):
+                withheld = self.root/"withheld-original"
+                (sender/name).rename(withheld)
+                with self.assertRaises((OSError,StoreContextError)):
+                    run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append)
+                self.assertFalse((sender/name).exists())
+                withheld.rename(sender/name)
+            original_receipt = (sender/"outcome.json").read_bytes()
+            altered = dict(json.loads(original_receipt),evidence_id=new_id())
+            (sender/"outcome.json").write_text(json.dumps(altered))
+            with self.assertRaises(StoreContextError):
+                run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append)
+            (sender/"outcome.json").write_bytes(original_receipt)
+            shared.git(shared.remote,"update-ref",ref,f.plan.destination.base)
+            self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),75)
+            shared.git(shared.remote,"update-ref",ref,manifest["proposed"],f.plan.destination.base)
+            self.assertEqual(run_recovery(f.load,"settle",ident,secret,lambda _:True,events.append),0)
+            self.assertEqual(events[-1]["outcome"],"accepted")
+            self.assertEqual(events[-1]["checkpoint"],"destination-saved")
+            self.assertEqual(snapshot(f.vaults.source.checkout),before)
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append),0)
+        completed,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(completed["checkpoint"],"completed")
+        self.assertEqual(completed["attempts"][0]["attempt_id"],original["attempts"][0]["attempt_id"])
+        self.assertEqual(shared.git(shared.remote,"rev-parse",ref),manifest["proposed"])
+
+    def test_rollback_confirmed_private_destination_appends_verified_inverse_preserving_shared_source(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        from store_journal import require_idle
+        from store_publish import recovery_root
+        f = self.reverse_transfer_case()
+        prior_sources = snapshot(f.src.checkout)
+        original_identity = json.loads((f.dst.checkout/".hostbook/identity.json").read_bytes())
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        dest = f.dst.checkout
+        committed = f.shared.git(dest,"rev-parse","HEAD")
+        before = snapshot(dest)
+        events = []
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        def confirm(row):
+            self.assertEqual(row["action"],"rollback")
+            self.assertEqual(row["transaction_id"],ident)
+            self.assertEqual((row["credential"],row["keep_credential"]),("db-credential",False))
+            self.assertEqual(row["destination"]["revision"],committed)
+            return True
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:False,events.append)
+        self.assertEqual(snapshot(dest),before)
+        (dest/"team.conf").write_bytes((dest/"team.conf").read_bytes()+b"# unrelated editor save\n")
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"rollback",ident,secret,confirm,events.append)
+        self.assertTrue((dest/"team.conf").read_bytes().endswith(b"# unrelated editor save\n"))
+        (dest/"team.conf").write_bytes(f.shared.git(dest,"show","HEAD:team.conf").encode()+b"\n")
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,confirm,events.append),0)
+        self.assertEqual(events[-1],{"transaction_id":ident,"checkpoint":"rolled-back"})
+        self.assertEqual(f.shared.git(dest,"rev-parse","HEAD^"),committed)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+        self.assertEqual(snapshot(f.src.checkout),prior_sources)
+        self.assertFalse((f.dst.vault/"db-credential.age").exists())
+        recovered = json.loads((dest/".hostbook/identity.json").read_bytes())
+        self.assertGreater(recovered["generation"],original_identity["generation"]+1)
+        self.assertEqual(dict(recovered,generation=original_identity["generation"]),original_identity)
+        self.assertEqual(f.shared.git(dest,"status","--porcelain"),"")
+        final,payload = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(final["attempts"],[])
+        self.assertEqual(payload["rollback"]["tip"],f.shared.git(dest,"rev-parse","HEAD"))
+        with recovery_root(f.load()) as root:
+            for store in final["stores"]:
+                require_idle(root,f.load(),store["store_id"])
+            receipt = self.recovery/"transactions"/ident/"rollback.json"
+            receipt.rename(self.root/"withheld-rollback.json")
+            with self.assertRaises(StoreContextError):
+                require_idle(root,f.load(),f.dst.store_id)
+            require_idle(root,f.load(),self.entries[2]["store_id"])
+
+    def test_rollback_of_renamed_prod_host_requires_the_affected_private_alias(self):
+        from store_transfer import preview
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        source = f.src.checkout
+        path = source/"team.conf"
+        path.write_bytes(b"# tags: prod\n"+path.read_bytes())
+        identity = source/".hostbook/identity.json"
+        data = json.loads(identity.read_bytes())
+        data["sources"][0]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        data["generation"] += 1
+        identity.write_text(json.dumps(data))
+        f.shared.git(source,"commit","-qam","Prod source host")
+        f.shared.git(source,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+        f.plan = preview(f.load,f.src.store_id,f.src.generations,f.plan.host_id,f.dst.store_id,f.dst.generations,"personal-db")
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        def wrong(row):
+            self.assertEqual(row["required_aliases"],["personal-db"])
+            return "db"
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"rollback",ident,secret,wrong,lambda _:None)
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,lambda _:"personal-db",lambda _:None),0)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+
+    def test_rollback_private_update_restores_existing_identity_settings_and_verified_prior_credential(self):
+        from store_transfer import preview
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        dest = f.dst.checkout
+        prior = b"# tags: prod\n# secret: login\nHost source-one\n  HostName 192.0.2.2\n  User fixture\n  ServerAliveInterval 17\n"
+        (dest/"team.conf").write_bytes(prior)
+        identity = dest/".hostbook/identity.json"
+        document = json.loads(identity.read_bytes())
+        document["sources"][0]["sha256"] = hashlib.sha256(prior).hexdigest()
+        document["generation"] += 1
+        identity.write_text(json.dumps(document))
+        groups = b"watched\tsync\tsource-one\n"
+        (dest/"groups.tsv").write_bytes(groups)
+        f.shared.git(dest,"add","--all")
+        f.shared.git(dest,"commit","-qm","Existing private host")
+        chosen = document["hosts"][0]["host_id"]
+        plan = preview(f.load,f.src.store_id,f.src.generations,f.plan.host_id,f.dst.store_id,f.dst.generations,"source-one")
+        f.plan = plan.choose("update",chosen,plan.source.base,plan.destination.base)
+        old_cipher = (f.dst.vault/"login.age").read_bytes()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        self.assertNotEqual((dest/"team.conf").read_bytes(),prior)
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        def confirm(row):
+            self.assertEqual(row["required_aliases"],["source-one"])
+            self.assertEqual(row["restore_credential"],"login")
+            self.assertEqual(row["connection_changes"]["serveraliveinterval"],{"existing":"0","proposed":"17"})
+            self.assertEqual(row["destination"]["host_id"],chosen)
+            return "source-one"
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,confirm,lambda _:None),0)
+        self.assertEqual((dest/"team.conf").read_bytes(),prior)
+        self.assertEqual((dest/"groups.tsv").read_bytes(),groups)
+        self.assertEqual(json.loads(identity.read_bytes())["hosts"],document["hosts"])
+        self.assertEqual((f.dst.vault/"login.age").read_bytes(),old_cipher)
+        self.assertFalse((f.dst.vault/"db-credential.age").exists())
+        self.assertEqual(f.shared.git(dest,"status","--porcelain"),"")
+
+    def test_rollback_recovers_after_inverse_applied_before_terminal_record_without_second_commit(self):
+        import store_transfer_rollback as rollback
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"inverse-applied")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,protected = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"rollback-pending")
+        inverse = protected["rollback"]["tip"]
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),inverse)
+        slot = f.dst.checkout/".git"/Path(*protected["rollback"]["exchange"])
+        displaced = slot/"removed-0"
+        original = displaced.read_bytes()
+        displaced.write_bytes(original+b"# late editor save\n")
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        with patch.object(rollback,"fast_forward",side_effect=AssertionError("replayed private inverse")):
+            with self.assertRaises(StoreContextError):
+                run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+            self.assertEqual(displaced.read_bytes(),original+b"# late editor save\n")
+            displaced.write_bytes(original)
+            self.assertEqual(run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None),0)
+        done,proof = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(done["checkpoint"],"rolled-back")
+        self.assertEqual(proof["rollback"]["tip"],inverse)
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),inverse)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+
+    def recover_prior_terminal(self, step):
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,step)
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,original = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"rollback-pending")
+        root = self.recovery/"transactions"/ident
+        receipt = json.loads((root/"rollback.json").read_bytes())
+        self.assertEqual(receipt["sequence"],record["sequence"]+1)
+        history = root/"records"/(str(receipt["sequence"])+".json")
+        exists = history.exists()
+        self.assertEqual(exists,step=="inverse-history")
+        saved = history.read_bytes() if exists else None
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        original_receipt = (root/"rollback.json").read_bytes()
+        (root/"rollback.json").write_text(json.dumps(dict(receipt,compensation=new_id())))
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(json.loads((root/"current.json").read_bytes())["sequence"],record["sequence"])
+        self.assertEqual(history.exists(),exists)
+        (root/"rollback.json").write_bytes(original_receipt)
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None),0)
+        complete,opened = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(complete["checkpoint"],"rolled-back")
+        self.assertEqual(complete["payload_id"],receipt["payload_id"])
+        self.assertEqual(complete["effects"][1]["evidence_id"],receipt["compensation"])
+        self.assertEqual(complete["sequence"],receipt["sequence"])
+        self.assertEqual(json.loads((root/"rollback.json").read_bytes()),receipt)
+        if exists:
+            self.assertEqual(history.read_bytes(),saved)
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),original["rollback"]["tip"])
+        self.assertEqual(opened["rollback"]["tip"],original["rollback"]["tip"])
+
+    def test_recover_original_rollback_receipt_before_terminal_history(self):
+        self.recover_prior_terminal("inverse-receipt")
+
+    def test_recover_original_rollback_history_before_terminal_selector(self):
+        self.recover_prior_terminal("inverse-history")
+
+    def test_recover_original_completed_history_before_selector_without_receipt_or_send_replay(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"completion-history")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        selected,manifest = reopen_intent(f.load,ident,pw)
+        root = self.recovery/"transactions"/ident
+        completion = json.loads((root/"completion.json").read_bytes())
+        history = root/"records"/(str(completion["sequence"])+".json")
+        exact = history.read_bytes()
+        self.assertEqual(selected["checkpoint"],"source-confirmed")
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.v.unlock(f.dst.store_id)}[role]
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        done,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(done["checkpoint"],"completed")
+        self.assertEqual(done["payload_id"],completion["payload_id"])
+        self.assertEqual(done["attempts"],selected["attempts"])
+        self.assertEqual(history.read_bytes(),exact)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
+
+    def test_resume_original_saved_destination_before_first_shared_send(self):
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-saved")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["attempts"],[])
+        dest = f.vaults.destination.checkout
+        self.assertEqual(f.shared.git(dest,"rev-parse","HEAD"),manifest["proposed"])
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        root = self.recovery/"transactions"/ident
+        (root/"senders").mkdir(mode=0o700)
+        orphan = root/"senders"/new_id()
+        orphan.mkdir(mode=0o700)
+        with self.assertRaisesRegex(StoreContextError,"sender"):
+            run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.shared.base)
+        orphan.rmdir()
+        (root/"senders").chmod(0o755)
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None)
+        (root/"senders").chmod(0o700)
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        final,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((final["checkpoint"],len(final["attempts"])),("completed",1))
+        self.assertEqual(f.shared.git(dest,"rev-parse","HEAD"),manifest["proposed"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
+
+    def test_resume_saved_shared_source_removal_writes_only_its_original_branch(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"source-removed-local")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["attempts"],[])
+        self.assertEqual(f.shared.git(f.src.checkout,"rev-parse","HEAD"),manifest["source_proposed"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.v.unlock(f.dst.store_id)}[role]
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        final,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((final["checkpoint"],len(final["attempts"])),("completed",1))
+        self.assertEqual(final["attempts"][0]["store_id"],f.src.store_id)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
+        self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),manifest["proposed"])
+
+    def test_resume_observed_private_source_removal_preserves_shared_destination_without_transport(self):
+        import store_transfer_publish
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"private-source-observed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        record,manifest = reopen_intent(f.load,ident,pw)
+        self.assertEqual(record["checkpoint"],"source-removed-local")
+        self.assertEqual(manifest["next_effect"],"confirm-private-source")
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        complete,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(complete["attempts"],record["attempts"])
+        self.assertEqual(complete["checkpoint"],"completed")
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
+        self.assertTrue((f.vaults.source.checkout/"stays.conf").is_file())
+
+    def test_recover_original_private_source_completion_uses_historical_shared_destination(self):
+        import store_transfer_publish
+        from store_transfer_intent import reopen_intent
+        from store_transfer_command import run_recovery
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"private-completion-history")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        before,manifest = reopen_intent(f.load,ident,pw)
+        root = self.recovery/"transactions"/ident
+        receipt = json.loads((root/"completion.json").read_bytes())
+        self.assertEqual((before["checkpoint"],receipt["publication"]["published_role"]),("source-confirmed","destination"))
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,lambda _:None),0)
+        completed,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual((completed["checkpoint"],completed["payload_id"]),("completed",receipt["payload_id"]))
+        self.assertEqual(before["attempts"],completed["attempts"])
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["proposed"])
+
+    def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
+        import store_transfer_intent as intent
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_case()
+        v = f.vaults
+        mapping = stage_credential(f.load,v.src,v.dst,v.unlock)
+        failures = []
+        renamed = []
+        real_rename, real_sync = intent.rename_guarded, intent.sync_local
+        def rename(*args,**kwargs):
+            real_rename(*args,**kwargs)
+            renamed.append(args[3])
+        def sync(fd):
+            if renamed and not failures:
+                failures.append(True)
+                raise OSError("fixture directory flush failed")
+            real_sync(fd)
+        with prepare_candidate(f.load,f.plan,mapping) as candidate:
+            with patch.object(intent,"rename_guarded",rename), patch.object(intent,"sync_local",sync):
+                with self.assertRaises(StoreContextError) as outcome:
+                    intent.prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,b"fixture password",b"fixture recovery",
+                                          lambda _:True)
+        self.assertEqual(len(renamed),1)
+        self.assertIn(renamed[0],str(outcome.exception))
+        self.assertTrue((self.recovery/"transactions"/renamed[0]/"current.json").is_file())
+
+    def test_transfer_owner_distinguishes_native_process_incarnation_and_exclusive_lease(self):
+        from store_transfer_owner import new_owner, native_start, owner_alive, owner_lease
+        owner, start = new_owner()
+        self.assertEqual(new_owner()[0]["process_start_id"],owner["process_start_id"])
+        self.assertEqual(start,native_start(os.getpid()))
+        self.assertTrue(owner_alive(owner,start))
+        with subprocess.Popen([sys.executable,"-c","import sys; sys.stdin.buffer.read()"],stdin=subprocess.PIPE) as child:
+            child_start = native_start(child.pid)
+            self.assertTrue(owner_alive(dict(owner,process_id=child.pid),child_start))
+            with patch("store_transfer_owner.native_start",return_value="different native incarnation"):
+                self.assertFalse(owner_alive(dict(owner,process_id=child.pid),child_start))
+            child.stdin.close()
+            child.wait(timeout=5)
+            self.assertFalse(owner_alive(dict(owner,process_id=child.pid),child_start))
+        directory = os.open(self.recovery, store_context.DIRECTORY_FLAGS)
+        try:
+            lease = self.recovery/"owner.lease"
+            lease.touch(mode=0o600)
+            info = lease.stat()
+            manifest = {"native_start":start,"lease":{"device":info.st_dev,"inode":info.st_ino}}
+            with owner_lease(directory,owner,manifest):
+                with self.assertRaisesRegex(StoreContextError, "busy"):
+                    with owner_lease(directory,owner,manifest):
+                        self.fail("second claimant acquired lease")
+            lease.rename(self.recovery/"old.lease")
+            lease.touch(mode=0o600)
+            with self.assertRaisesRegex(StoreContextError,"binding changed"):
+                with owner_lease(directory,owner,manifest):
+                    self.fail("substituted lease acquired")
+        finally:
+            os.close(directory)
+
+    def test_confirmed_destination_save_is_durable_and_keeps_source_and_remote_intact(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,replace(v.dst,name="team-login"),v.unlock)
+        password,code = b"fixture transaction secret",b"fixture transaction recovery"
+        original = [snapshot(path) for path in (v.source.checkout,f.shared.remote,self.root/"shared b")]
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            initial_destination = snapshot(v.destination.checkout)
+            with self.assertRaisesRegex(StoreContextError,"vault unlock failed"):
+                save_destination(f.load,ident,f.plan,candidate,mapped,lambda _:b"mistyped fixture",password,code)
+            self.assertEqual(snapshot(v.destination.checkout),initial_destination)
+            self.assertEqual(reopen_intent(f.load,ident,password)[0]["sequence"],1)
+            group = v.source.checkout/"groups.tsv"
+            group.write_text("new\t\tsource-one\n")
+            with self.assertRaisesRegex(StoreContextError, "untracked"):
+                save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            group.unlink()
+            result = save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            self.assertEqual(result["checkpoint"],"destination-saved")
+            self.assertEqual(f.shared.git(v.destination.checkout,"rev-parse","HEAD"),candidate.proposed)
+        self.assertEqual(original,[snapshot(p) for p in (v.source.checkout,f.shared.remote,self.root/"shared b")])
+        self.assertEqual(f.shared.git(v.destination.checkout,"status","--porcelain"),"")
+        mapped.verify_saved(f.load,v.unlock)
+        record,manifest = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["sequence"],3)
+        self.assertEqual(record["effects"][0]["outcome"],"observed")
+        self.assertEqual(manifest["next_effect"],"destination-publication")
+        self.assertFalse((self.recovery/"receives"/ident).exists())
+
+    def test_transfer_destination_checkpoint_rechecks_actual_checkout_after_verification(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        import store_transfer_apply as effects
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"fixture transaction password",b"fixture transaction recovery"
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            actual = v.destination.checkout/("host-"+f.host+".conf")
+            advance = effects.advance
+            def concurrent_edit(tx,account,record,manifest,new,*args,**kwargs):
+                if new["checkpoint"] == "destination-saved":
+                    actual.write_bytes(b"Host independently-edited\n  HostName 198.51.100.7\n")
+                return advance(tx,account,record,manifest,new,*args,**kwargs)
+            with patch.object(effects,"advance",side_effect=concurrent_edit):
+                with self.assertRaises(StoreContextError):
+                    effects.save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+        self.assertTrue(actual.read_bytes().startswith(b"Host independently-edited"))
+        self.assertEqual(reopen_intent(f.load,ident,password)[0]["checkpoint"],"prepared")
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.destination.base)
+
+    def test_transfer_saved_generation_must_still_be_named_before_actual_destination_write(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent
+        import store_transfer_apply as effects
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"fixture independent password",b"fixture recovery"
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            before = snapshot(v.destination.checkout)
+            advance = effects.advance
+            def detach(*args,**kwargs):
+                result = advance(*args,**kwargs)
+                if result[0]["sequence"] == 2:
+                    payload = self.recovery/"transactions"/ident/"payloads"/(result[0]["payload_id"]+".age")
+                    payload.rename(payload.with_suffix(".detached"))
+                return result
+            with patch.object(effects,"advance",side_effect=detach):
+                with self.assertRaises((StoreContextError,OSError)):
+                    effects.save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            self.assertTrue(snapshot(v.destination.checkout) == before)
+
+    def test_transfer_publishes_only_the_reserved_destination_branch_after_local_save(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as effects
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,replace(v.dst,name="team-login"),v.unlock)
+        password,code = b"fixture independent password",b"fixture independent recovery"
+        original = snapshot(v.source.checkout)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            calls = []
+            send = effects.send
+            def verify_reserved(*args):
+                record, protected = reopen_intent(f.load,ident,code,recovery=True)
+                attempt = record["attempts"][-1]
+                self.assertEqual(attempt["outcome"],"reserved")
+                self.assertEqual(attempt["sender_state"],"active")
+                self.assertEqual(protected["publication"]["base"],f.plan.destination.base)
+                self.assertEqual(protected["publication"]["proposed"],candidate.proposed)
+                calls.append(attempt["attempt_id"])
+                return send(*args)
+            with patch.object(effects,"send",side_effect=verify_reserved):
+                result = effects.publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            self.assertEqual(result["checkpoint"],"destination-confirmed")
+            self.assertEqual(result["outcome"],"accepted")
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),candidate.proposed)
+        self.assertEqual(snapshot(v.source.checkout),original)
+        self.assertEqual(len(calls),1)
+        record,protected = reopen_intent(f.load,ident,password)
+        self.assertEqual(record["attempts"][0]["attempt_id"],calls[0])
+        self.assertEqual(record["attempts"][0]["sender_state"],"quiescent")
+        self.assertEqual(record["attempts"][0]["outcome"],"accepted")
+        self.assertEqual(record["checkpoint"],"destination-confirmed")
+
+    def check_transfer_send_failure(self, lost_reply):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publisher
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"transaction failure fixture",b"independent recovery fixture"
+        original = snapshot(v.source.checkout)
+        send = publisher.send
+        expected = []
+        def changed(*args):
+            if lost_reply:
+                self.assertEqual(send(*args),"accepted")
+                expected.append(args[5])
+                raise StoreContextError("fixture lost reply")
+            (f.shared.author/"independent").write_text("fixture independent update")
+            f.shared.git(f.shared.author,"add","independent")
+            f.shared.git(f.shared.author,"commit","-qm","Independent fixture update")
+            f.shared.git(f.shared.author,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+            expected.append(f.shared.git(f.shared.author,"rev-parse","HEAD"))
+            return send(*args)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            with patch.object(publisher,"send",side_effect=changed):
+                result = publisher.publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+        outcome = "uncertain" if lost_reply else "not-accepted"
+        self.assertEqual(result["outcome"],outcome)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),expected[0])
+        record,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["checkpoint"],"destination-saved")
+        self.assertEqual(record["attempts"][0]["outcome"],outcome)
+        self.assertEqual(snapshot(v.source.checkout),original)
+
+    def test_transfer_rejected_native_destination_send_preserves_source_and_independent_remote_work(self):
+        self.check_transfer_send_failure(False)
+
+    def test_transfer_lost_destination_ack_keeps_source_and_uncertain_original_attempt(self):
+        self.check_transfer_send_failure(True)
+
+    def check_transfer_remote_changes_after_ack(self, replaced):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as publisher
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"fixture transaction password",b"fixture transaction recovery"
+        original = snapshot(v.source.checkout)
+        advance = publisher.advance
+        def remote_advances(tx,account,record,manifest,new,*args,**kwargs):
+            if new["checkpoint"] == "destination-confirmed":
+                if replaced:
+                    retired = self.root/"earlier-target"
+                    f.shared.remote.rename(retired)
+                    f.shared.git(self.root,"clone","--bare","--no-local",str(retired),str(f.shared.remote))
+                else:
+                    author = f.shared.author
+                    f.shared.git(author,"pull","--ff-only",str(f.shared.remote),"main")
+                    (author/"independent").write_text("fixture later work")
+                    f.shared.git(author,"add","independent")
+                    f.shared.git(author,"commit","-qm","Remote advanced after transfer acceptance")
+                    f.shared.git(author,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+            return advance(tx,account,record,manifest,new,*args,**kwargs)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            with patch.object(publisher,"advance",side_effect=remote_advances):
+                result = publisher.publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+        record,_ = reopen_intent(f.load,ident,password)
+        self.assertEqual(record["checkpoint"],"destination-saved")
+        self.assertEqual(record["attempts"][0]["outcome"],"accepted")
+        self.assertEqual(record["attempts"][0]["sender_state"],"quiescent")
+        self.assertEqual(result["outcome"],"accepted")
+        self.assertEqual(snapshot(v.source.checkout),original)
+
+    def test_transfer_keeps_exact_historical_acceptance_after_remote_advances_during_confirmation(self):
+        self.check_transfer_remote_changes_after_ack(False)
+
+    def test_transfer_confirmation_requires_currently_named_registered_receiver(self):
+        self.check_transfer_remote_changes_after_ack(True)
+
+    def test_private_source_removal_finishes_only_after_destination_acceptance_and_keeps_shared_credential(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        from store_transfer_publish import publish_destination
+        from store_transfer_remove import finish_private_source
+        from store_publish import recovery_root
+        from store_journal import require_idle
+        f = self.transfer_case(shared_credential=True)
+        v = f.vaults
+        mapping = stage_credential(f.load,v.src,v.dst,v.unlock)
+        pw,code = b"operator backup fixture",b"operator recovery fixture"
+        vault_before = snapshot(v.source.vault)
+        with prepare_candidate(f.load,f.plan,mapping) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapping,v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            before = snapshot(v.source.checkout)
+            with self.assertRaisesRegex(StoreContextError,"confirmed destination"):
+                finish_private_source(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            self.assertEqual(snapshot(v.source.checkout),before)
+            published = publish_destination(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            self.assertEqual(published["checkpoint"],"destination-confirmed")
+            result = finish_private_source(f.load,ident,f.plan,candidate,mapping,v.unlock,pw,code)
+            self.assertEqual(result["checkpoint"],"completed")
+            self.assertEqual(f.shared.git(v.source.checkout,"rev-parse","HEAD"),candidate.source_proposed)
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","main"),candidate.proposed)
+            self.assertFalse((v.source.checkout/candidate.source_path).exists())
+        self.assertEqual(f.shared.git(v.source.checkout,"status","--porcelain"),"")
+        self.assertEqual(snapshot(v.source.vault),vault_before)
+        rows = json.loads((v.source.checkout/".hostbook/identity.json").read_bytes())["hosts"]
+        self.assertEqual([row["name"] for row in rows],["stays"])
+        record,recovered = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(record["checkpoint"],"completed")
+        self.assertIn("source_bundle",recovered)
+        with recovery_root(self.account) as root:
+            for ctx in (v.source,v.destination):
+                require_idle(root,self.account,ctx.store_id)
+            txn = self.recovery/"transactions"/ident
+            completion = txn/"completion.json"
+            transfer_sender = record["attempts"][0]
+            receipt = txn/"senders"/transfer_sender["attempt_id"]/"outcome.json"
+            latest_completion,latest_receipt = completion.read_bytes(),receipt.read_bytes()
+            short = {k:transfer_sender[k] for k in ("attempt_id","evidence_id","sender_state","outcome")}
+            receipt.write_text(json.dumps(short))
+            old = {"version":1,"transaction_id":ident,"sequence":record["sequence"],"payload_id":record["payload_id"],
+                   "effects":[row["evidence_id"] for row in record["effects"]],"attempts":[short["evidence_id"]]}
+            completion.write_text(json.dumps(old))
+            for ctx in (v.source,v.destination):
+                require_idle(root,self.account,ctx.store_id)
+            completion.write_bytes(latest_completion)
+            with self.assertRaises(StoreContextError):
+                require_idle(root,self.account,v.source.store_id)
+            receipt.write_bytes(latest_receipt)
+            for retained in (txn/"payloads"/(record["payload_id"]+".age"),
+                             txn/"recovery"/str(record["recovery_generation"])/"vault.recovery.age",
+                             txn/"completion.json"):
+                displaced = retained.with_name("displaced")
+                retained.rename(displaced)
+                for ctx in (v.source,v.destination):
+                    with self.assertRaises(StoreContextError):
+                        require_idle(root,self.account,ctx.store_id)
+                require_idle(root,self.account,self.entries[2]["store_id"])
+                displaced.rename(retained)
+
+    def test_transfer_preserves_concurrent_private_editor_save_during_source_removal(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        from store_transfer_publish import publish_destination
+        import store_transfer_remove as removal
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        pw,code = b"operator backup fixture",b"operator recovery fixture"
+        updated = b"# independently saved source\nHost source-one\n  HostName 192.0.2.8\n"
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,pw,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,pw,code)
+            publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,pw,code)
+            source_file = v.source.checkout/candidate.source_path
+            original = removal.rename_guarded
+            def concurrent(src,name,dst,slot,**options):
+                if slot == "source":
+                    editor = source_file.with_suffix(".saving")
+                    editor.write_bytes(updated)
+                    os.replace(editor,source_file)
+                return original(src,name,dst,slot,**options)
+            with patch.object(removal,"rename_guarded",side_effect=concurrent),self.assertRaisesRegex(StoreContextError,"editor changes"):
+                removal.finish_private_source(f.load,ident,f.plan,candidate,mapped,v.unlock,pw,code)
+            self.assertEqual(source_file.read_bytes(),updated)
+            self.assertEqual(f.shared.git(v.source.checkout,"rev-parse","HEAD"),f.plan.source.base)
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),candidate.proposed)
+            record,_ = reopen_intent(f.load,ident,code,recovery=True)
+            self.assertEqual(record["checkpoint"],"destination-confirmed")
+            self.assertEqual(record["effects"][-1]["outcome"],"intended")
+
+    def test_explicit_shared_to_private_command_confirms_which_store_publishes_removal(self):
+        from store_transfer_command import run_transfer
+        f = self.reverse_transfer_case()
+        passwords = {"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id),
+                     "backup":b"operator backup","recovery":b"operator recovery"}
+        emitted,reviewed = [],[]
+        def confirm(comparison):
+            reviewed.append(comparison)
+            return True
+        args = [f.src.store_id,"1","2","3","4",f.plan.host_id,f.dst.store_id,"1","2","3","4",
+                f.plan.alias,f.mapped.name,"create"]
+        self.assertEqual(run_transfer(f.load,args,lambda role:passwords[role.removesuffix("-repeat")],confirm,emitted.append),0)
+        self.assertEqual([r["checkpoint"] for r in emitted],["comparison","prepared","completed"])
+        self.assertEqual(reviewed[0]["publications"],[{"store_id":f.src.store_id,"ref":f.plan.source.ref,"effect":"source-removal"}])
+        self.assertIn(f.plan.host_id,f.shared.git(f.dst.checkout,"show","HEAD:.hostbook/identity.json"))
+        self.assertNotIn(f.plan.host_id,f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))
+        self.assertTrue((f.src.vault/"team-key.age").exists())
+
+    def test_terminal_update_review_shows_exact_selected_revisions_and_nonsecret_changes(self):
+        from store_transfer_command import review_arguments
+        f = self.probable_duplicate("db",previous=True)
+        plan = f.plan.choose("update",f.target,f.plan.source.base,f.plan.destination.base)
+        details = dict(plan.comparison(),credential_action="create",destination_credential="mapped-login",
+                       retained_destination_groups=["watched"],required_aliases=["db"])
+        args = review_arguments(details)
+        root = Path(__file__).resolve().parents[1]
+        probe = self.root/"tools"
+        probe.mkdir()
+        picker = probe/"fzf"
+        picker.write_text('#!/bin/sh\n[ "$1" != --help ] || exit 0\ncat > "$HOME/terminal-rows"\nexit 1\n')
+        picker.chmod(0o700)
+        env = dict(f.shared.env,PATH=str(probe)+":/usr/bin:/bin",HOME=str(self.root),
+                   HOSTBOOK_LANG="en",HOSTBOOK_DIR=str(self.root/"unused"),HOSTBOOK_STATE=str(self.root/"state-ui"),
+                   HOSTBOOK_SSH_CONFIG=str(self.root/"ssh-config"),XDG_CONFIG_HOME=str(self.root/"ui-config"))
+        app = self.root/"app"
+        app.mkdir()
+        for directory in ("lib","lang"):
+            (app/directory).symlink_to(root/directory)
+        script = app/"hostbook"
+        script.write_text((root/"hostbook").read_text().replace("local authority_home=~",'local authority_home="'+str(self.root)+'"'))
+        process = subprocess.run(["/bin/bash",str(script),*args],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        self.assertNotEqual(process.returncode,0)
+        rows = (self.root/"terminal-rows").read_text()
+        for value in (f.host,f.target,plan.source.base,plan.destination.base,"original-login → mapped-login","serveraliveinterval: 17 → 0"):
+            self.assertIn(value,rows)
+        self.assertNotIn("original host fixture password",rows)
+
+    def test_transfer_prompt_uses_saved_language_and_first_trusted_compatible_picker(self):
+        import store_transfer_command as command
+        settings = self.root/"preferences"/"hostbook"
+        settings.mkdir(parents=True)
+        (settings/"config").write_text("# lang = en\nlang = en\nlang = vi  # selected\n")
+        environment = {"XDG_CONFIG_HOME":str(settings.parent),"LANG":"en_US.UTF-8"}
+        self.assertEqual(command.operator_language(environment,self.root),"vi")
+        self.assertEqual(command.operator_language(dict(environment,HOSTBOOK_LANG="en"),self.root),"en")
+        paths = []
+        for version in ("0.44.0","0.63.1"):
+            folder = self.root/version
+            folder.mkdir()
+            program = folder/"fzf"
+            program.write_text("#!/bin/sh\nprintf '%s\\n' "+version+"\n")
+            program.chmod(0o700)
+            paths.append((folder,None))
+        def verified(account,location,programs,reason):
+            self.assertEqual(account,self.account)
+            self.assertEqual(programs,("fzf",))
+            return location[0][0],("fixture-identity",)
+        with patch.object(command,"verified_programs",side_effect=verified):
+            self.assertEqual(command.compatible_picker(self.account,paths,"0.63")[0],paths[1][0])
+            with self.assertRaisesRegex(StoreContextError,"approved fzf"):
+                command.compatible_picker(self.account,paths[:1],"0.63")
+
+    def test_explicit_transfer_command_runs_reviewed_move_and_emits_only_public_results(self):
+        from store_transfer_command import run_transfer
+        f = self.transfer_case(shared_credential=True)
+        preview = f.plan.comparison()
+        answers = {"source":f.vaults.unlock(f.vaults.src.store_id),"destination":f.vaults.unlock(f.vaults.dst.store_id),
+                   "backup":b"transaction fixture","recovery":b"independent fixture"}
+        prompts,review,results = [],[],[]
+        def secret(role):
+            prompts.append(role)
+            return answers[role.removesuffix("-repeat")]
+        def confirm(details):
+            review.append(details)
+            return True
+        args = [f.vaults.src.store_id,"1","2","3","4",f.host,f.vaults.dst.store_id,"1","2","3","4","moved","team-login","create"]
+        self.assertEqual(run_transfer(f.load,args,secret,confirm,results.append),0)
+        self.assertEqual(len(review),1)
+        self.assertEqual(review[0]["retained_credential_users"],preview["retained_credential_users"])
+        self.assertEqual(review[0]["destination_credential"],"team-login")
+        self.assertEqual([row["checkpoint"] for row in results],["comparison","prepared","completed"])
+        self.assertEqual(results[-1]["transaction_id"],results[1]["transaction_id"])
+        output = json.dumps(results).encode()
+        for value in (*answers.values(),b"fixture mapped password",b"AGE-SECRET-KEY"):
+            self.assertNotIn(value,output)
+        self.assertFalse((f.vaults.source.checkout/"team.conf").exists())
+        self.assertIn(f.host,f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))
+        self.assertIn("backup-repeat",prompts)
+        self.assertIn("recovery-repeat",prompts)
+
+    def test_public_transfer_dispatch_and_prod_refusal_precede_any_effect(self):
+        from store_transfer_command import run_transfer
+        f = self.transfer_case(prod=True)
+        app = f.shared.app
+        empty = subprocess.run([app,"store-transfer"],cwd=self.root/"shared b",env=f.shared.env,
+                               stdin=subprocess.DEVNULL,capture_output=True,timeout=5)
+        self.assertEqual(empty.returncode,65)
+        self.assertIn(b"both registered selections",empty.stderr)
+        v = f.vaults
+        args = [v.src.store_id,"1","2","3","4",f.host,v.dst.store_id,"1","2","3","4","moved","team-login","create"]
+        passwords = {"source":v.unlock(v.src.store_id),"destination":v.unlock(v.dst.store_id),
+                     "backup":b"backup fixture","recovery":b"recovery fixture"}
+        protected = [v.source.checkout,v.destination.checkout,f.shared.remote,self.recovery]
+        before = [snapshot(path) for path in protected]
+        seen = []
+        def ordinary_approval(comparison):
+            self.assertTrue(comparison["requires_typed_alias"])
+            return True
+        with self.assertRaisesRegex(StoreContextError,"explicit transfer confirmation"):
+            run_transfer(f.load,args,lambda role:passwords[role.removesuffix("-repeat")],ordinary_approval,seen.append)
+        self.assertEqual([snapshot(path) for path in protected],before)
+        self.assertEqual([row["checkpoint"] for row in seen],["comparison"])
+
+    def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        original = b"synthetic shared use"
+        for context in (f.source, f.destination):
+            (context.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, original))
+        destination = f.destination.vault/"login.age"
+        destination.write_bytes(f.seal(f.destination, b"different fixture"))
+        before = snapshot(self.root)
+        for reuse, error in ((False,"occupied"), (True,"different")):
+            with self.assertRaisesRegex(StoreContextError, error):
+                stage_credential(lambda: self.account, f.src, f.dst, f.unlock, reuse_existing=reuse)
+        self.assertEqual(before, snapshot(self.root))
+        destination.write_bytes(f.seal(f.destination, original))
+        existing = destination.read_bytes()
+        staged = stage_credential(lambda: self.account, f.src, f.dst, f.unlock, reuse_existing=True)
+        self.assertTrue(staged.reused)
+        self.assertEqual(staged.ciphertext, existing)
+        staged.verify_saved(lambda: self.account, f.unlock)
+        destination.write_bytes(f.seal(f.destination, original))
+        with self.assertRaisesRegex(StoreContextError, "changed"):
+            staged.verify_saved(lambda: self.account, f.unlock)
+
+    def test_transfer_protected_staging_cleans_on_abort_and_preserves_shared_source(self):
+        from store_transfer_credentials import stage_credential
+        from store_read import managed_credentials
+        f = self.transfer_vaults()
+        self.entries[1]["effective_mode"] = "two-way"
+        self.save_registry()
+        (f.source.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"shared fixture"))
+        config = b"# secret: login\nHost first second\n  HostName shared.invalid\n"
+        (f.source.checkout/"project.conf").write_bytes(config)
+        sidecar = f.source.checkout/".hostbook/identity.json"
+        records = json.loads(sidecar.read_text())
+        records["sources"] = [{"path":"project.conf", "sha256":hashlib.sha256(config).hexdigest()}]
+        records["hosts"] = [{"host_id":new_id(), "name":name, "bindings":[
+            {"path":"project.conf", "host_ordinal":1, "token_ordinal":n}]}
+            for n, name in enumerate(("first","second"), 1)]
+        sidecar.write_text(json.dumps(records))
+        self.assertEqual(managed_credentials({"project.conf":config}, records["hosts"])[1],
+                         {"first":"login", "second":"login"})
+        env = {"PATH":"/usr/bin:/bin","HOME":str(self.root),"GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":"/dev/null"}
+        def git(*args):
+            return subprocess.run(["/usr/bin/git",*args], cwd=f.source.checkout, env=env,
+                                  check=True, capture_output=True).stdout
+        git("init", "-q")
+        unrelated = f.source.checkout/"unrelated"
+        unrelated.write_bytes(b"staged work")
+        git("add","--","unrelated")
+        unrelated.write_bytes(b"unstaged work")
+        before = snapshot(self.root)
+        load = lambda: self.account
+        staged = stage_credential(load, f.src, f.dst, f.unlock)
+        with self.assertRaisesRegex(RuntimeError, "cancel"):
+            with staged.private_files(load) as folder:
+                self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((folder/"login.age").stat().st_mode & 0o777, 0o600)
+                self.assertEqual((folder/"login.age").read_bytes(), staged.ciphertext)
+                raise RuntimeError("cancel")
+        self.assertFalse(folder.exists())
+        self.assertEqual(before, snapshot(self.root))
+        self.assertEqual(git("show",":unrelated"), b"staged work")
+        with staged.private_files(load) as folder:
+            for path in folder.iterdir():
+                shutil.copyfile(path, f.destination.vault/path.name)
+        staged.verify_saved(load, f.unlock)
+        envelope = f.source.vault/"vault.recovery.age"
+        envelope.write_bytes(envelope.read_bytes() + b"\n")
+        with self.assertRaisesRegex(StoreContextError, "changed"):
+            staged.verify_saved(load, f.unlock)
+
+    def test_transfer_rejects_copied_vault_identity_before_unlock(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        (f.source.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"copied identity fixture"))
+        for name in ("vault.pub", "vault.key.age", "vault.recovery.age"):
+            shutil.copyfile(f.source.vault/name, f.destination.vault/name)
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "share an identity"):
+            stage_credential(lambda: self.account, f.src, f.dst, lambda _: self.fail("unexpected unlock"))
+        self.assertEqual(before, snapshot(self.root))
+
+    def test_transfer_requires_one_native_recipient_at_each_end_before_unlock(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        for context in (f.source, f.destination):
+            (context.vault/"login.meta").write_bytes(b"type=password\n")
+            (context.vault/"login.age").write_bytes(f.seal(context, b"same fixture"))
+        for context, other in ((f.source,f.destination), (f.destination,f.source)):
+            pub = context.vault/"vault.pub"
+            saved = pub.read_bytes()
+            pub.write_bytes(saved + (other.vault/"vault.pub").read_bytes())
+            try:
+                for reuse in (True, False):
+                    dst = f.dst if reuse else replace(f.dst, name="free")
+                    with self.assertRaisesRegex(StoreContextError, "single native vault recipient"):
+                        stage_credential(lambda: self.account, f.src, dst, lambda _: self.fail("unexpected unlock"),
+                                         reuse_existing=reuse)
+            finally:
+                pub.write_bytes(saved)
+
+    def test_transfer_verifies_key_metadata_and_private_public_pair(self):
+        from store_transfer_credentials import stage_credential
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        env = {"PATH": "/usr/bin:/bin", "HOME":str(self.root)}
+        key, wrong = self.root/"key", self.root/"wrong"
+        for path in (key, wrong):
+            subprocess.run(["/usr/bin/ssh-keygen","-q","-t","ed25519","-N","","-C","fixture","-f",path],
+                           env=env, check=True, capture_output=True)
+        fingerprint = subprocess.check_output(["/usr/bin/ssh-keygen","-lf",key.with_suffix(".pub")],
+                                              env=env).split()[1]
+        meta = b"type=key\nfp=" + fingerprint + b"\nkeytype=ed25519\ncreated=2026-02-01\n"
+        public = key.with_suffix(".pub").read_bytes()
+        (f.source.vault/"login.meta").write_bytes(meta)
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source,key.read_bytes()))
+        (f.source.vault/"login.pub").write_bytes(public)
+        load = lambda: self.account
+        dst = replace(f.dst, name="renamed")
+        before = snapshot(self.root)
+        staged = stage_credential(load, f.src, dst, f.unlock)
+        self.assertEqual(staged.public_key, public)
+        self.assertTrue(VaultUnlockCache(f.tools).open_secret(f.identities[dst.store_id], staged.ciphertext)
+                        == key.read_bytes())
+        self.assertEqual(before, snapshot(self.root))
+        with staged.private_files(load) as folder:
+            self.assertEqual(sorted(x.name for x in folder.iterdir()), ["renamed.age","renamed.meta","renamed.pub"])
+            for file in folder.iterdir():
+                shutil.copyfile(file, f.destination.vault/file.name)
+        staged.verify_saved(load, f.unlock)
+        self.assertTrue(stage_credential(load, f.src, dst, f.unlock, reuse_existing=True).reused)
+        (f.source.vault/"login.meta").write_bytes(meta.replace(b"ed25519", b"rsa"))
+        with self.assertRaisesRegex(StoreContextError, "metadata"):
+            stage_credential(load, f.src, replace(dst,name="free"), f.unlock)
+        (f.source.vault/"login.meta").write_bytes(b"type=key\n")
+        (f.source.vault/"login.pub").write_bytes(wrong.with_suffix(".pub").read_bytes())
+        remaining = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "key do not match"):
+            stage_credential(load, f.src, replace(dst,name="free"), f.unlock)
+        self.assertEqual(remaining, snapshot(self.root))
+
+    def test_transfer_failures_and_changed_inputs_leave_store_files_and_work_intact(self):
+        from store_transfer_credentials import stage_credential, durable_file
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        load = lambda: self.account
+        (f.source.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"failure fixture"))
+        before = snapshot(self.root)
+        for failure in (None, b"incorrect"):
+            with self.assertRaises(StoreContextError):
+                stage_credential(load, f.src, f.dst,
+                                 lambda store: failure if store == f.dst.store_id else f.unlock(store))
+        real_seal = VaultUnlockCache.seal_secret
+        def fail_seal(cache, recipient, value):
+            if value:
+                raise StoreContextError("encryption failed")
+            return real_seal(cache, recipient, value)
+        with patch.object(VaultUnlockCache, "seal_secret", fail_seal):
+            with self.assertRaisesRegex(StoreContextError, "encryption failed"):
+                stage_credential(load, f.src, f.dst, f.unlock)
+        staged = stage_credential(load, f.src, f.dst, f.unlock)
+        def fail_after_one(directory, name, data):
+            if name.endswith(".age"):
+                raise OSError("stage full")
+            durable_file(directory, name, data)
+        with patch("store_transfer_credentials.durable_file", side_effect=fail_after_one):
+            with self.assertRaisesRegex(OSError, "stage full"):
+                with staged.private_files(load):
+                    self.fail("partial staging exposed")
+        self.assertEqual(before, snapshot(self.root))
+        for index in (0, 1):
+            self.entries[index]["policy_generation"] += 1
+            self.save_registry()
+            with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+                with staged.private_files(load):
+                    self.fail("stale stage exposed")
+            self.entries[index]["policy_generation"] -= 1
+            self.save_registry()
+        def edit_during_unlock(store):
+            if store == f.dst.store_id:
+                (f.destination.vault/"login.meta").write_bytes(b"type=password\n")
+                (f.destination.vault/"login.age").write_bytes(f.seal(f.destination, b"independent edit"))
+            return f.unlock(store)
+        with self.assertRaisesRegex(StoreContextError, "changed"):
+            stage_credential(load, f.src, f.dst, edit_during_unlock)
+        self.assertTrue((f.destination.vault/"login.age").exists())
+        for path, old in before.items():
+            if path != self.registry.relative_to(self.root):
+                self.assertEqual(snapshot(self.root)[path], old)
+
+    def test_transfer_verifies_existing_unencrypted_pem_key_records(self):
+        from store_transfer_credentials import stage_credential
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        env = {"PATH":"/usr/bin:/bin", "HOME":str(self.root)}
+        for keytype, encoding in (("rsa","PKCS8"),("ecdsa","PKCS8"),("rsa","PEM"),("ecdsa","PEM")):
+            key = self.root/(keytype + encoding)
+            subprocess.run(["/usr/bin/ssh-keygen","-q","-t",keytype,"-m",encoding,"-N","","-C","fixture","-f",key],
+                           env=env, stdin=subprocess.DEVNULL, capture_output=True, check=True)
+            plain = key.read_bytes()
+            key.unlink()
+            pub = key.with_suffix(".pub").read_bytes()
+            if encoding == "PKCS8":
+                self.assertEqual(plain.splitlines()[0], b"-----BEGIN PRIVATE KEY-----")
+            else:
+                self.assertIn(b" PRIVATE KEY-----", plain.splitlines()[0])
+            (f.source.vault/"login.pub").write_bytes(pub)
+            (f.source.vault/"login.meta").write_bytes(b"type=key\n")
+            (f.source.vault/"login.age").write_bytes(f.seal(f.source,plain))
+            staged = stage_credential(lambda: self.account, f.src, f.dst, f.unlock)
+            self.assertTrue(VaultUnlockCache(f.tools).open_secret(f.identities[f.dst.store_id],staged.ciphertext)
+                            == plain)
+            header, body = plain.split(b"\n",1)
+            invalid = header + b"\nProc-Type: 4,ENCRYPTED\n\n" + body
+            (f.source.vault/"login.age").write_bytes(f.seal(f.source, invalid))
+            with self.assertRaisesRegex(StoreContextError, "private key"):
+                stage_credential(lambda: self.account, f.src, f.dst, f.unlock)
 
     def test_vault_unlock_cache_is_scoped_and_rejects_rotated_envelopes(self):
         tools = [shutil.which(name) for name in ("age", "age-keygen", "age-plugin-batchpass")]

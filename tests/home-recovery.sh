@@ -77,8 +77,10 @@ printf 'PASS empty imported view can return to all hosts\n'
 # Changing language in Tools updates the no-match message without restarting home.
 export HOSTBOOK_LANG=vi WIDTH=100
 printf 'border = rounded\nlist = compact\n' > "$XDG_CONFIG_HOME/hostbook/config"
-start; wait_for alpha; k C-o; wait_for 'Giao diện'; k -l 'Giao diện'; k Enter
-wait_for 'Language / Ngôn ngữ'; k -l 'Language'; k Enter; wait_for 'English'; k Down Enter
+start; wait_for alpha; k C-o; wait_for 'Giao diện'; wait_for 'Nhập gói Hostbook'
+k -l 'Giao diện'; gone 'Nhập gói Hostbook'; k Enter
+wait_for 'Language / Ngôn ngữ'; wait_for 'Kiểu danh sách'
+k -l 'Language'; gone 'Kiểu danh sách'; k Enter; wait_for 'English'; k Down Enter
 wait_for 'Appearance'; k Escape; wait_for alpha
 k -l 'nothing-matches'; wait_for 'No matches'; wait_for 'Esc clears search'
 end_ui
