@@ -166,6 +166,10 @@ class VaultUnlockCache:
         with self._secret_pipe(identity) as reader:
             return self._run("age", ("-d", "-i", f"/dev/fd/{reader}"), ciphertext, identity_fd=reader)
 
+    def seal_secret(self, recipient, value):
+        require(re.fullmatch(rb"age1[ac-hj-np-z02-9]{58}", recipient), "unsupported vault recipient")
+        return self._run("age", ("-e", "-a", "-r", recipient.decode("ascii")), value)
+
     def _current(self, load_account, store_id, expected):
         require(valid_id(store_id), "invalid store ID")
         account = load_account()

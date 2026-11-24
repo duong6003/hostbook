@@ -2712,6 +2712,64 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         current = self.resolve(1, generations=replace(self.generations, connection=4))
         self.assertFalse(current.status.exists())
 
+    def transfer_vaults(self):
+        from store_login import verified_age_tools
+        from store_transfer_credentials import CredentialRef
+        tools, _ = verified_age_tools(self.account)
+        def age(name, args=(), data=b"", passphrase=None):
+            with ExitStack() as stack:
+                env = {"PATH": str(tools)}
+                inherited = ()
+                if passphrase is not None:
+                    reader, writer = os.pipe()
+                    stack.callback(os.close, reader)
+                    with os.fdopen(writer, "wb") as output:
+                        output.write(passphrase)
+                    inherited = (reader,)
+                    env["AGE_PASSPHRASE_FD"] = str(reader)
+                return subprocess.run([tools/name, *args], input=data, env=env, pass_fds=inherited,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      check=True, timeout=30).stdout
+        source, destination = self.resolve(0), self.resolve(1)
+        passwords = {}
+        identities = {}
+        recipients = {}
+        for context in (source, destination):
+            identity = age("age-keygen")
+            recipient = age("age-keygen", ["-y"], identity)
+            password = ("fixture " + context.store_id).encode()
+            passwords[context.store_id] = password
+            identities[context.store_id] = identity
+            recipients[context.store_id] = recipient.strip().decode()
+            (context.vault/"vault.pub").write_bytes(recipient)
+            for name, phrase in (("vault.key.age", password), ("vault.recovery.age", b"fixture recovery")):
+                (context.vault/name).write_bytes(age("age", ["-a","-e","-j","batchpass"], identity, phrase))
+        def seal(context, value):
+            return age("age", ["-a","-e","-r",recipients[context.store_id]], value)
+        return SimpleNamespace(source=source, destination=destination, seal=seal, identities=identities,
+                               tools=tools, unlock=passwords.__getitem__,
+                               src=CredentialRef(source.store_id, self.generations, "login"),
+                               dst=CredentialRef(destination.store_id, self.generations, "login"))
+
+    def test_transfer_stages_password_only_for_its_verified_destination(self):
+        from store_transfer_credentials import stage_credential
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        value = b"synthetic transfer fixture"
+        old_ciphertext = f.seal(f.source, value)
+        (f.source.vault/"login.age").write_bytes(old_ciphertext)
+        (f.source.vault/"login.meta").write_bytes(b"type=password\ncreated=2026-02-20\n")
+        before = snapshot(self.root)
+        staged = stage_credential(lambda: self.account, f.src, f.dst, f.unlock)
+        self.assertEqual(staged.metadata, (f.source.vault/"login.meta").read_bytes())
+        self.assertIsNone(staged.public_key)
+        self.assertNotEqual(staged.ciphertext, old_ciphertext)
+        vault = VaultUnlockCache(f.tools)
+        self.assertTrue(vault.open_secret(f.identities[f.dst.store_id], staged.ciphertext) == value)
+        with self.assertRaises(StoreContextError):
+            vault.open_secret(f.identities[f.src.store_id], staged.ciphertext)
+        self.assertEqual(before, snapshot(self.root))
+
     def test_vault_unlock_cache_is_scoped_and_rejects_rotated_envelopes(self):
         tools = [shutil.which(name) for name in ("age", "age-keygen", "age-plugin-batchpass")]
         if not all(tools):
