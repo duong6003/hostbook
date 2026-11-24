@@ -126,7 +126,7 @@ def verify_private_key(plain, key):
     # accepted envelopes before asking the private agent to prove key possession.
     lines = plain.splitlines()
     require(len(lines) >= 3 and lines[0] in (b"-----BEGIN OPENSSH PRIVATE KEY-----",
-            b"-----BEGIN RSA PRIVATE KEY-----", b"-----BEGIN EC PRIVATE KEY-----")
+            b"-----BEGIN RSA PRIVATE KEY-----", b"-----BEGIN EC PRIVATE KEY-----", b"-----BEGIN PRIVATE KEY-----")
             and lines[-1] == lines[0].replace(b"BEGIN", b"END"), "unsupported transfer private key")
     try:
         raw = base64.b64decode(b"".join(lines[1:-1]), validate=True)
@@ -135,6 +135,14 @@ def verify_private_key(plain, key):
     if lines[0] == b"-----BEGIN OPENSSH PRIVATE KEY-----":
         require(raw.startswith(b"openssh-key-v1\0\0\0\0\x04none\0\0\0\x04none"),
                 "requires an unlocked OpenSSH private key")
+    elif lines[0] == b"-----BEGIN PRIVATE KEY-----":
+        # An unencrypted PKCS#8 PrivateKeyInfo starts with an INTEGER version.
+        # An EncryptedPrivateKeyInfo starts with an AlgorithmIdentifier instead.
+        require(key[0] != b"ssh-ed25519" and len(raw) > 4 and raw[0] == 0x30, "invalid RSA or EC private key")
+        extra = raw[1] & 0x7f if raw[1] >= 128 else 0
+        start = 2 + extra
+        require(extra <= 4 and raw[start:start+3] in (b"\x02\x01\x00", b"\x02\x01\x01"),
+                "expected an unencrypted PKCS#8 private key")
     with private_workspace() as (folder, directory):
         with ssh_agent(folder/"agent") as env:
             agent_keys(env, "-q", "-", data=plain)

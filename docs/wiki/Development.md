@@ -310,7 +310,7 @@ store IDs, expected registration/checkout/connection/policy generations and
 the chosen credential names. The passphrase callback receives one store ID
 at a time. Both vaults must already exist and have distinct recipients.
 Password records and normalized OpenSSH Ed25519, RSA and ECDSA private keys
-are supported, including legacy unencrypted RSA and EC PEM keys. A fresh
+are supported, including legacy unencrypted RSA and EC PEM and PKCS#8 keys. A fresh
 private SSH agent verifies the public key by signing.
 
 By default the destination name must be free. Explicit `reuse_existing=True`

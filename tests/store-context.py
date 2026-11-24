@@ -2969,14 +2969,17 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         from store_vault import VaultUnlockCache
         f = self.transfer_vaults()
         env = {"PATH":"/usr/bin:/bin", "HOME":str(self.root)}
-        for keytype in ("rsa", "ecdsa"):
-            key = self.root/keytype
-            subprocess.run(["/usr/bin/ssh-keygen","-q","-t",keytype,"-m","PEM","-N","","-C","fixture","-f",key],
+        for keytype, encoding in (("rsa","PKCS8"),("ecdsa","PKCS8"),("rsa","PEM"),("ecdsa","PEM")):
+            key = self.root/(keytype + encoding)
+            subprocess.run(["/usr/bin/ssh-keygen","-q","-t",keytype,"-m",encoding,"-N","","-C","fixture","-f",key],
                            env=env, stdin=subprocess.DEVNULL, capture_output=True, check=True)
             plain = key.read_bytes()
             key.unlink()
             pub = key.with_suffix(".pub").read_bytes()
-            self.assertIn(b" PRIVATE KEY-----", plain.splitlines()[0])
+            if encoding == "PKCS8":
+                self.assertEqual(plain.splitlines()[0], b"-----BEGIN PRIVATE KEY-----")
+            else:
+                self.assertIn(b" PRIVATE KEY-----", plain.splitlines()[0])
             (f.source.vault/"login.pub").write_bytes(pub)
             (f.source.vault/"login.meta").write_bytes(b"type=key\n")
             (f.source.vault/"login.age").write_bytes(f.seal(f.source,plain))
