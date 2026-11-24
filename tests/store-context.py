@@ -2796,14 +2796,32 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
 
     def test_transfer_protected_staging_cleans_on_abort_and_preserves_shared_source(self):
         from store_transfer_credentials import stage_credential
+        from store_read import managed_credentials
         f = self.transfer_vaults()
         self.entries[1]["effective_mode"] = "two-way"
         self.save_registry()
         (f.source.vault/"login.meta").write_bytes(b"type=password\n")
         (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"shared fixture"))
-        (f.source.checkout/"project").write_bytes(
-            b"# secret: login\nHost first\n  HostName one.invalid\n# secret: login\nHost second\n  HostName two.invalid\n")
-        (f.source.git_dir/"index").write_bytes(b"unrelated fixture staged bytes")
+        config = b"# secret: login\nHost first second\n  HostName shared.invalid\n"
+        (f.source.checkout/"project.conf").write_bytes(config)
+        sidecar = f.source.checkout/".hostbook/identity.json"
+        records = json.loads(sidecar.read_text())
+        records["sources"] = [{"path":"project.conf", "sha256":hashlib.sha256(config).hexdigest()}]
+        records["hosts"] = [{"host_id":new_id(), "name":name, "bindings":[
+            {"path":"project.conf", "host_ordinal":1, "token_ordinal":n}]}
+            for n, name in enumerate(("first","second"), 1)]
+        sidecar.write_text(json.dumps(records))
+        self.assertEqual(managed_credentials({"project.conf":config}, records["hosts"])[1],
+                         {"first":"login", "second":"login"})
+        env = {"PATH":"/usr/bin:/bin","HOME":str(self.root),"GIT_CONFIG_NOSYSTEM":"1","GIT_CONFIG_GLOBAL":"/dev/null"}
+        def git(*args):
+            return subprocess.run(["/usr/bin/git",*args], cwd=f.source.checkout, env=env,
+                                  check=True, capture_output=True).stdout
+        git("init", "-q")
+        unrelated = f.source.checkout/"unrelated"
+        unrelated.write_bytes(b"staged work")
+        git("add","--","unrelated")
+        unrelated.write_bytes(b"unstaged work")
         before = snapshot(self.root)
         load = lambda: self.account
         staged = stage_credential(load, f.src, f.dst, f.unlock)
@@ -2815,6 +2833,7 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 raise RuntimeError("cancel")
         self.assertFalse(folder.exists())
         self.assertEqual(before, snapshot(self.root))
+        self.assertEqual(git("show",":unrelated"), b"staged work")
         with staged.private_files(load) as folder:
             for path in folder.iterdir():
                 shutil.copyfile(path, f.destination.vault/path.name)
@@ -2835,6 +2854,91 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         with self.assertRaisesRegex(StoreContextError, "share an identity"):
             stage_credential(lambda: self.account, f.src, f.dst, lambda _: self.fail("unexpected unlock"))
         self.assertEqual(before, snapshot(self.root))
+
+    def test_transfer_verifies_key_metadata_and_private_public_pair(self):
+        from store_transfer_credentials import stage_credential
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        env = {"PATH": "/usr/bin:/bin", "HOME":str(self.root)}
+        key, wrong = self.root/"key", self.root/"wrong"
+        for path in (key, wrong):
+            subprocess.run(["/usr/bin/ssh-keygen","-q","-t","ed25519","-N","","-C","fixture","-f",path],
+                           env=env, check=True, capture_output=True)
+        fingerprint = subprocess.check_output(["/usr/bin/ssh-keygen","-lf",key.with_suffix(".pub")],
+                                              env=env).split()[1]
+        meta = b"type=key\nfp=" + fingerprint + b"\nkeytype=ed25519\ncreated=2026-02-01\n"
+        public = key.with_suffix(".pub").read_bytes()
+        (f.source.vault/"login.meta").write_bytes(meta)
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source,key.read_bytes()))
+        (f.source.vault/"login.pub").write_bytes(public)
+        load = lambda: self.account
+        dst = replace(f.dst, name="renamed")
+        before = snapshot(self.root)
+        staged = stage_credential(load, f.src, dst, f.unlock)
+        self.assertEqual(staged.public_key, public)
+        self.assertTrue(VaultUnlockCache(f.tools).open_secret(f.identities[dst.store_id], staged.ciphertext)
+                        == key.read_bytes())
+        self.assertEqual(before, snapshot(self.root))
+        with staged.private_files(load) as folder:
+            self.assertEqual(sorted(x.name for x in folder.iterdir()), ["renamed.age","renamed.meta","renamed.pub"])
+            for file in folder.iterdir():
+                shutil.copyfile(file, f.destination.vault/file.name)
+        staged.verify_saved(load, f.unlock)
+        self.assertTrue(stage_credential(load, f.src, dst, f.unlock, reuse_existing=True).reused)
+        (f.source.vault/"login.meta").write_bytes(meta.replace(b"ed25519", b"rsa"))
+        with self.assertRaisesRegex(StoreContextError, "metadata"):
+            stage_credential(load, f.src, replace(dst,name="free"), f.unlock)
+        (f.source.vault/"login.meta").write_bytes(b"type=key\n")
+        (f.source.vault/"login.pub").write_bytes(wrong.with_suffix(".pub").read_bytes())
+        remaining = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "key do not match"):
+            stage_credential(load, f.src, replace(dst,name="free"), f.unlock)
+        self.assertEqual(remaining, snapshot(self.root))
+
+    def test_transfer_failures_and_changed_inputs_leave_store_files_and_work_intact(self):
+        from store_transfer_credentials import stage_credential, durable_file
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        load = lambda: self.account
+        (f.source.vault/"login.meta").write_bytes(b"type=password\n")
+        (f.source.vault/"login.age").write_bytes(f.seal(f.source, b"failure fixture"))
+        before = snapshot(self.root)
+        for failure in (None, b"incorrect"):
+            with self.assertRaises(StoreContextError):
+                stage_credential(load, f.src, f.dst,
+                                 lambda store: failure if store == f.dst.store_id else f.unlock(store))
+        with patch.object(VaultUnlockCache, "seal_secret", side_effect=StoreContextError("encryption failed")):
+            with self.assertRaisesRegex(StoreContextError, "encryption failed"):
+                stage_credential(load, f.src, f.dst, f.unlock)
+        staged = stage_credential(load, f.src, f.dst, f.unlock)
+        def fail_after_one(directory, name, data):
+            if name.endswith(".age"):
+                raise OSError("stage full")
+            durable_file(directory, name, data)
+        with patch("store_transfer_credentials.durable_file", side_effect=fail_after_one):
+            with self.assertRaisesRegex(OSError, "stage full"):
+                with staged.private_files(load):
+                    self.fail("partial staging exposed")
+        self.assertEqual(before, snapshot(self.root))
+        for index in (0, 1):
+            self.entries[index]["policy_generation"] += 1
+            self.save_registry()
+            with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+                with staged.private_files(load):
+                    self.fail("stale stage exposed")
+            self.entries[index]["policy_generation"] -= 1
+            self.save_registry()
+        def edit_during_unlock(store):
+            if store == f.dst.store_id:
+                (f.destination.vault/"login.meta").write_bytes(b"type=password\n")
+                (f.destination.vault/"login.age").write_bytes(f.seal(f.destination, b"independent edit"))
+            return f.unlock(store)
+        with self.assertRaisesRegex(StoreContextError, "changed"):
+            stage_credential(load, f.src, f.dst, edit_during_unlock)
+        self.assertTrue((f.destination.vault/"login.age").exists())
+        for path, old in before.items():
+            if path != self.registry.relative_to(self.root):
+                self.assertEqual(snapshot(self.root)[path], old)
 
     def test_vault_unlock_cache_is_scoped_and_rejects_rotated_envelopes(self):
         tools = [shutil.which(name) for name in ("age", "age-keygen", "age-plugin-batchpass")]
