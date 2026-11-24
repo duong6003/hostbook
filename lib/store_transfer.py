@@ -1,7 +1,7 @@
 """Compare one selected host across two registered stores before a transfer decision."""
 from contextlib import contextmanager
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import ipaddress
 import json
@@ -86,6 +86,8 @@ class TransferPlan:
     alias: str
     source_hosts: dict
     destination_hosts: dict
+    decision: str = "new"
+    chosen_destination_id: Optional[str] = None
 
     @property
     def shared(self):
@@ -111,18 +113,47 @@ class TransferPlan:
             if endpoint(candidate) == endpoint(host):
                 reasons.append("endpoint")
             if reasons:
-                matches.append(dict(candidate, reasons=reasons))
+                matches.append(dict(candidate, reasons=reasons,revision=dst.base))
         shared, effect = (src, "source-removal") if src.context.kind == "shared" else (dst, "destination-save")
         users = [row["host_id"] for key, row in self.source_hosts.items() if key != self.host_id
                  and host["credential"] and row["credential"] == host["credential"]]
+        reasons = {reason for match in matches for reason in match["reasons"]}
+        choices = ["cancel"]
+        if not matches:
+            choices.insert(0,"new")
+        elif "stable-id" in reasons:
+            choices.insert(0,"reconcile")
+        else:
+            if "alias" in reasons:
+                choices.insert(0,"choose-free-alias")
+            elif "endpoint" in reasons:
+                choices.insert(0,"keep-both")
         return {
-            "source":dict(host, store_id=src.context.store_id, kind=src.context.kind),
+            "source":dict(host, store_id=src.context.store_id, kind=src.context.kind,revision=src.base),
             "destination":{"store_id":dst.context.store_id, "kind":dst.context.kind,
-                           "proposed_alias":self.alias, "proposed_host_id":self.host_id},
-            "matches":matches, "retained_credential_users":users,
+                           "proposed_alias":self.alias, "proposed_host_id":self.host_id,"revision":dst.base},
+            "matches":matches, "retained_credential_users":users,"choices":choices,
+            "decision":self.decision,"chosen_destination_id":self.chosen_destination_id,
             "publications":[{"store_id":shared.context.store_id,"ref":shared.ref,"effect":effect}],
             "shared_mode":shared.context.effective_mode, "shared_checkout_at_remote_tip":shared.base == shared.remote_tip,
         }
+
+    def verify_decision(self):
+        comparison = self.comparison()
+        if self.decision == "new":
+            require(not comparison["matches"] and self.chosen_destination_id is None,
+                    "destination match requires an explicit transfer decision")
+            return
+        require(self.decision == "keep-both" and self.decision in comparison["choices"] and
+                any(row["host_id"] == self.chosen_destination_id and "endpoint" in row["reasons"]
+                    for row in comparison["matches"]), "duplicate decision does not match the reviewed destination")
+
+    def choose(self, decision, host, source_revision, destination_revision):
+        require((source_revision,destination_revision) == (self.source.base,self.destination.base),
+                "transfer needs current reviewed revisions for both stores")
+        updated = replace(self,decision=decision,chosen_destination_id=host)
+        updated.verify_decision()
+        return updated
 
 
 def preview(load, source, source_generations, host_id, destination, destination_generations, alias=None):
@@ -321,7 +352,7 @@ def prepare_candidate(load, plan, mapping):
     src, dst = plan.source, plan.destination
     require({src.context.kind,dst.context.kind} == {"private","shared"} and plan.shared.context.effective_mode == "two-way"
             and plan.shared.base == plan.shared.remote_tip,"transfer requires a current two-way shared checkout")
-    require(not plan.comparison()["matches"], "destination match requires an explicit transfer decision")
+    plan.verify_decision()
     source_name = plan.source_hosts[plan.host_id]["credential"]
     if source_name is None:
         require(mapping is None, "unexpected transfer credential mapping")

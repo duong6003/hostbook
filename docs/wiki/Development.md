@@ -423,3 +423,10 @@ published. An intervening shared update preserves its remote host. Other source 
 retain their original credential. A completed result follows verification of
 both checkouts. An interrupted or uncertain move retains its protected journal
 and fences the participating stores for reconciliation.
+
+When the comparison reports a different host ID with the same effective login,
+address and port, choose a distinct free destination alias and review both
+revisions. Append `keep-both EXISTING_DESTINATION_HOST_ID SOURCE_REVISION DESTINATION_REVISION`
+to the transfer command to preserve the existing record and create the incoming
+host under that alias. Append `cancel` to leave both stores untouched. Updated
+revisions require another comparison.

@@ -1202,3 +1202,4 @@ L_transfer_from_shared='Xoá %s khỏi kho chung %s sau khi xác minh bản riê
 L_transfer_to_private='Lưu %s vào kho riêng %s.'
 L_transfer_publish_source='Gửi thay đổi xoá server trong kho chung lên %s.'
 L_transfer_question_private='Chuyển %s sau khi xác minh bản riêng và secret của nó?'
+L_transfer_keep_both='Giữ server %s (%s) ở kho đích. Tạo thêm server với tên %s.'

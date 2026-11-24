@@ -1202,3 +1202,4 @@ L_transfer_from_shared='Remove %s from shared store %s after verifying the priva
 L_transfer_to_private='Save %s in private store %s.'
 L_transfer_publish_source='Publish the shared source removal on %s.'
 L_transfer_question_private='Move %s after its private copy and credential are verified?'
+L_transfer_keep_both='Keep existing %s (%s) in the destination. Create the separate alias %s.'

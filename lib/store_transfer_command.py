@@ -19,13 +19,21 @@ from store_transfer_remove import finish_shared_source, remove_source
 
 
 def run_transfer(load, args, secret, confirm, emit):
-    require(len(args) == 14 and SECRET_NAME.fullmatch(args[12]) and args[13] in ("create","reuse"), "provide both registered selections, destination alias, credential name and create or reuse")
+    require(len(args) in (14,15,18) and SECRET_NAME.fullmatch(args[12]) and args[13] in ("create","reuse"), "provide both registered selections, destination alias, credential name and create or reuse")
     plan = preview(load,args[0],Generations(*(int(v) for v in args[1:5])),args[5],
                    args[6],Generations(*(int(v) for v in args[7:11])),args[11])
+    if len(args) == 18:
+        plan = plan.choose(*args[14:])
+    elif len(args) == 15:
+        require(args[14] == "cancel","unknown transfer decision")
     comparison = plan.comparison()
     emit(dict(comparison,checkpoint="comparison",destination_credential=args[12],credential_action=args[13]))
-    require(comparison["shared_mode"] == "two-way" and comparison["shared_checkout_at_remote_tip"]
-            and not comparison["matches"], "this transfer needs one current two-way shared checkout and a free host")
+    if len(args) == 15:
+        emit({"checkpoint":"cancelled"})
+        return 0
+    plan.verify_decision()
+    require(comparison["shared_mode"] == "two-way" and comparison["shared_checkout_at_remote_tip"],
+            "this transfer needs one current two-way shared checkout")
     credential = comparison["source"]["credential"]
     require(credential, "this transfer requires a managed source credential")
     src = CredentialRef(plan.source.context.store_id,plan.source.context.generations,credential)
@@ -104,7 +112,7 @@ def compatible_picker(account, locations, minimum):
 
 
 def transfer_command(args):
-    require(len(args) == 14,"provide both registered selections, destination alias, credential name and create or reuse")
+    require(len(args) in (14,15,18),"provide both registered selections, destination alias, credential name and create or reuse")
     home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
     def load():
         return load_approved_account(home)
@@ -136,10 +144,11 @@ def transfer_command(args):
         def confirm(details):
             require(picker() == binary and load() == account,"transfer confirmation context changed")
             src,dst = details["source"],details["destination"]
+            match = next((r for r in details["matches"] if r["host_id"] == details["chosen_destination_id"]),{})
             proc = subprocess.run([*command,"_store_transfer_review",src["name"],src["store_id"],
                 dst["proposed_alias"],dst["store_id"],details["publications"][0]["ref"],details["destination_credential"],
                 str(len(details["retained_credential_users"])),details["credential_action"],
-                "prod" if details["requires_typed_alias"] else "ordinary",src["kind"]],env=env,stdout=subprocess.PIPE)
+                "prod" if details["requires_typed_alias"] else "ordinary",src["kind"],details["decision"],match.get("name",""),match.get("host_id","")],env=env,stdout=subprocess.PIPE)
             if proc.returncode:
                 return False
             if details["requires_typed_alias"]:

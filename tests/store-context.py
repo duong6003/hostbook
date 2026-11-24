@@ -2927,6 +2927,56 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         plan = preview(load,vaults.src.store_id,self.generations,host,vaults.dst.store_id,self.generations,"moved")
         return SimpleNamespace(plan=plan, shared=shared, vaults=vaults, load=load, host=host)
 
+    def probable_duplicate(self, alias):
+        from store_transfer import preview
+        f = self.transfer_case()
+        src,dst = f.vaults.source,f.vaults.destination
+        raw = b"Host db\n  HostName 192.0.2.61\n  User fixture\n  Port 2210\n  ServerAliveInterval 17\n"
+        (dst.checkout/"team.conf").write_bytes(raw)
+        path = dst.checkout/".hostbook/identity.json"
+        identity = json.loads(path.read_bytes())
+        identity["sources"][0]["sha256"] = hashlib.sha256(raw).hexdigest()
+        identity["generation"] += 1
+        path.write_text(json.dumps(identity))
+        f.shared.git(dst.checkout,"add","--all"); f.shared.git(dst.checkout,"commit","-qm","Independent host at same endpoint")
+        f.shared.git(dst.checkout,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+        f.plan = preview(f.load,src.store_id,src.generations,f.host,dst.store_id,dst.generations,alias)
+        f.target = identity["hosts"][0]["host_id"]
+        f.args = [src.store_id,"1","2","3","4",f.host,dst.store_id,"1","2","3","4",alias,"mapped-login","create"]
+        answers = {"source":f.vaults.unlock(src.store_id),"destination":f.vaults.unlock(dst.store_id),
+                   "backup":b"operator backup","recovery":b"independent recovery"}
+        f.secret = lambda role:answers[role.removesuffix("-repeat")]
+        return f
+
+    def test_explicit_keep_both_preserves_existing_host_and_requires_current_reviewed_revisions(self):
+        from store_transfer_command import run_transfer
+        f = self.probable_duplicate("distinct-db")
+        reviewed = f.plan.comparison()
+        self.assertEqual(reviewed["destination"]["revision"],f.plan.destination.base)
+        self.assertEqual(reviewed["matches"][0]["host_id"],f.target)
+        self.assertIn("keep-both",reviewed["choices"])
+        before = snapshot(self.root)
+        def no_secret(_):
+            self.fail("denied or cancelled decision requested a secret")
+        with self.assertRaises(StoreContextError):
+            run_transfer(f.load,f.args,no_secret,no_secret,lambda _:None)
+        self.assertEqual(run_transfer(f.load,f.args+["cancel"],no_secret,no_secret,lambda _:None),0)
+        with self.assertRaisesRegex(StoreContextError,"reviewed revisions"):
+            run_transfer(f.load,f.args+["keep-both",f.target,"0"*40,f.plan.destination.base],no_secret,no_secret,lambda _:None)
+        self.assertEqual(snapshot(self.root),before)
+        saved = []
+        def confirm(observation):
+            self.assertEqual(observation["decision"],"keep-both")
+            self.assertEqual(observation["chosen_destination_id"],f.target)
+            return True
+        new_args = f.args+["keep-both",f.target,f.plan.source.base,f.plan.destination.base]
+        self.assertEqual(run_transfer(f.load,new_args,f.secret,confirm,saved.append),0)
+        self.assertEqual(saved[-1]["checkpoint"],"completed")
+        rows = json.loads(f.shared.git(f.shared.remote,"show","main:.hostbook/identity.json"))["hosts"]
+        self.assertEqual({row["host_id"]:row["name"] for row in rows},{f.target:"db",f.host:"distinct-db"})
+        self.assertEqual(f.shared.git(f.shared.remote,"show","main:team.conf"),
+                         f.shared.git(f.shared.remote,"show",f.plan.destination.base+":team.conf"))
+
     def reverse_transfer_case(self):
         from store_transfer import preview
         from store_transfer_credentials import CredentialRef
