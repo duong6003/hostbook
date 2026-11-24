@@ -188,15 +188,19 @@ class StagedCredential(CredentialRecord):
             self.check_current(load)
             yield folder
 
-    def verify_saved(self, load, read_passphrase):
-        """Recheck exact saved bytes and prove the bound destination still decrypts them."""
-        current = self.check_current(load, saved=True)
+    def verify_decryption(self, load, read_passphrase, *, saved):
+        current = self.check_current(load, saved=saved)
         tools = verified_age_tools(self.account)
         cache = VaultUnlockCache(tools[0])
         identity = unlock_end(cache, tools, self.account, load, self.destination, read_passphrase)
-        require(cache.open_secret(identity, current.record.ciphertext), "saved transfer credential is empty")
+        ciphertext = current.record.ciphertext if saved else self.ciphertext
+        require(cache.open_secret(identity, ciphertext), "transfer credential is empty")
         require(verified_age_tools(self.account) == tools, "transfer vault tools changed")
-        require(self.check_current(load, saved=True) == current, "saved transfer credential changed")
+        require(self.check_current(load, saved=saved) == current, "transfer credential changed")
+
+    def verify_saved(self, load, read_passphrase):
+        """Recheck exact saved bytes and prove the bound destination still decrypts them."""
+        self.verify_decryption(load,read_passphrase,saved=True)
 
 
 def stage_credential(load_account, source, destination, read_passphrase, *, reuse_existing=False):

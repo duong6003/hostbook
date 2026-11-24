@@ -3156,6 +3156,11 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
         original = [snapshot(path) for path in (v.source.checkout,f.shared.remote,self.root/"shared b")]
         with prepare_candidate(f.load,f.plan,mapped) as candidate:
             ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            initial_destination = snapshot(v.destination.checkout)
+            with self.assertRaisesRegex(StoreContextError,"vault unlock failed"):
+                save_destination(f.load,ident,f.plan,candidate,mapped,lambda _:b"mistyped fixture",password,code)
+            self.assertEqual(snapshot(v.destination.checkout),initial_destination)
+            self.assertEqual(reopen_intent(f.load,ident,password)[0]["sequence"],1)
             group = v.source.checkout/"groups.tsv"
             group.write_text("new\t\tsource-one\n")
             with self.assertRaisesRegex(StoreContextError, "untracked"):
@@ -3172,6 +3177,54 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
         self.assertEqual(record["effects"][0]["outcome"],"observed")
         self.assertEqual(manifest["next_effect"],"destination-publication")
         self.assertFalse((self.recovery/"receives"/ident).exists())
+
+    def test_transfer_destination_checkpoint_rechecks_actual_checkout_after_verification(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        import store_transfer_apply as effects
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"fixture transaction password",b"fixture transaction recovery"
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            actual = v.destination.checkout/("host-"+f.host+".conf")
+            advance = effects.advance
+            def concurrent_edit(tx,account,record,manifest,new,*args,**kwargs):
+                if new["checkpoint"] == "destination-saved":
+                    actual.write_bytes(b"Host independently-edited\n  HostName 198.51.100.7\n")
+                return advance(tx,account,record,manifest,new,*args,**kwargs)
+            with patch.object(effects,"advance",side_effect=concurrent_edit):
+                with self.assertRaises(StoreContextError):
+                    effects.save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+        self.assertTrue(actual.read_bytes().startswith(b"Host independently-edited"))
+        self.assertEqual(reopen_intent(f.load,ident,password)[0]["checkpoint"],"prepared")
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),f.plan.destination.base)
+
+    def test_transfer_saved_generation_must_still_be_named_before_actual_destination_write(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent
+        import store_transfer_apply as effects
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,v.dst,v.unlock)
+        password,code = b"fixture independent password",b"fixture recovery"
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            before = snapshot(v.destination.checkout)
+            advance = effects.advance
+            def detach(*args,**kwargs):
+                result = advance(*args,**kwargs)
+                if result[0]["sequence"] == 2:
+                    payload = self.recovery/"transactions"/ident/"payloads"/(result[0]["payload_id"]+".age")
+                    payload.rename(payload.with_suffix(".detached"))
+                return result
+            with patch.object(effects,"advance",side_effect=detach):
+                with self.assertRaises((StoreContextError,OSError)):
+                    effects.save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            self.assertTrue(snapshot(v.destination.checkout) == before)
 
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential

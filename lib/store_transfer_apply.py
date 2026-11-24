@@ -15,8 +15,8 @@ from store_receive import IDENTITY, git, plain_git, prepare_adoption
 from store_transfer import observe_store, writable_destination
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
 from store_transfer_owner import owner_lease
-from store_transfer_recovery import verify_backup
-from store_vault import VaultUnlockCache
+from store_transfer_recovery import capture, verify_backup
+from store_vault import VaultUnlockCache, file_evidence
 
 
 def selected(tx, account, record):
@@ -35,8 +35,31 @@ def write_once(tx, dest, name, data):
         sync_local(dest)
 
 
-def advance(tx, account, record, manifest, next_record, next_manifest, password, code):
+def payload_pin(tx, account, record):
+    with recovery_root(account) as root,open_directory(root,("transactions",record["transaction_id"])) as named:
+        require_private_directory(named,"transfer transaction")
+        require(os.path.samestat(os.fstat(tx),os.fstat(named)), "selected transfer directory changed")
+        with open_directory(named,("recovery",str(record["recovery_generation"]))) as env,open_directory(named,("payloads",)) as payloads:
+            files,evidence = capture(env,payloads,record["payload_id"],("vault.key.age","vault.recovery.age"))
+            # Appending another immutable generation legitimately changes the payload directory's timestamp.
+            return files, tuple(st[:2] for st in evidence[:2]), evidence[2:]
+
+
+def record_pin(tx, record):
+    stamps = []
+    def check(fd,info):
+        require_approval_file(fd,info)
+        stamps.append(file_evidence(info))
+    with open_directory(tx,("records",)) as history:
+        require_private_directory(history,"transfer history")
+        data = read_file(history,str(record["sequence"])+".json",JSON_LIMIT,check)
+        require(data == wire(record),"selected transfer record changed")
+        return data,stamps
+
+
+def advance(tx, account, record, manifest, next_record, next_manifest, password, code, *, observe=None):
     selected(tx,account,record)
+    old_record = record_pin(tx,record)
     seq = record["sequence"]+1
     ident = record["transaction_id"]
     new = dict(next_record,sequence=seq,previous_sequence=seq-1,payload_id=token())
@@ -45,25 +68,42 @@ def advance(tx, account, record, manifest, next_record, next_manifest, password,
     body = wire(updated)
     require(len(body) <= JSON_LIMIT, "transfer recovery manifest exceeds the supported size")
     with open_directory(tx,("recovery",str(record["recovery_generation"]))) as env, open_directory(tx,("payloads",)) as payloads:
+        old_pin = payload_pin(tx,account,record)
         verify_backup(account,env,payloads,record["payload_id"],password,code,wire(manifest))
         recipient = read_file(env,"vault.pub",4096,require_approval_file)
         tools = verified_age_tools(account)
         sealed = VaultUnlockCache(tools[0]).seal_secret(recipient.strip(),body)
         require(len(sealed) <= JSON_LIMIT and verified_age_tools(account) == tools, "transfer recovery sealing failed")
         write_once(tx,payloads,new["payload_id"]+".age",sealed)
+        new_pin = payload_pin(tx,account,new)
         verify_backup(account,env,payloads,new["payload_id"],password,code,body)
+    def verified_generations():
+        require(record_pin(tx,record) == old_record and payload_pin(tx,account,record) == old_pin
+                and payload_pin(tx,account,new) == new_pin,
+                "verified transfer recovery generation changed")
+        if observe:
+            observe()
     selected(tx,account,record)
+    verified_generations()
     with open_directory(tx,("records",)) as history:
         write_once(tx,history,f"{seq}.json",wire(new))
     try:
+        saved_record = record_pin(tx,new)
         with staged_local_file(tx,"selector",wire({"version":1,"sequence":seq,"transaction_id":ident})) as temp:
             sync_named(tx,temp)
+            verified_generations()
+            require(private_json(tx,"current.json") == {key:record[key] for key in ("version","sequence","transaction_id")},
+                    "prior transfer selector changed")
             os.replace(temp,"current.json",src_dir_fd=tx,dst_dir_fd=tx)
             sync_local(tx)
         selected(tx,account,new)
     except (OSError,StoreContextError):
         raise StoreContextError("transfer "+ident+" selection requires reconciliation") from None
-    return new,updated
+    def verify_new():
+        require(payload_pin(tx,account,new) == new_pin and record_pin(tx,new) == saved_record,
+                "selected transfer recovery generation changed")
+    verify_new()
+    return new,updated,verify_new
 
 
 @contextmanager
@@ -123,6 +163,7 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
         require(wire(end.file_evidence) == wire(protected["credential_evidence"])
                 and wire(end.vault.evidence) == wire(protected["vault_evidence"]), "confirmed transfer credential changed")
     phrase = credential_passphrase(mapping.destination.store_id)
+    mapping.verify_decryption(load,lambda _store:phrase,saved=False)
     account, dst = plan.account, plan.destination
     stage = candidate.stage
     before, after = tree(stage,dst.base,git), tree(stage,candidate.proposed,git)
@@ -143,10 +184,11 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
         check_worktree(checkout,before,filemode)
         check_destinations(checkout,candidate.changes,before,tx)
         with writable_destination(plan,transfer=record):
-            record,manifest = advance(tx,account,record,manifest,dict(record,effects=[effect]),
+            record,manifest,proof = advance(tx,account,record,manifest,dict(record,effects=[effect]),
                                       dict(manifest,next_effect="install-destination",destination_effect=effect_id),password,code)
         def live():
             verify(record)
+            proof()
             check_source(account,plan.source,snapshots["source"])
             require(observe_store(account,plan.source.context.store_id,plan.source.context.generations) == plan.source,
                     "transfer source changed")
@@ -167,9 +209,11 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
                     require(path not in previous, "transfer destination is occupied")
                     parts = path.split("/")
                     with make_parents(working,parts[:-1]) as parent:
+                        proof()
                         durable_file(parent,parts[-1],data)
                         sync_local(parent)
                         check_contents(parent,parts[-1],proposed[path],modes)
+                proof()
                 install_sources(working,capture,[IDENTITY],previous,proposed,modes)
             live()
             fast_forward(checkout,repo,dst.ref,dst.base,candidate.proposed,original_index,stage,before,after,live,
@@ -177,13 +221,29 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
             check_contents(exchange,"0",before[IDENTITY],filemode)
             mapping.verify_saved(load,lambda _store:phrase)
             live()
+            expected_index = (stage/"index").read_bytes()
+            def destination_observation():
+                require(load() == account,"transfer account changed")
+                with resolved_store(account,dst.context.store_id,dst.context.generations) as (ctx,_,_,state):
+                    require(ctx == dst.context and local_inputs(state,ctx.store_id) == dst.local,
+                            "selected destination settings changed")
+                with local_descriptors(account,dst) as (working,actual):
+                    tip,index = read_ref(actual,dst.ref),read_index(actual)
+                    require(tip == candidate.proposed and index == expected_index, "saved destination Git state changed")
+                    check_worktree(working,after,filemode)
+                mapping.check_current(load,saved=True)
+                return {"ref":dst.ref,"tip":tip,"index":encoded(index)}
+            observation = destination_observation()
+            def unchanged():
+                require(destination_observation() == observation,"saved destination observation changed")
             evidence = token()
             observed = dict(effect,evidence_id=evidence,outcome="observed")
-            record,manifest = advance(tx,account,record,manifest,dict(record,checkpoint="destination-saved",effects=[observed]),
-                                      dict(manifest,next_effect="destination-publication",destination_evidence={
-                                          "evidence_id":evidence,"ref":dst.ref,"tip":candidate.proposed,
-                                          "index":encoded(read_index(repo))}),password,code)
+            record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="destination-saved",effects=[observed]),
+                                      dict(manifest,next_effect="destination-publication",
+                                           destination_evidence=dict(observation,evidence_id=evidence)),password,code,observe=unchanged)
             verify(record)
+            proof()
+            unchanged()
             check_contents(exchange,"0",before[IDENTITY],filemode)
             os.unlink("0",dir_fd=exchange)
             sync_local(exchange)
