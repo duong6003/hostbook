@@ -3675,6 +3675,33 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertTrue("exchange" in manifest["source_evidence"])
         self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
 
+    def test_resume_prepared_original_proposals_and_stale_source_refusal(self):
+        from store_transfer_command import run_recovery
+        from store_transfer_intent import reopen_intent
+        f = self.transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"prepared")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        initial,protected = reopen_intent(f.load,ident,pw)
+        path = f.vaults.source.checkout/"team.conf"
+        original = path.read_bytes()
+        path.write_bytes(original+b"# unrelated concurrent change\n")
+        events = []
+        def secret(role):
+            return {"backup":pw,"recovery":code,"destination":f.vaults.unlock(f.vaults.dst.store_id)}[role]
+        with self.assertRaises(StoreContextError):
+            run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append)
+        self.assertEqual(path.read_bytes(),original+b"# unrelated concurrent change\n")
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.shared.base)
+        path.write_bytes(original)
+        self.assertEqual(run_recovery(f.load,"resume",ident,secret,lambda _:True,events.append),0)
+        self.assertEqual(events[-1],{"transaction_id":ident,"checkpoint":"completed"})
+        final,_ = reopen_intent(f.load,ident,pw)
+        self.assertEqual(len(final["effects"]),2)
+        self.assertEqual(len(final["attempts"]),1)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),protected["proposed"])
+        self.assertEqual(f.shared.git(f.vaults.source.checkout,"rev-parse","HEAD"),protected["source_proposed"])
+
     def test_reconcile_original_exact_branch_after_send_without_receipt_before_source_removal(self):
         import store_transfer_publish
         from store_transfer_command import run_recovery
