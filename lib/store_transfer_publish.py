@@ -123,7 +123,7 @@ def sender_lease(folder, expected):
             fcntl.flock(fd,fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise StoreContextError("transfer sender is still active") from None
-        yield
+        yield fd
     finally:
         os.close(fd)
 

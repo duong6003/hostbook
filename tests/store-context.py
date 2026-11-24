@@ -3368,6 +3368,89 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
                 child.wait(timeout=5)
                 self.assertFalse(folder.exists())
 
+    def interrupted_transfer_owner(self, case, step):
+        approval = self.root/"owner-account"
+        approval.mkdir(mode=0o700)
+        self.write_local_approval(approval)
+        child = """
+import json, sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from store_context import Generations, load_approved_account
+from store_transfer import preview,prepare_candidate
+from store_transfer_credentials import CredentialRef,stage_credential
+from store_transfer_intent import prepare_intent
+from store_transfer_apply import save_destination
+from store_transfer_publish import publish_destination
+args=json.loads(sys.stdin.readline())
+load=lambda:load_approved_account(Path(sys.argv[2]))
+g=Generations(*args['generations'])
+plan=preview(load,args['src'],g,args['host'],args['dst'],g,'moved')
+unlock=lambda store:args['phrases'][store].encode()
+pw,code=args['password'].encode(),args['code'].encode()
+mapping=stage_credential(load,CredentialRef(args['src'],g,'login'),CredentialRef(args['dst'],g,'team-login'),unlock)
+with prepare_candidate(load,plan,mapping) as candidate:
+    ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda _:True)
+    if args['step'] != 'prepared':
+        save_destination(load,ident,plan,candidate,mapping,unlock,pw,code)
+        result=publish_destination(load,ident,plan,candidate,mapping,unlock,pw,code)
+        assert result['checkpoint']=='destination-confirmed'
+    print(ident,flush=True)
+    sys.stdin.readline()
+"""
+        src,dst = case.vaults.src.store_id,case.vaults.dst.store_id
+        pw,code = b"owner independent backup",b"other recovery fixture"
+        data = {"src":src,"dst":dst,"host":case.host,"generations":[1,2,3,4],"step":step,
+                "password":pw.decode(),"code":code.decode(),"phrases":{key:case.vaults.unlock(key).decode() for key in (src,dst)}}
+        proc = subprocess.Popen([sys.executable,"-I","-B","-c",child,str(Path(__file__).resolve().parents[1]/"lib"),str(approval)],
+                                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=case.shared.env)
+        def stop():
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+            for stream in (proc.stdin,proc.stdout,proc.stderr):
+                stream.close()
+        self.addCleanup(stop)
+        proc.stdin.write(json.dumps(data).encode()+b"\n")
+        proc.stdin.flush()
+        self.assertTrue(select.select([proc.stdout],[],[],120)[0])
+        ident = proc.stdout.readline().strip().decode()
+        self.assertTrue(store_context.valid_id(ident))
+        return proc,ident,pw,code
+
+    def test_new_process_resumes_exact_confirmed_transfer_without_duplicate_publication(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        import store_transfer_publish
+        f = self.transfer_case(shared_credential=True)
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        first,original = reopen_intent(f.load,ident,pw)
+        source = f.vaults.source.checkout
+        target = f.vaults.destination.checkout
+        before = snapshot(source)
+        dest = f.shared.git(target,"rev-parse","HEAD")
+        def confirm(row):
+            self.assertEqual(row["transaction_id"],ident)
+            self.assertEqual(row["destination"]["proposed_host_id"],f.host)
+            return True
+        with self.assertRaisesRegex(StoreContextError,"ownership|active|busy"):
+            resume_confirmed(f.load,ident,pw,code,f.vaults.unlock,confirm)
+        self.assertEqual(snapshot(source),before)
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        with patch.object(store_transfer_publish,"send",side_effect=AssertionError("unexpected replay")):
+            result = resume_confirmed(f.load,ident,pw,code,f.vaults.unlock,confirm)
+        self.assertEqual(result,{"transaction_id":ident,"checkpoint":"completed"})
+        last,protected = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(last["attempts"],first["attempts"])
+        self.assertNotEqual(last["owner"],first["owner"])
+        self.assertEqual(protected["previous_owners"][-1]["owner"],first["owner"])
+        self.assertEqual(f.shared.git(source,"rev-parse","HEAD"),original["source_proposed"])
+        self.assertEqual(f.shared.git(target,"rev-parse","HEAD"),dest)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),dest)
+        self.assertFalse((source/"team.conf").exists())
+        self.assertTrue((source/"stays.conf").is_file())
+
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent
         from store_transfer import prepare_candidate

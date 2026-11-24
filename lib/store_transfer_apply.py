@@ -109,7 +109,7 @@ def advance(tx, account, record, manifest, next_record, next_manifest, password,
 
 
 @contextmanager
-def transfer_gates(load, plan, record, manifest):
+def transfer_gates(load, plan, record, manifest, *, recovery=False):
     account = plan.account
     ident = record["transaction_id"]
     with recovery_root(account) as root,open_directory(root,("transactions",ident)) as tx, ExitStack() as held:
@@ -121,7 +121,7 @@ def transfer_gates(load, plan, record, manifest):
             actual, active, _, writer = held.enter_context(store_writer(load,ctx.store_id,ctx.generations))
             require((account,ctx) == (actual,active),"transfer store writer changed")
             writers[ctx.store_id] = writer
-        lease = held.enter_context(owner_lease(tx,record["owner"],manifest))
+        lease = held.enter_context(owner_lease(tx,record["owner"],manifest,recovery=recovery))
         def verify(current):
             require(load() == account, "transfer account changed")
             with recovery_root(account) as fresh, open_directory(fresh,("transactions",ident)) as named:
