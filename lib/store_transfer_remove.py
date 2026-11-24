@@ -7,7 +7,7 @@ from store_context import (StoreContextError, open_directory, require, require_p
                            sync_local)
 from store_journal import private_json
 from store_receive import IDENTITY, git, plain_git, prepare_adoption
-from store_transfer_apply import advance, check_source, displaced_destination, transfer_gates
+from store_transfer_apply import advance, check_source, displaced_destination, exchange_files, retire_exchange, transfer_gates
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token
 from store_transfer_publish import current_receiver, destination_checkout, removed_checkout
 
@@ -120,11 +120,17 @@ def remove_source(load, ident, plan, candidate, mapping, read_passphrase, passwo
             observed = source_observation()
             def unchanged():
                 require(source_observation() == observed,"source observation changed")
+            files = [("source","verified-source",before[path]),("0","verified-0",before[IDENTITY])]
+            binding,_ = exchange_files(slot,files,filemode)
+            def capture_originals():
+                unchanged()
+                verify_slot()
+                exchange_files(slot,files,filemode,binding)
             evidence = token()
             completed_effect = dict(effect,evidence_id=evidence,outcome="observed")
             record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="source-removed-local",
                 effects=[record["effects"][0],completed_effect]),dict(manifest,next_effect="confirm-private-source" if private else "source-publication",
-                source_evidence=dict(observed,evidence_id=evidence)),password,code,observe=unchanged)
+                source_evidence=dict(observed,evidence_id=evidence,exchange=binding)),password,code,observe=capture_originals)
             live()
             if not private:
                 unchanged()
@@ -134,7 +140,7 @@ def remove_source(load, ident, plan, candidate, mapping, read_passphrase, passwo
             live()
             verify_slot()
             unchanged()
-            retire_displaced(slot,before[path],before[IDENTITY],filemode,unchanged,verify_slot)
+            retire_displaced(slot,before[path],before[IDENTITY],filemode,unchanged,verify_slot,binding)
         displaced_destination(plan,candidate,record,manifest,retire=True)
         record,manifest,proof = advance(tx,account,record,manifest,dict(record,checkpoint="completed"),
             dict(manifest,next_effect="none"),password,code,observe=unchanged)
@@ -144,26 +150,12 @@ def remove_source(load, ident, plan, candidate, mapping, read_passphrase, passwo
     return {"transaction_id":ident,"checkpoint":"completed"}
 
 
-def retire_displaced(slot, source_blob, identity_blob, filemode, unchanged, verify_slot):
-    # Retire only files moved into this private directory by this transaction.
-    # Keep both actual displaced files discoverable on any ambiguous comparison.
-    retired = []
-    for name,expected in (("source",source_blob),("0",identity_blob)):
-        check_contents(slot,name,expected,filemode)
-        captured = os.stat(name,dir_fd=slot,follow_symlinks=False)
-        retiring = "verified-"+name
-        rename_guarded(slot,name,slot,retiring,exchange=False)
-        sync_local(slot)
-        require(os.path.samestat(captured,os.stat(retiring,dir_fd=slot,follow_symlinks=False)),
-                "displaced source changed before retirement")
-        check_contents(slot,retiring,expected,filemode)
-        retired.append((retiring,expected))
-    unchanged()
-    verify_slot()
-    for name,expected in retired:
-        check_contents(slot,name,expected,filemode)
-        os.unlink(name,dir_fd=slot)
-        sync_local(slot)
+def retire_displaced(slot, source_blob, identity_blob, filemode, unchanged, verify_slot, binding):
+    def current():
+        unchanged()
+        verify_slot()
+    files = [("source","verified-source",source_blob),("0","verified-0",identity_blob)]
+    retire_exchange(slot,files,filemode,binding,current)
 
 
 def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase, password, code):
@@ -195,7 +187,8 @@ def finish_shared_source(load, ident, plan, candidate, mapping, read_passphrase,
                     require_private_directory(actual,"shared source exchange")
                     require(os.path.samestat(os.fstat(actual),os.fstat(slot)),"shared source exchange changed")
             verify_slot()
-            retire_displaced(slot,before[candidate.source_path],before[IDENTITY],filemode,current,verify_slot)
+            retire_displaced(slot,before[candidate.source_path],before[IDENTITY],filemode,current,verify_slot,
+                             manifest["source_evidence"].get("exchange"))
         displaced_destination(plan,candidate,record,manifest,retire=True)
         record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="completed"),
             dict(manifest,next_effect="none"),password,code,observe=current)

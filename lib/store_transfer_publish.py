@@ -13,7 +13,7 @@ from store_publish import require_plain_receiver, send
 from store_read import local_inputs
 from store_receive import IDENTITY, git, plain_git, registered_target
 from store_transfer import writable_shared
-from store_transfer_apply import advance, check_source, displaced_destination, selected, transfer_gates
+from store_transfer_apply import advance, check_source, displaced_destination, exchange_files, selected, transfer_gates
 from store_transfer_credentials import private_workspace
 from store_transfer_intent import encoded, local_descriptors, private_path, reopen_intent, token, wire
 
@@ -96,8 +96,9 @@ def publishable_source(load, plan, candidate, mapping, record, manifest):
     with local_descriptors(plan.account,plan.source) as (_,repo),open_directory(repo,runtime) as slot:
         filemode,_ = plain_git(repo,bare=False)
         require_private_directory(slot,"shared source exchange")
-        check_contents(slot,"source",original[candidate.source_path],filemode)
-        check_contents(slot,"0",original[IDENTITY],filemode)
+        files = [("source","verified-source",original[candidate.source_path]),("0","verified-0",original[IDENTITY])]
+        exchange_files(slot,files,filemode,manifest["source_evidence"].get("exchange"),
+                       retiring=record["checkpoint"] == "source-confirmed")
 
 
 def current_receiver(plan, expected, pinned=None, *, require_writes=False):

@@ -3412,9 +3412,29 @@ with prepare_candidate(load,plan,mapping) as candidate:
             apply=publish_destination if plan.destination.context.kind=='shared' else confirm_private_destination
             result=apply(load,ident,plan,candidate,mapping,unlock,pw,code)
             assert result['checkpoint']=='destination-confirmed'
-            if args['step'] == 'source-confirmed':
+            if args['step'] == 'source-confirmed' or args['step'].startswith('retire-'):
                 remove_source(load,ident,plan,candidate,mapping,unlock,pw,code)
                 assert publish_source(load,ident,plan,candidate,mapping,unlock,pw,code)['checkpoint']=='source-confirmed'
+                if args['step'].startswith('retire-'):
+                    import os,store_transfer_remove as removal,store_transfer_apply as effects
+                    def pause():
+                        print(ident,flush=True)
+                        sys.stdin.readline()
+                        raise SystemExit(0)
+                    original_rename=effects.rename_guarded
+                    def interrupted_rename(parent,source,target,name,**kwargs):
+                        original_rename(parent,source,target,name,**kwargs)
+                        if name=='verified-source' and args['step']=='retire-partial':
+                            pause()
+                    effects.rename_guarded=interrupted_rename
+                    removal.rename_guarded=interrupted_rename
+                    original_advance=removal.advance
+                    def interrupted_advance(*values,**kwargs):
+                        if values[4]['checkpoint']=='completed' and args['step']=='retire-finished':
+                            pause()
+                        return original_advance(*values,**kwargs)
+                    removal.advance=interrupted_advance
+                    removal.finish_shared_source(load,ident,plan,candidate,mapping,unlock,pw,code)
     print(ident,flush=True)
     sys.stdin.readline()
 """
@@ -3595,6 +3615,36 @@ with prepare_candidate(load,plan,mapping) as candidate:
         self.assertEqual(last["attempts"],original["attempts"])
         self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),manifest["source_proposed"])
         self.assertEqual(f.shared.git(f.dst.checkout,"rev-parse","HEAD"),manifest["proposed"])
+
+    def test_reverse_retirement_recovers_partial_rename_and_preserves_changed_displaced_inode(self):
+        from store_transfer_resume import resume_confirmed
+        from store_transfer_intent import reopen_intent
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"retire-partial")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        prior,manifest = reopen_intent(f.load,ident,pw)
+        slot = f.src.checkout/".git"/Path(*manifest["source_runtime"])
+        saved = slot/"verified-source"
+        original = saved.read_bytes()
+        saved.write_bytes(original+b"# concurrent saved text\n")
+        with self.assertRaises(StoreContextError):
+            resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)
+        self.assertEqual(saved.read_bytes(),original+b"# concurrent saved text\n")
+        self.assertTrue((slot/"0").is_file())
+        saved.write_bytes(original)
+        self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
+        self.assertEqual(list(slot.iterdir()),[])
+        completed,_ = reopen_intent(f.load,ident,code,recovery=True)
+        self.assertEqual(prior["attempts"],completed["attempts"])
+
+    def test_reverse_retirement_recovers_when_cleanup_finished_before_journal_advance(self):
+        from store_transfer_resume import resume_confirmed
+        f = self.reverse_transfer_case()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"retire-finished")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        self.assertEqual(resume_confirmed(f.load,ident,pw,code,f.v.unlock,lambda _:True)["checkpoint"],"completed")
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

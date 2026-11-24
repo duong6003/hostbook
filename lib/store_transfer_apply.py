@@ -156,6 +156,58 @@ def check_source(account, source, snapshot):
         check_worktree(checkout,{k:v.encode() for k,v in snapshot["tracked"].items()},modes)
 
 
+def inode(info):
+    return [info.st_dev,info.st_ino]
+
+
+def exchange_files(slot, files, filemode, binding=None, *, retiring=False):
+    """Check the original or renamed inode. Only an already confirmed cleanup can consume it."""
+    require_private_directory(slot,"transfer file exchange")
+    captured = {"directory":inode(os.fstat(slot)),"files":{}}
+    if binding is not None:
+        require(captured["directory"] == binding["directory"] and set(binding["files"]) == {old for old,_,_ in files},
+                "transfer exchange binding changed")
+    remaining = []
+    for old,new,expected in files:
+        found = []
+        for name in (old,new):
+            try:
+                info = os.stat(name,dir_fd=slot,follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            check_contents(slot,name,expected,filemode)
+            require(os.path.samestat(info,os.stat(name,dir_fd=slot,follow_symlinks=False)),"displaced file changed")
+            found.append((name,inode(info)))
+        require(len(found) <= 1 and (retiring and binding is not None or found and found[0][0] == old),
+                "transfer displaced files need reconciliation")
+        if found:
+            name,stamp = found[0]
+            require(binding is None or binding["files"][old] == stamp,"original displaced inode changed")
+            captured["files"][old] = stamp
+            remaining.append((name,new,expected,stamp))
+    return captured,remaining
+
+
+def retire_exchange(slot, files, filemode, binding, current):
+    captured,remaining = exchange_files(slot,files,filemode,binding,retiring=True)
+    # Older receipts without inode evidence can begin retirement only with all originals still present.
+    binding = binding or captured
+    for name,new,_,_ in remaining:
+        current()
+        if name != new:
+            rename_guarded(slot,name,slot,new,exchange=False)
+            sync_local(slot)
+    _,remaining = exchange_files(slot,files,filemode,binding,retiring=True)
+    for name,new,expected,stamp in remaining:
+        current()
+        require(name == new and inode(os.stat(name,dir_fd=slot,follow_symlinks=False)) == stamp,"displaced inode changed")
+        check_contents(slot,name,expected,filemode)
+        os.unlink(name,dir_fd=slot)
+        sync_local(slot)
+    _,left = exchange_files(slot,files,filemode,binding,retiring=True)
+    require(not left,"displaced files still need reconciliation")
+
+
 def displaced_destination(plan, candidate, record, manifest, *, retire=False):
     project = candidate.replaced_project
     if not project:
@@ -167,16 +219,19 @@ def displaced_destination(plan, candidate, record, manifest, *, retire=False):
     with local_descriptors(plan.account,plan.destination) as (_,repo),open_directory(repo,runtime) as slot:
         require_private_directory(slot,"transfer destination exchange")
         filemode,_ = plain_git(repo,bare=False)
-        check_contents(slot,"1",original,filemode)
+        files = [("1","verified-project",original)]
+        binding = manifest.get("destination_evidence",{}).get("exchange")
+        retiring = record["checkpoint"] in ("source-confirmed","completed")
         if retire:
-            captured = os.stat("1",dir_fd=slot,follow_symlinks=False)
-            rename_guarded(slot,"1",slot,"verified-project",exchange=False)
-            sync_local(slot)
-            require(os.path.samestat(captured,os.stat("verified-project",dir_fd=slot,follow_symlinks=False)),
-                    "displaced destination changed before retirement")
-            check_contents(slot,"verified-project",original,filemode)
-            os.unlink("verified-project",dir_fd=slot)
-            sync_local(slot)
+            require(retiring,"destination retirement requires source confirmation")
+            def current():
+                with local_descriptors(plan.account,plan.destination) as (_,named),open_directory(named,runtime) as actual:
+                    require_private_directory(actual,"transfer destination exchange")
+                    require(os.path.samestat(os.fstat(slot),os.fstat(actual)),"transfer destination exchange changed")
+            retire_exchange(slot,files,filemode,binding,current)
+        else:
+            observed,_ = exchange_files(slot,files,filemode,binding,retiring=retiring)
+            return observed
 
 
 def save_destination(load, ident, plan, candidate, mapping, credential_passphrase, password, code):
@@ -272,8 +327,8 @@ def save_destination(load, ident, plan, candidate, mapping, credential_passphras
                     require(tip == candidate.proposed and index == expected_index, "saved destination Git state changed")
                     check_worktree(working,after,filemode)
                 mapping.check_current(load,saved=True)
-                displaced_destination(plan,candidate,record,manifest)
-                return {"ref":dst.ref,"tip":tip,"index":encoded(index)}
+                exchange = displaced_destination(plan,candidate,record,manifest)
+                return {"ref":dst.ref,"tip":tip,"index":encoded(index),"exchange":exchange}
             observation = destination_observation()
             def unchanged():
                 require(destination_observation() == observation,"saved destination observation changed")
