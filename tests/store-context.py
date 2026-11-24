@@ -3545,6 +3545,35 @@ with prepare_candidate(load,plan,mapping) as candidate:
             for store in last["stores"]:
                 require_idle(root,f.load(),store["store_id"])
 
+        # A status reader sees one coherent selection even if completion races its scan.
+        import store_transfer_resume as resume
+        folder = self.recovery/"transactions"/ident
+        selector = folder/"current.json"
+        final_selector = selector.read_bytes()
+        selector.write_text(json.dumps({"version":1,"transaction_id":ident,"sequence":1}))
+        classify = resume.classify
+        switched = []
+        def finish_during_status(*args):
+            value = classify(*args)
+            if not switched:
+                switched.append(True)
+                selector.write_bytes(final_selector)
+            return value
+        with patch.object(resume,"classify",finish_during_status):
+            state = resume.transfer_status(f.load,ident)
+        self.assertEqual((state["checkpoint"],state["fenced"]),("cancelled",False))
+
+    def test_recovery_terminal_asks_for_existing_transfer_credentials_in_both_languages(self):
+        root = Path(__file__).resolve().parents[1]
+        for language,original in (("en","Original transfer"),("vi","ban đầu")):
+            env = dict(HOME=str(self.root),HOSTBOOK_DIR=str(self.root/"view"),HOSTBOOK_STATE=str(self.root/"ui-state"),
+                       HOSTBOOK_SSH_CONFIG=str(self.root/"ssh-config"),XDG_CONFIG_HOME=str(self.root/"ui-config"),
+                       PATH="/usr/bin:/bin",HOSTBOOK_LANG=language)
+            labels = subprocess.check_output(["/bin/bash",str(root/"hostbook"),"_store_transfer_labels","recover"],
+                                             env=env,text=True).splitlines()
+            self.assertIn(original,labels[3])
+            self.assertIn(original,labels[5])
+
     def test_resume_reverse_after_original_removal_ack_retires_without_second_send(self):
         import store_transfer_publish
         from store_transfer_command import run_recovery

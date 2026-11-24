@@ -176,7 +176,7 @@ def transfer_command(args, *, recovery=False):
                "HOSTBOOK_STATE":str(scratch/"state"),"HOSTBOOK_SSH_CONFIG":str(scratch/"ssh.config"),
                "XDG_CONFIG_HOME":str(scratch/"settings")}
         command = ["/bin/bash",str(hostbook)]
-        texts = subprocess.run([*command,"_store_transfer_labels"],env=env,stdin=subprocess.DEVNULL,
+        texts = subprocess.run([*command,"_store_transfer_labels","recover" if recovery else "create"],env=env,stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE,timeout=10)
         require(texts.returncode == 0,"registered transfer prompt translations are unavailable")
         texts = texts.stdout.decode().splitlines()

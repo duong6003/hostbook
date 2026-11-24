@@ -5,14 +5,14 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import asdict, replace
 
 from store_checkout import durable_file, tree
-from store_context import (Generations, open_directory, parse_directory_binding, parse_json, require, resolved_store,
+from store_context import (Generations, StoreContextError, open_directory, parse_directory_binding, parse_json, require, resolved_store,
                            require_approval_file, require_private_directory, valid_id)
 from store_journal import classify, private_json, publication_receipt
 from store_publish import recovery_root
 from store_read import local_inputs
 from store_receive import fetch_from_fd, git
 from store_transfer import DestinationCandidate, ObservedStore, TransferPlan
-from store_transfer_apply import advance, displaced_destination, selected, transfer_gates
+from store_transfer_apply import advance, displaced_destination, transfer_gates
 from store_transfer_credentials import CredentialRecord, CredentialRef, StagedCredential, private_workspace, read_mapping_end
 from store_transfer_intent import local_descriptors, reopen_intent, wire
 from store_transfer_owner import new_owner
@@ -124,19 +124,29 @@ def transfer_status(load, ident):
     account = load()
     with recovery_root(account) as root,open_directory(root,("transactions",ident)) as tx:
         require_private_directory(tx,"transfer transaction")
-        _,released = classify(tx,account,ident,"transactions")
-        selector = private_json(tx,"current.json")
-        with open_directory(tx,("records",)) as history:
-            record = private_json(history,str(selector["sequence"])+".json")
-        require(record["operation"] == "transfer","unexpected recovery operation")
-        with recovery_root(load()) as fresh,open_directory(fresh,("transactions",ident)) as named:
-            require(load() == account and os.path.samestat(os.fstat(tx),os.fstat(named)),"original transfer directory changed")
-            selected(named,account,record)
+        for _ in range(2):
+            selector = private_json(tx,"current.json")
+            _,released = classify(tx,account,ident,"transactions")
+            if private_json(tx,"current.json") != selector:
+                continue
+            with open_directory(tx,("records",)) as history:
+                name = str(selector["sequence"])+".json"
+                record = private_json(history,name)
+                tail = len(os.listdir(history))-selector["sequence"]
+            require(record["operation"] == "transfer","unexpected recovery operation")
+            with recovery_root(load()) as fresh,open_directory(fresh,("transactions",ident)) as named:
+                require(load() == account and os.path.samestat(os.fstat(tx),os.fstat(named)),"original transfer directory changed")
+                with open_directory(named,("records",)) as current:
+                    if (classify(named,account,ident,"transactions")[1] == released and private_json(named,"current.json") == selector
+                            and private_json(current,name) == record and len(os.listdir(current)) == selector["sequence"]+tail):
+                        break
+        else:
+            raise StoreContextError("transfer status changed during observation")
         return {"transaction_id":ident,"checkpoint":record["checkpoint"],"sequence":record["sequence"],
                 "stores":[{key:row[key] for key in ("store_id","role")} for row in record["stores"]],
                 "hosts":record["hosts"],"effects":[{key:e[key] for key in ("effect_id","outcome")} for e in record["effects"]],
                 "attempts":[{key:a[key] for key in ("attempt_id","sender_state","outcome")} for a in record["attempts"]],
-                "fenced":not released}
+                "fenced":not released,"unselected_revisions":tail}
 
 
 def cancel_prepared(load, ident, password, code, confirm):

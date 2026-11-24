@@ -117,7 +117,9 @@ case ${1:-} in
     [ "${BASH_SOURCE[0]}" = "$0" ] || return 65
     HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
     printf '%s\n' "$FZF_MIN"
-    for key in transfer_source_pw transfer_destination_pw transfer_backup_pw transfer_backup_repeat transfer_recovery_code transfer_code_repeat; do t "$key"; printf '\n'; done
+    backup=transfer_backup_pw; recovery=transfer_recovery_code
+    if [ "${2:-}" = recover ]; then backup=transfer_existing_backup; recovery=transfer_existing_code; fi
+    for key in transfer_source_pw transfer_destination_pw "$backup" transfer_backup_repeat "$recovery" transfer_code_repeat; do t "$key"; printf '\n'; done
     exit 0;;
   add|import)
     if [ "${BASH_SOURCE[0]}" = "$0" ] && legacy_authority_present &&
