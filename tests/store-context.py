@@ -3226,6 +3226,44 @@ store_transfer.preview_command(['fixture','1','2','3','4','host','dest','1','2',
                     effects.save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
             self.assertTrue(snapshot(v.destination.checkout) == before)
 
+    def test_transfer_publishes_only_the_reserved_destination_branch_after_local_save(self):
+        from store_transfer import prepare_candidate
+        from store_transfer_credentials import stage_credential
+        from store_transfer_intent import prepare_intent, reopen_intent
+        from store_transfer_apply import save_destination
+        import store_transfer_publish as effects
+        f = self.transfer_case()
+        v = f.vaults
+        mapped = stage_credential(f.load,v.src,replace(v.dst,name="team-login"),v.unlock)
+        password,code = b"fixture independent password",b"fixture independent recovery"
+        original = snapshot(v.source.checkout)
+        with prepare_candidate(f.load,f.plan,mapped) as candidate:
+            ident = prepare_intent(f.load,f.plan,candidate,mapped,v.unlock,password,code,lambda _:True)
+            save_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            calls = []
+            send = effects.send
+            def verify_reserved(*args):
+                record, protected = reopen_intent(f.load,ident,code,recovery=True)
+                attempt = record["attempts"][-1]
+                self.assertEqual(attempt["outcome"],"reserved")
+                self.assertEqual(attempt["sender_state"],"active")
+                self.assertEqual(protected["publication"]["base"],f.plan.destination.base)
+                self.assertEqual(protected["publication"]["proposed"],candidate.proposed)
+                calls.append(attempt["attempt_id"])
+                return send(*args)
+            with patch.object(effects,"send",side_effect=verify_reserved):
+                result = effects.publish_destination(f.load,ident,f.plan,candidate,mapped,v.unlock,password,code)
+            self.assertEqual(result["checkpoint"],"destination-confirmed")
+            self.assertEqual(result["outcome"],"accepted")
+            self.assertEqual(f.shared.git(f.shared.remote,"rev-parse","refs/heads/main"),candidate.proposed)
+        self.assertEqual(snapshot(v.source.checkout),original)
+        self.assertEqual(len(calls),1)
+        record,protected = reopen_intent(f.load,ident,password)
+        self.assertEqual(record["attempts"][0]["attempt_id"],calls[0])
+        self.assertEqual(record["attempts"][0]["sender_state"],"quiescent")
+        self.assertEqual(record["attempts"][0]["outcome"],"accepted")
+        self.assertEqual(record["checkpoint"],"destination-confirmed")
+
     def test_transfer_mapping_requires_explicit_verified_reuse_and_rechecks_saved_bytes(self):
         from store_transfer_credentials import stage_credential
         f = self.transfer_vaults()
