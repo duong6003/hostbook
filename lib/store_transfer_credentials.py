@@ -69,12 +69,24 @@ def read_mapping_end(account, ref):
 
 
 def unlock_end(cache, tools, account, load, ref, read_passphrase):
+    require(load() == account, "transfer account approval changed")
     phrase = read_passphrase(ref.store_id)
-    require(verified_age_tools(account) == tools, "transfer vault tools changed")
+    require(load() == account and verified_age_tools(account) == tools, "transfer authority or tools changed")
     cache.unlock(load, ref.store_id, ref.generations, phrase)
     identity = cache.get(load, ref.store_id, ref.generations)
     require(identity is not None, "transfer vault changed after unlock")
+    keys = [line for line in identity.split(b"\n") if line and not line.startswith(b"#")]
+    require(len(keys) == 1 and re.fullmatch(rb"AGE-SECRET-KEY-1[AC-HJ-NP-Z02-9]{58}", keys[0]),
+            "transfer requires a single native vault identity")
     return identity
+
+
+def single_recipient(cache, material):
+    match = re.fullmatch(rb"(age1[ac-hj-np-z02-9]{58})\n?", material.recipient)
+    require(match, "transfer requires a single native vault recipient")
+    # Native age validates the complete Bech32 recipient before either unlock prompt.
+    cache.seal_secret(match[1], b"")
+    return match[1]
 
 
 def key_binding(record):
@@ -110,17 +122,19 @@ def private_workspace():
 
 
 def verify_private_key(plain, key):
-    # Hostbook's normalized OpenSSH keys have no inner passphrase. Validate this before
-    # asking ssh-add to parse a key so malformed input cannot trigger an interactive prompt.
+    # Imported unencrypted PEM records keep their original encoding. Bound the
+    # accepted envelopes before asking the private agent to prove key possession.
     lines = plain.splitlines()
-    require(len(lines) >= 3 and lines[0] == b"-----BEGIN OPENSSH PRIVATE KEY-----"
-            and lines[-1] == b"-----END OPENSSH PRIVATE KEY-----", "requires a normalized OpenSSH private key")
+    require(len(lines) >= 3 and lines[0] in (b"-----BEGIN OPENSSH PRIVATE KEY-----",
+            b"-----BEGIN RSA PRIVATE KEY-----", b"-----BEGIN EC PRIVATE KEY-----")
+            and lines[-1] == lines[0].replace(b"BEGIN", b"END"), "unsupported transfer private key")
     try:
         raw = base64.b64decode(b"".join(lines[1:-1]), validate=True)
     except binascii.Error:
         raise StoreContextError("invalid transfer private key") from None
-    require(raw.startswith(b"openssh-key-v1\0\0\0\0\x04none\0\0\0\x04none"),
-            "requires an unlocked OpenSSH private key")
+    if lines[0] == b"-----BEGIN OPENSSH PRIVATE KEY-----":
+        require(raw.startswith(b"openssh-key-v1\0\0\0\0\x04none\0\0\0\x04none"),
+                "requires an unlocked OpenSSH private key")
     with private_workspace() as (folder, directory):
         with ssh_agent(folder/"agent") as env:
             agent_keys(env, "-q", "-", data=plain)
@@ -183,15 +197,16 @@ def stage_credential(load_account, source, destination, read_passphrase, *, reus
     account = load_account()
     original, target = (read_mapping_end(account, ref) for ref in (source, destination))
     require(original.record is not None, "source credential is missing")
-    require(original.vault.recipient.strip() != target.vault.recipient.strip(), "transfer vaults share an identity")
+    tools = verified_age_tools(account)
+    cache = VaultUnlockCache(tools[0])
+    source_recipient, target_recipient = (single_recipient(cache, end.vault) for end in (original, target))
+    require(source_recipient != target_recipient, "transfer vaults share an identity")
     key = key_binding(original.record)
     if reuse_existing:
         require(target.record is not None, "approved destination credential is missing")
         require(key_binding(target.record) == key, "destination credential has different metadata or public key")
     else:
         require(target.record is None, "destination credential is occupied")
-    tools = verified_age_tools(account)
-    cache = VaultUnlockCache(tools[0])
     source_id, destination_id = (unlock_end(cache, tools, account, load_account, ref, read_passphrase)
                                  for ref in (source, destination))
     plain = cache.open_secret(source_id, original.record.ciphertext)
@@ -201,7 +216,8 @@ def stage_credential(load_account, source, destination, read_passphrase, *, reus
     if reuse_existing:
         record = target.record
     else:
-        encrypted = cache.seal_secret(target.vault.recipient.strip(), plain)
+        encrypted = cache.seal_secret(target_recipient, plain)
+        require(0 < len(encrypted) <= JSON_LIMIT, "encrypted transfer credential exceeds the record limit")
         record = CredentialRecord(original.record.metadata, encrypted, original.record.public_key)
     require(compare_digest(cache.open_secret(destination_id, record.ciphertext), plain),
             "destination credential contains different material")

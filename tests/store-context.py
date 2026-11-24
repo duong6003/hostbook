@@ -2855,6 +2855,25 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
             stage_credential(lambda: self.account, f.src, f.dst, lambda _: self.fail("unexpected unlock"))
         self.assertEqual(before, snapshot(self.root))
 
+    def test_transfer_requires_one_native_recipient_at_each_end_before_unlock(self):
+        from store_transfer_credentials import stage_credential
+        f = self.transfer_vaults()
+        for context in (f.source, f.destination):
+            (context.vault/"login.meta").write_bytes(b"type=password\n")
+            (context.vault/"login.age").write_bytes(f.seal(context, b"same fixture"))
+        for context, other in ((f.source,f.destination), (f.destination,f.source)):
+            pub = context.vault/"vault.pub"
+            saved = pub.read_bytes()
+            pub.write_bytes(saved + (other.vault/"vault.pub").read_bytes())
+            try:
+                for reuse in (True, False):
+                    dst = f.dst if reuse else replace(f.dst, name="free")
+                    with self.assertRaisesRegex(StoreContextError, "single native vault recipient"):
+                        stage_credential(lambda: self.account, f.src, dst, lambda _: self.fail("unexpected unlock"),
+                                         reuse_existing=reuse)
+            finally:
+                pub.write_bytes(saved)
+
     def test_transfer_verifies_key_metadata_and_private_public_pair(self):
         from store_transfer_credentials import stage_credential
         from store_vault import VaultUnlockCache
@@ -2907,7 +2926,12 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
             with self.assertRaises(StoreContextError):
                 stage_credential(load, f.src, f.dst,
                                  lambda store: failure if store == f.dst.store_id else f.unlock(store))
-        with patch.object(VaultUnlockCache, "seal_secret", side_effect=StoreContextError("encryption failed")):
+        real_seal = VaultUnlockCache.seal_secret
+        def fail_seal(cache, recipient, value):
+            if value:
+                raise StoreContextError("encryption failed")
+            return real_seal(cache, recipient, value)
+        with patch.object(VaultUnlockCache, "seal_secret", fail_seal):
             with self.assertRaisesRegex(StoreContextError, "encryption failed"):
                 stage_credential(load, f.src, f.dst, f.unlock)
         staged = stage_credential(load, f.src, f.dst, f.unlock)
@@ -2939,6 +2963,31 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
         for path, old in before.items():
             if path != self.registry.relative_to(self.root):
                 self.assertEqual(snapshot(self.root)[path], old)
+
+    def test_transfer_verifies_existing_unencrypted_pem_key_records(self):
+        from store_transfer_credentials import stage_credential
+        from store_vault import VaultUnlockCache
+        f = self.transfer_vaults()
+        env = {"PATH":"/usr/bin:/bin", "HOME":str(self.root)}
+        for keytype in ("rsa", "ecdsa"):
+            key = self.root/keytype
+            subprocess.run(["/usr/bin/ssh-keygen","-q","-t",keytype,"-m","PEM","-N","","-C","fixture","-f",key],
+                           env=env, stdin=subprocess.DEVNULL, capture_output=True, check=True)
+            plain = key.read_bytes()
+            key.unlink()
+            pub = key.with_suffix(".pub").read_bytes()
+            self.assertIn(b" PRIVATE KEY-----", plain.splitlines()[0])
+            (f.source.vault/"login.pub").write_bytes(pub)
+            (f.source.vault/"login.meta").write_bytes(b"type=key\n")
+            (f.source.vault/"login.age").write_bytes(f.seal(f.source,plain))
+            staged = stage_credential(lambda: self.account, f.src, f.dst, f.unlock)
+            self.assertTrue(VaultUnlockCache(f.tools).open_secret(f.identities[f.dst.store_id],staged.ciphertext)
+                            == plain)
+            header, body = plain.split(b"\n",1)
+            invalid = header + b"\nProc-Type: 4,ENCRYPTED\n\n" + body
+            (f.source.vault/"login.age").write_bytes(f.seal(f.source, invalid))
+            with self.assertRaisesRegex(StoreContextError, "private key"):
+                stage_credential(lambda: self.account, f.src, f.dst, f.unlock)
 
     def test_vault_unlock_cache_is_scoped_and_rejects_rotated_envelopes(self):
         tools = [shutil.which(name) for name in ("age", "age-keygen", "age-plugin-batchpass")]

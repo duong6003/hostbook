@@ -304,6 +304,26 @@ the snapshot before caching. The passphrase uses an inherited pipe and the
 identity stays in memory. This API is for scoped consumers. The CLI and the
 legacy Keychain, Secret Service and SSH agent flows still require integration.
 
+The transfer writer prepares a credential with `stage_credential` in
+`lib/store_transfer_credentials.py`. The two `CredentialRef` values bind
+store IDs, expected registration/checkout/connection/policy generations and
+the chosen credential names. The passphrase callback receives one store ID
+at a time. Both vaults must already exist and have distinct recipients.
+Password records and normalized OpenSSH Ed25519, RSA and ECDSA private keys
+are supported, including legacy unencrypted RSA and EC PEM keys. A fresh
+private SSH agent verifies the public key by signing.
+
+By default the destination name must be free. Explicit `reuse_existing=True`
+requires compatible metadata and equal decrypted material. A new mapping
+provides transient, owner-only encrypted files through `private_files`.
+Leaving the context removes the staging directory. A reused mapping keeps the
+existing destination files. The transfer writer rechecks the pinned inputs
+under both store gates before installing a candidate, then calls
+`verify_saved` to reopen and decrypt the actual destination record before
+considering source removal. Transaction intent, protected recovery, mutation
+authorization and publication belong to the transfer writer. The staging
+object stays in process and source credentials remain available to other hosts.
+
 The test suite's installed account case requires a disposable system
 account whose effective home is an empty `/fixture-home`. Set
 `HOSTBOOK_TEST_ACCOUNT_HOME=/fixture-home` only in that isolated fixture.
