@@ -60,21 +60,28 @@ def rollback_private(load, ident, password, code, secret, confirm):
     plan = restored_plan(load(),record,manifest)
     require(plan.destination.context.kind == "private" and record["effects"][0]["store_id"] == plan.destination.context.store_id,
             "private rollback needs the original private destination")
-    require(plan.decision in ("new","keep-both"),"replacement rollback needs separate review")
     with restored_candidate(plan,manifest) as (candidate,mapping):
         require(manifest["confirmed_destination"] == candidate.proposed,"private destination confirmation changed")
         source_pass,destination_pass = secret("source"),secret("destination")
         material = manifest["credentials"]
         verify_credential(load,plan.account,mapping.source,mapping.source_before,material["source"],source_pass)
         mapping.verify_saved(load,lambda _:destination_pass)
+        prior_credential = candidate.previous_credential
+        def prior_login():
+            if prior_credential:
+                verify_credential(load,plan.account,*prior_credential,material["prior_destination"],destination_pass)
+        prior_login()
         inverse,bundle,before,after = inverse_proposal(plan,candidate,mapping)
         review = {"action":"rollback","transaction_id":ident,"source":dict(manifest["comparison"]["source"],revision=plan.source.base),
                   "destination":{"store_id":plan.destination.context.store_id,"host_id":plan.destination_key,"alias":plan.alias,
                                  "ref":plan.destination.ref,"revision":candidate.proposed,"inverse":inverse},
                   "credential":mapping.destination.name,"keep_credential":mapping.reused,
-                  "required_aliases":manifest["comparison"].get("required_aliases",[])}
-        if manifest["comparison"]["requires_typed_alias"] and not review["required_aliases"]:
-            review["required_aliases"] = [review["source"]["name"]]
+                  "required_aliases":[plan.alias] if manifest["comparison"]["requires_typed_alias"] else []}
+        old = plan.destination_hosts.get(plan.destination_key,{})
+        review["restore_credential"] = old.get("credential")
+        review["connection_changes"] = {key:{"existing":value["proposed"],"proposed":value["existing"]}
+                                        for key,value in plan.comparison()["connection_changes"].items()}
+        review["decision"] = plan.decision
         answer = confirm(review)
         aliases = review["required_aliases"]
         require((([answer] if isinstance(answer,str) else answer) == aliases) if aliases else answer is True,
@@ -120,7 +127,8 @@ def rollback_private(load, ident, password, code, secret, confirm):
                 require_private_directory(slot,"rollback exchange")
                 replacements = sorted(path for path in candidate.changes if path in after)
                 removals = sorted(set(before)-set(after))
-                require(replacements == [IDENTITY] and set(replacements+removals) == set(candidate.changes),
+                require(set(replacements) == ({IDENTITY,candidate.replaced_project} if candidate.replaced_project else {IDENTITY})
+                        and set(replacements+removals) == set(candidate.changes),
                         "rollback changed paths outside the confirmed transfer")
                 for i,path in enumerate(replacements):
                     durable_file(slot,str(i),git(candidate.stage,"cat-file","blob",after[path].decode()))
@@ -167,10 +175,15 @@ def rollback_private(load, ident, password, code, secret, confirm):
                         check_contents(slot,"removed-"+str(i),before[path],mode)
                     for i,path in enumerate(replacements):
                         check_contents(slot,str(i),before[path],mode)
+                    if prior_credential:
+                        ref,end = prior_credential
+                        require(read_mapping_end(plan.account,ref) == end,"previous destination credential changed")
+                    displaced_destination(plan,candidate,record,manifest)
                     require(read_mapping_end(plan.account,mapping.destination) == mapping.destination_before,
                             "restored private credential mapping changed")
                 observed()
                 verify_credential(load,plan.account,mapping.source,mapping.source_before,material["source"],source_pass)
+                prior_login()
                 evidence = token()
                 effect = dict(effect,outcome="observed",evidence_id=evidence)
                 record,manifest,proof = advance(tx,plan.account,record,manifest,dict(record,checkpoint="rolled-back",

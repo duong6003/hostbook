@@ -3401,11 +3401,13 @@ if args['step'] == 'legacy-destination-confirmed':
 load=lambda:load_approved_account(Path(sys.argv[2]))
 g=Generations(*args['generations'])
 plan=preview(load,args['src'],g,args['host'],args['dst'],g,args['alias'])
+if args['decision']:
+    plan=plan.choose(*args['decision'])
 unlock=lambda store:args['phrases'][store].encode()
 pw,code=args['password'].encode(),args['code'].encode()
 mapping=stage_credential(load,CredentialRef(args['src'],g,args['original']),CredentialRef(args['dst'],g,args['mapped']),unlock)
 with prepare_candidate(load,plan,mapping) as candidate:
-    ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda _:True)
+    ident=prepare_intent(load,plan,candidate,mapping,unlock,pw,code,lambda review:review.get("required_aliases") or True)
     if args['step']=='legacy-retire-partial':
         import store_transfer_remove as removal
         advance=removal.advance
@@ -3460,7 +3462,8 @@ with prepare_candidate(load,plan,mapping) as candidate:
         original,mapped = (case.original.name,case.mapped.name) if reverse else ("login","team-login")
         unlock = (case.v if reverse else case.vaults).unlock
         pw,code = b"owner independent backup",b"other recovery fixture"
-        data = {"src":src,"dst":dst,"host":case.plan.host_id,"alias":case.plan.alias,"original":original,"mapped":mapped,"generations":[1,2,3,4],"step":step,
+        data = {"src":src,"dst":dst,"host":case.plan.host_id,"alias":case.plan.alias,"original":original,"mapped":mapped,
+                "decision":[case.plan.decision,case.plan.chosen_destination_id,case.plan.source.base,case.plan.destination.base] if case.plan.decision != "new" else [],"generations":[1,2,3,4],"step":step,
                 "password":pw.decode(),"code":code.decode(),"phrases":{key:unlock(key).decode() for key in (src,dst)}}
         proc = subprocess.Popen([sys.executable,"-I","-B","-c",child,str(Path(__file__).resolve().parents[1]/"lib"),str(approval)],
                                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=case.shared.env)
@@ -3814,6 +3817,76 @@ with prepare_candidate(load,plan,mapping) as candidate:
             with self.assertRaises(StoreContextError):
                 require_idle(root,f.load(),f.dst.store_id)
             require_idle(root,f.load(),self.entries[2]["store_id"])
+
+    def test_rollback_of_renamed_prod_host_requires_the_affected_private_alias(self):
+        from store_transfer import preview
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        source = f.src.checkout
+        path = source/"team.conf"
+        path.write_bytes(b"# tags: prod\n"+path.read_bytes())
+        identity = source/".hostbook/identity.json"
+        data = json.loads(identity.read_bytes())
+        data["sources"][0]["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        data["generation"] += 1
+        identity.write_text(json.dumps(data))
+        f.shared.git(source,"commit","-qam","Prod source host")
+        f.shared.git(source,"push","-q",str(f.shared.remote),"HEAD:refs/heads/main")
+        f.plan = preview(f.load,f.src.store_id,f.src.generations,f.plan.host_id,f.dst.store_id,f.dst.generations,"personal-db")
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        def wrong(row):
+            self.assertEqual(row["required_aliases"],["personal-db"])
+            return "db"
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"rollback",ident,secret,wrong,lambda _:None)
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,lambda _:"personal-db",lambda _:None),0)
+        self.assertEqual(f.shared.git(f.shared.remote,"rev-parse",f.plan.shared.ref),f.plan.source.base)
+
+    def test_rollback_private_update_restores_existing_identity_settings_and_verified_prior_credential(self):
+        from store_transfer import preview
+        from store_transfer_command import run_recovery
+        f = self.reverse_transfer_case()
+        dest = f.dst.checkout
+        prior = b"# tags: prod\n# secret: login\nHost source-one\n  HostName 192.0.2.2\n  User fixture\n  ServerAliveInterval 17\n"
+        (dest/"team.conf").write_bytes(prior)
+        identity = dest/".hostbook/identity.json"
+        document = json.loads(identity.read_bytes())
+        document["sources"][0]["sha256"] = hashlib.sha256(prior).hexdigest()
+        document["generation"] += 1
+        identity.write_text(json.dumps(document))
+        groups = b"watched\tsync\tsource-one\n"
+        (dest/"groups.tsv").write_bytes(groups)
+        f.shared.git(dest,"add","--all")
+        f.shared.git(dest,"commit","-qm","Existing private host")
+        chosen = document["hosts"][0]["host_id"]
+        plan = preview(f.load,f.src.store_id,f.src.generations,f.plan.host_id,f.dst.store_id,f.dst.generations,"source-one")
+        f.plan = plan.choose("update",chosen,plan.source.base,plan.destination.base)
+        old_cipher = (f.dst.vault/"login.age").read_bytes()
+        proc,ident,pw,code = self.interrupted_transfer_owner(f,"destination-confirmed")
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=10),0)
+        self.assertNotEqual((dest/"team.conf").read_bytes(),prior)
+        def secret(role):
+            return {"backup":pw,"recovery":code,"source":f.v.unlock(f.src.store_id),"destination":f.v.unlock(f.dst.store_id)}[role]
+        def confirm(row):
+            self.assertEqual(row["required_aliases"],["source-one"])
+            self.assertEqual(row["restore_credential"],"login")
+            self.assertEqual(row["connection_changes"]["serveraliveinterval"],{"existing":"0","proposed":"17"})
+            self.assertEqual(row["destination"]["host_id"],chosen)
+            return "source-one"
+        with self.assertRaisesRegex(StoreContextError,"confirmation"):
+            run_recovery(f.load,"rollback",ident,secret,lambda _:True,lambda _:None)
+        self.assertEqual(run_recovery(f.load,"rollback",ident,secret,confirm,lambda _:None),0)
+        self.assertEqual((dest/"team.conf").read_bytes(),prior)
+        self.assertEqual((dest/"groups.tsv").read_bytes(),groups)
+        self.assertEqual(json.loads(identity.read_bytes())["hosts"],document["hosts"])
+        self.assertEqual((f.dst.vault/"login.age").read_bytes(),old_cipher)
+        self.assertFalse((f.dst.vault/"db-credential.age").exists())
+        self.assertEqual(f.shared.git(dest,"status","--porcelain"),"")
 
     def test_transfer_prepare_reports_original_transaction_after_first_publication_flush_fails(self):
         import store_transfer_intent as intent

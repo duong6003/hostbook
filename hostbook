@@ -3165,13 +3165,18 @@ case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _store_transfer_rollback)
-    [ "$#" -eq 13 ] || exit 65
+    [ "$#" -ge 15 ] && [ $(( ($#-15) % 3 )) -eq 0 ] || exit 65
     at "$(t transfer_title)"
     head="$(t transfer_rollback_source "$2" "$3" "$4")$NL$(t transfer_rollback_destination "$5" "$6")"
     {
       t transfer_destination_key "$7" "$8" "$9"; echo
       t transfer_rollback_inverse "${10}"; echo
       case ${13} in keep) t transfer_rollback_reuse "${12}";; remove) t transfer_rollback_remove "${12}";; *) exit 65;; esac; echo
+      if [ "${14}" = update ]; then
+        t transfer_credential_change "${12}" "${15}"; echo
+        shift 15
+        while [ "$#" -gt 0 ]; do t transfer_setting_change "$1" "$2" "$3"; echo; shift 3; done
+      fi
     } | ui_fzf "$(ui_head "$head")" --no-input --wrap --prompt='› ' \
           --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_confirm)" "esc:$(t key_cancel)")" --bind 'esc:abort' >/dev/null || exit 1
     if [ -n "${11}" ]; then

@@ -463,10 +463,13 @@ local-save checkpoint. `resume` rechecks that destination and branch before
 continuing.
 
 
-For a confirmed new or keep-both host saved privately while its shared source
+For a confirmed host saved privately while its shared source
 is still intact, `rollback` appends a private compensation commit. It restores
 the prior host selection with a fresh identity generation, checks the original
 shared host and decryptable credential, and removes a transfer-created mapping
 only when the restored host set does not reference it. Both vault passphrases
 and the original transaction credentials are required. Recovery retains the
 original encrypted snapshots and the displaced inodes in the private checkout.
+For an explicit update, rollback restores the selected prior destination stanza,
+stable ID, group memberships and verified previous credential. A PROD rollback
+requires typing the private alias it will change.

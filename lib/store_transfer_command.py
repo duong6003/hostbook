@@ -115,8 +115,19 @@ def compatible_picker(account, locations, minimum):
     raise StoreContextError(reason)
 
 
-def review_arguments(details):
+def setting_arguments(changes):
     from store_read import EFFECTIVE_OPTIONS
+    allowed = EFFECTIVE_OPTIONS | {"hostname","user","port","proxyjump"}
+    args = []
+    for key,values in changes.items():
+        require(key in allowed,"unsupported transfer review setting")
+        # Escape any terminal controls before values enter an ANSI-capable picker.
+        args.extend([key,*[json.dumps(str(values[k]),ensure_ascii=True)[1:-1] if values[k] is not None else "—"
+                           for k in ("existing","proposed")]])
+    return args
+
+
+def review_arguments(details):
     src,dst = details["source"],details["destination"]
     match = next((row for row in details["matches"] if row["host_id"] == details["chosen_destination_id"]),{})
     args = ["_store_transfer_review",src["name"],src["store_id"],dst["proposed_alias"],dst["store_id"],
@@ -125,12 +136,7 @@ def review_arguments(details):
             match.get("name",""),match.get("host_id",""),",".join(details["retained_destination_groups"])]
     if details["decision"] == "update":
         args.extend([src["host_id"],src["ref"],src["revision"],dst["ref"],dst["revision"],match["credential"] or "—"])
-        allowed = EFFECTIVE_OPTIONS | {"hostname","user","port","proxyjump"}
-        for key,values in details["connection_changes"].items():
-            require(key in allowed,"unsupported transfer review setting")
-            # Escape any terminal controls before values enter an ANSI-capable picker.
-            args.extend([key,*[json.dumps(str(values[k]),ensure_ascii=True)[1:-1] if values[k] is not None else "—"
-                               for k in ("existing","proposed")]])
+        args.extend(setting_arguments(details["connection_changes"]))
     return args
 
 
@@ -203,7 +209,8 @@ def transfer_command(args, *, recovery=False):
                 src,dst = details["source"],details["destination"]
                 review = ["_store_transfer_rollback",details["transaction_id"],src["name"],src["store_id"],dst["alias"],
                           dst["store_id"],dst["host_id"],dst["ref"],dst["revision"],dst["inverse"],",".join(details["required_aliases"]),
-                          details["credential"],"keep" if details["keep_credential"] else "remove"]
+                          details["credential"],"keep" if details["keep_credential"] else "remove",details["decision"],
+                          details["restore_credential"] or "—",*setting_arguments(details["connection_changes"])]
             elif details.get("action") == "cancel":
                 review = ["_store_transfer_cancel",details["transaction_id"],details["source"],details["destination"]]
             else:
