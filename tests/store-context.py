@@ -1847,6 +1847,37 @@ class StoreContextTest(unittest.TestCase):
         with self.assertRaises(StoreContextError):
             store_conflict.resolve(*args,remote)
 
+    def test_address_resolution_preserves_rejected_edit_when_bound_credential_bytes_rotate(self):
+        import store_conflict,store_publish,store_read
+        v = self.transfer_vaults()
+        f,_,publish = self.prepare_edit()
+        store,load = self.entries[1]["store_id"],lambda:self.account
+        label = "# secret: login\nHost db\n  HostName 192.0.2.2\n"
+        def add_record(repo,rev):
+            for name in ("vault.pub","vault.key.age","vault.recovery.age"):
+                (repo/"secrets"/name).write_bytes((v.destination.vault/name).read_bytes())
+            (repo/"secrets/login.meta").write_bytes(b"type=password\n")
+            (repo/"secrets/login.age").write_bytes(rev)
+        # Align the already verified vault envelopes in the three original Git states.
+        first = v.seal(v.destination,b"synthetic first value")
+        add_record(f.author,first)
+        f.git(f.author,"add","secrets")
+        publish(label)
+        f.git(f.store,"fetch","-q",str(f.remote),"refs/heads/main")
+        f.git(f.store,"merge","--ff-only","FETCH_HEAD")
+        row = store_read.refresh_routes(load,store,self.generations).splitlines()[0].split("\t")
+        with patch.object(store_publish,"send",return_value="not-accepted"):
+            ident = store_publish.publish_address(load,store,self.generations,row[1],row[3],"192.0.2.88")["attempt_id"]
+        (f.author/"secrets/login.age").write_bytes(v.seal(v.destination,b"synthetic rotated value"))
+        f.git(f.author,"add","secrets/login.age")
+        publish(label.replace("192.0.2.2","192.0.2.33"))
+        view = store_conflict.compare(load,store,self.generations,ident)
+        before = snapshot(f.remote),snapshot(self.recovery)
+        with self.assertRaises(StoreContextError):
+            store_conflict.resolve(load,store,self.generations,ident,"use-candidate-address",view["candidate_revision"],view["remote_revision"])
+        self.assertEqual((snapshot(f.remote),snapshot(self.recovery)),before)
+        self.assertNotIn("synthetic rotated value",json.dumps(view))
+
     def test_edit_preserves_independent_remote_host_and_unrelated_local_work(self):
         f, edit, publish = self.prepare_edit()
         publish("Host db\n  HostName 192.0.2.2\nHost web\n  HostName 192.0.2.44\n", add_host=True)

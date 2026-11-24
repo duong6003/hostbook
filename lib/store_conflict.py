@@ -61,10 +61,13 @@ def compare_versions(stage,store,candidate,tip,local):
                 require(sep and ext in ("age","meta","pub") and SECRET_NAME.fullmatch(name),
                         "unrecognized shared credential record")
                 names.add(name)
-    collisions = []
+    collisions,changed_bindings = [],[]
+    selected = {side["credential"] for side,_ in sides if side is not None and side["credential"]}
     for name in sorted(names):
         records = [tuple(files.get("secrets/"+name+"."+ext) for ext in ("age","meta","pub")) for files in trees]
-        if records[0] != records[1] != records[2] and records[0] != records[2]:
+        if name in selected and (len(set(records)) != 1 or not all(records[0][:2])):
+            changed_bindings.append(name)
+        if len(set(records)) == 3:
             collisions.append(name)
     if anchors[0] != anchors[2] or anchors[1] != anchors[0]:
         kind = "vault-identity" if len({r[0] for r in anchors})>1 else "vault-envelopes"
@@ -78,7 +81,7 @@ def compare_versions(stage,store,candidate,tip,local):
         kind = "compatible"
     return dict(store_id=store,host_id=host,attempt_id=candidate["attempt_id"],ref=candidate["ref"],
                 base_revision=base,candidate_revision=draft,remote_revision=tip,kind=kind,
-                credential_conflicts=collisions,**summary)
+                credential_conflicts=collisions,changed_bound_credentials=sorted(set(changed_bindings)|(selected-names)),**summary)
 
 
 @contextmanager
@@ -145,7 +148,8 @@ def resolve(load,store,expected,ident,action,draft,tip):
         require(all(report[side] is not None for side in ("base","candidate","remote")),
                 "address resolution needs the same existing host on both branches")
         chosen = str(ipaddress.ip_address(report["candidate"]["address"]))
-        require(all(report[side]["credential"] == report["remote"]["credential"] for side in ("candidate","base")),
+        require(not report["changed_bound_credentials"] and
+                all(report[side]["credential"] == report["remote"]["credential"] for side in ("candidate","base")),
                 "review the changed credential binding separately")
         versions = [record_at(stage,oid,store,host) for oid in (report["base_revision"],draft,tip)]
         # The current operator route supports ordinary targets. PROD needs terminal alias confirmation.
