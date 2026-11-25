@@ -2986,7 +2986,7 @@ home_store_inventory(){ # snapshot for the list, preview and filter callbacks
     case $record in
       scope)
         [ "$name" = local ] && continue
-        store_origin_label "$name" "$origin" label || return
+        store_origin_label "$name" "$origin" label "$source" || return
         printf '%s\t%s\n' "$key" "$label" >> "$folder/registered-scopes";;
       row)
         store_origin_label "$origin" "$source" label || return
@@ -3265,11 +3265,14 @@ else
 fi
 
 store_origin_label(){
-  local source=$2
+  local source=$2 checkout=${4:-}
   case $1 in
     local) tv "$3" store_overview_private_label;;
     connected|offline)
-      [ -n "$source" ] || tv source store_overview_unknown_source
+      if [ -z "$source" ]; then
+        tv source store_overview_unknown_source
+        [ -z "$checkout" ] || source="$source (./$checkout)"
+      fi
       if [ "$1" = offline ]; then tv "$3" store_overview_offline_label "$source"
       else printf -v "$3" '%s' "$source"; fi;;
     *) return 65;;
@@ -3319,10 +3322,13 @@ case ${1:-} in
       transfer) head=$(t transfer_title);;
       *) exit 65;;
     esac
-    shift 2; options=()
+    shift 2; options=(); sep=$'\034'
     for option in "$@"; do
       if [ "$option" = all ]; then tv label store_overview_all
-      else store_origin_label "${option%%"$TAB"*}" "${option#*"$TAB"}" label || exit 65; fi
+      else
+        IFS="$sep" read -r origin source checkout <<< "${option//$TAB/$sep}"
+        store_origin_label "$origin" "$source" label "$checkout" || exit 65
+      fi
       options+=(" ${label//|/¦}")
     done
     at "$(t store_overview_title)"
@@ -3370,7 +3376,7 @@ case ${1:-} in
       "$(t store_overview_two_way)" "$(t cancel)";;
   _store_overview_disconnect)
     at "$(t store_overview_disconnect)"
-    store_origin_label connected "${2:-}" label
+    store_origin_label connected "${2:-}" label "${3:-}"
     ui_confirm --default=false --affirmative "$(t store_overview_disconnect_keep)" \
       --negative "$(t cancel)" "$label" "$(t store_overview_disconnect_rule)";;
   _store_overview_private_input)

@@ -2537,7 +2537,7 @@ class StoreContextTest(unittest.TestCase):
                 self.assertIn("host\tdb\t1\tconnected", data)
                 return SimpleNamespace(returncode=0, stdout="db\n\n1\n")
             if action == "_store_overview_pick":
-                self.assertEqual(fields, ("filter", "all", "local\t", "connected\t", "connected\t"))
+                self.assertEqual(fields, ("filter", "all", "local\t\t", "connected\t\tshared a", "connected\t\tshared b"))
                 return SimpleNamespace(returncode=0, stdout="2\n")
             self.assertEqual(fields[:3], ("connected", "db", "192.0.2.90"))
             return SimpleNamespace(returncode=0, stdout="0\n")
@@ -2636,12 +2636,12 @@ class StoreContextTest(unittest.TestCase):
         replies = iter([
             ("_store_overview_screen", ("",), "db\nctrl-o\n1\n"),
             ("_store_overview_tools", ("add", "import", "receive", "mode", "disconnect", "recover"), "4\n"),
-            ("_store_overview_pick", ("disconnect", f"connected\t{a.remote.name}", f"connected\t{b.remote.name}"), "1\n"),
-            ("_store_overview_disconnect", (b.remote.name,), ""),
+            ("_store_overview_pick", ("disconnect", f"connected\t{a.remote.name}\t", f"connected\t{b.remote.name}\t"), "1\n"),
+            ("_store_overview_disconnect", (b.remote.name, "shared b"), ""),
             ("_store_overview_result", ("disconnected",), ""),
             ("_store_overview_screen", ("db",), "db\nctrl-f\n1\n"),
-            ("_store_overview_pick", ("filter", "all", "local\t", f"connected\t{a.remote.name}",
-                                      f"offline\t{b.remote.name}"), "3\n"),
+            ("_store_overview_pick", ("filter", "all", "local\t\t", f"connected\t{a.remote.name}\t",
+                                      f"offline\t{b.remote.name}\t"), "3\n"),
             ("_store_overview_screen", ("db",), "db\nctrl-o\n1\n"),
             ("_store_overview_tools", ("add", "import", "recover"), "2\n"),
             ("_store_overview_screen", ("db",), "db\nesc\n"),
@@ -2658,6 +2658,29 @@ class StoreContextTest(unittest.TestCase):
         with patch("store_overview_transfer.recover"):
             self.assertEqual(browse(lambda: self.account, None, screen), 0)
         self.assertEqual((snapshot(a.store), snapshot(a.remote), snapshot(b.remote)), before)
+        self.assertEqual(self.resolve(1).effective_mode, "receive-only")
+        self.assertIsNone(self.resolve(2, generations=Generations(2, 2, 4, 5)).effective_mode)
+
+    def test_overview_distinguishes_unknown_sources_before_disconnect(self):
+        from store_overview import overview_rows, store_action
+
+        load = lambda: self.account
+        _, _, stores = overview_rows(load)
+        connected = [self.entries[i]["store_id"] for i in (1, 2)]
+        self.assertTrue(all(not stores[key].source for key in connected))
+        replies = iter([
+            ("_store_overview_tools", ("receive", "mode", "disconnect", "recover"), "2\n"),
+            ("_store_overview_pick", ("disconnect", "connected\t\tshared a", "connected\t\tshared b"), "1\n"),
+            ("_store_overview_disconnect", ("", "shared b"), ""),
+            ("_store_overview_result", ("disconnected",), ""),
+        ])
+
+        def screen(action, *fields):
+            expected_action, expected_fields, output = next(replies)
+            self.assertEqual((action, fields), (expected_action, expected_fields))
+            return SimpleNamespace(returncode=0, stdout=output)
+
+        store_action(load, screen, stores, connected, None)
         self.assertEqual(self.resolve(1).effective_mode, "receive-only")
         self.assertIsNone(self.resolve(2, generations=Generations(2, 2, 4, 5)).effective_mode)
 

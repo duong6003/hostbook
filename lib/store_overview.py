@@ -1,6 +1,6 @@
 """Search hosts across approved store checkouts."""
 from collections import Counter
-from dataclasses import astuple, dataclass
+from dataclasses import astuple, dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -22,6 +22,7 @@ class OverviewStore:
     source: str
     ref: str
     mode: str
+    checkout: str
 
 
 def source_label(account, context, state):
@@ -84,7 +85,9 @@ def overview_rows(load, checkout=None, selected=None, *, inventory_rows=None):
                 origin = "connected" if context.effective_mode else "offline"
                 source = source_label(account, context, state)
             mode = "changing" if context.transition_id else context.effective_mode
-            stores[key] = OverviewStore(expected, origin, source, context.ref or "", mode or "")
+            location = "/".join(path_parts(account.root.path, binding.root.path))
+            location = json.dumps(location, ensure_ascii=True)[1:-1]
+            stores[key] = OverviewStore(expected, origin, source, context.ref or "", mode or "", location)
             if selected is None or key == selected:
                 sources = {}
                 stamp, hosts, _, _ = route_inputs(account, context, binding, root, state, search_sources=sources)
@@ -97,10 +100,7 @@ def overview_rows(load, checkout=None, selected=None, *, inventory_rows=None):
     rows, selections = [], {}
     for key, store in stores.items():
         if store.source and labels[store.source] > 1:
-            location = "/".join(path_parts(account.root.path, bindings[key].root.path))
-            location = json.dumps(location, ensure_ascii=True)[1:-1]
-            source = f"{store.source} ({location})"
-            store = stores[key] = OverviewStore(store.generations, store.origin, source, store.ref, store.mode)
+            store = stores[key] = replace(store, source=f"{store.source} ({store.checkout})")
         if key not in inventory:
             continue
         stamp, hosts, metadata = inventory[key]
@@ -166,7 +166,8 @@ def pick_store(screen, purpose, stores, keys):
             options.append("all")
         else:
             store = stores[key]
-            options.append(f"{store.origin}\t{store.source}")
+            checkout = store.checkout if store.origin != "local" and not store.source else ""
+            options.append(f"{store.origin}\t{store.source}\t{checkout}")
     choice = choose(screen, "_store_overview_pick", {str(i) for i in range(len(keys))}, purpose, *options)
     return (False, None) if choice is None else (True, keys[int(choice)])
 
@@ -227,7 +228,8 @@ def store_action(load, screen, stores, connected, private):
     else:
         from store_mode import disconnect_keep_checkout
 
-        if screen("_store_overview_disconnect", stores[key].source).returncode != 0:
+        store = stores[key]
+        if screen("_store_overview_disconnect", store.source, store.checkout).returncode != 0:
             return
         disconnect_keep_checkout(load, *shared)
         outcome = "disconnected"
@@ -356,6 +358,6 @@ def home_inventory():
     inventory = []
     _, _, stores = overview_rows(lambda: load_approved_account(home), inventory_rows=inventory)
     for key, store in stores.items():
-        print("scope", key, store.origin, store.source, sep="\t")
+        print("scope", key, store.origin, store.source, store.checkout, sep="\t")
     for key, identity, name, origin, source, address, user, tags, description in inventory:
         print("row", identity, name, origin, source, address, user, tags, description, sep="\t")

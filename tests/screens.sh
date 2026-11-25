@@ -207,12 +207,15 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   typ "'db"; gone only-shared
   check stores
   k C-f; fin
-  printf -v overview_input '_store_overview_pick filter all %q %q %q' \
-    $'local\t' $'connected\tteam-source.git' $'offline\tother.git'
+  printf -v overview_input '_store_overview_pick filter all %q %q %q %q %q' \
+    $'local\t\t' $'connected\tteam-source.git\t' $'offline\tother.git\t' \
+    $'connected\t\tshared a' $'connected\t\tshared b'
   start "$overview_input"
   wait_for "$L_store_overview_all"
   wait_for "$L_store_overview_private_label"
   wait_for "$(fmt "$L_store_overview_offline_label" other.git)"
+  wait_for '(./shared a)'
+  wait_for '(./shared b)'
   check store-filter
   k Escape; fin
   summary 'tìm host trùng tên theo kho (S1 S2 S3 S7 S10)'
