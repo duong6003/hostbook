@@ -143,6 +143,13 @@ and keeps the current query. The filter shows the selected source's branch
 and mode from local state. A retained checkout remains under its source after
 disconnect and displays its disconnected status.
 
+The main search with a legacy checkout also includes the approved registered
+hosts alongside its existing hosts, groups and sessions. Entries can be found
+by name, source, configured address, user, tags or description. Ctrl-F narrows
+the list without clearing the query. Registered results open the store-specific
+route review using the exact store and host identity. Legacy actions continue
+to operate on the legacy checkout.
+
 Enter previews the selected host's scoped route before SSH. Ctrl-O opens
 local add and plain OpenSSH import, receive, mode and disconnect controls,
 and transfer recovery. A filter scopes source actions to that source.

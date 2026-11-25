@@ -1,14 +1,15 @@
 """Search hosts across approved store checkouts."""
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 import json
 import os
 from pathlib import Path
 import pwd
+import re
 import stat
 import subprocess
 
-from store_context import (Generations, JSON_LIMIT, StoreContextError, entry_generations, load_approved_account,
+from store_context import (Generations, INDEX_HOST_LINE, JSON_LIMIT, StoreContextError, entry_generations, load_approved_account,
                            path_parts, registry_entries, require, resolved_store, verified_account)
 from store_read import connect_route, refresh_routes, route_inputs, selected_route
 from store_receive import connection_target_record
@@ -38,7 +39,37 @@ def source_label(account, context, state):
     return json.dumps(source, ensure_ascii=True)[1:-1]
 
 
-def overview_rows(load, checkout=None, selected=None):
+def search_metadata(sources, hosts):
+    blocks = {}
+    for path, contents in sources.items():
+        pending, block, ordinal = {}, None, 0
+        for line in contents.decode("utf-8").splitlines():
+            if INDEX_HOST_LINE.match(line):
+                ordinal += 1
+                block, pending = pending, {}
+                blocks[path, ordinal] = block
+                continue
+            match = re.match(r"^\s*#\s*(tags|desc):\s*(.*)$", line)
+            if match:
+                pending[match[1]] = match[2]
+                continue
+            setting = re.match(r"^\s*(hostname|user|match)(?:\s+|\s*=\s*)(.*)$", line, re.I)
+            if setting and setting[1].lower() == "match":
+                block = None
+            elif setting and block is not None:
+                block.setdefault(setting[1].lower(), setting[2].lstrip("= ").split("#", 1)[0].strip().strip('"'))
+            if line.strip() and not line.lstrip().startswith("#"):
+                pending = {}
+    for host in hosts:
+        data = {}
+        for binding in host["bindings"]:
+            for key, value in blocks.get((binding["path"], binding["host_ordinal"]), {}).items():
+                data.setdefault(key, value)
+        yield tuple(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", " ", data.get(key, ""))
+                    for key in ("hostname", "user", "tags", "desc"))
+
+
+def overview_rows(load, checkout=None, selected=None, *, inventory_rows=None):
     account = load()
     with verified_account(account) as (_, state):
         entries, bindings = registry_entries(state, account)
@@ -55,8 +86,9 @@ def overview_rows(load, checkout=None, selected=None):
             mode = "changing" if context.transition_id else context.effective_mode
             stores[key] = OverviewStore(expected, origin, source, context.ref or "", mode or "")
             if selected is None or key == selected:
-                stamp, hosts, _, _ = route_inputs(account, context, binding, root, state)
-                inventory[key] = stamp, hosts
+                sources = {}
+                stamp, hosts, _, _ = route_inputs(account, context, binding, root, state, search_sources=sources)
+                inventory[key] = stamp, hosts, tuple(search_metadata(sources, hosts))
     require(load() == account, "store approval changed during listing")
     with verified_account(account) as (_, state):
         require(registry_entries(state, account) == (entries, bindings), "store registrations changed during listing")
@@ -71,13 +103,20 @@ def overview_rows(load, checkout=None, selected=None):
             store = stores[key] = OverviewStore(store.generations, store.origin, source, store.ref, store.mode)
         if key not in inventory:
             continue
-        stamp, hosts = inventory[key]
+        stamp, hosts, metadata = inventory[key]
         if selected == key:
             rows.append(f"scope\t{store.origin}\t{len(hosts)}\t{store.mode or '-'}\t{store.ref or '-'}\t{store.source}")
-        for host in hosts:
+        for host, (address, user, tags, description) in zip(hosts, metadata):
             token = str(len(selections) + 1)
             selections[token] = (key, host["host_id"], stamp)
-            rows.append(f"host\t{host['name']}\t{token}\t{store.origin}\t{store.source}")
+            row = f"host\t{host['name']}\t{token}\t{store.origin}\t{store.source}"
+            if any((address, user, tags, description)):
+                row += f"\t{address}\t{user}\t{tags}\t{description}"
+            rows.append(row)
+            if inventory_rows is not None:
+                versions = ".".join(map(str, astuple(store.generations)))
+                identity = f"r:{key}:{versions}:{host['host_id']}:{stamp}"
+                inventory_rows.append((key, identity, host["name"], store.origin, store.source, address, user, tags, description))
     return "".join(row + "\n" for row in rows), selections, stores
 
 
@@ -239,15 +278,8 @@ def browse(reload_account, checkout, screen, *, connect=connect_route):
         key, host, stamp = selections[selection]
         store = stores[key]
         expected = store.generations
-        refreshed = refresh_routes(load, key, expected)
-        require(any(row[1] == host and row[3] == stamp for row in
-                    (line.split("\t") for line in refreshed.splitlines())),
-                "store host changed; reopen the list to review it")
-        route, _, _ = selected_route(load, key, expected, host, stamp)
-        fields = (json.dumps(route[k], ensure_ascii=True)[1:-1]
-                  for k in ("name", "hostname", "user", "port", "proxyjump"))
         can_transfer = (store.origin == "local" and connected) or (store.origin == "connected" and private)
-        result = screen("_store_overview_host", store.origin, *fields, "transfer" if can_transfer else "", store.source)
+        result = review_host(load, screen, store, key, host, stamp, transfer=can_transfer)
         if result.returncode in (1, 130):
             continue
         require(result.returncode == 0 and result.stdout.strip() in ("0", "1", "2"), "invalid host action")
@@ -269,7 +301,19 @@ def browse(reload_account, checkout, screen, *, connect=connect_route):
             move_host(load, screen, (key, expected, host), destination)
 
 
-def overview_command(args):
+def review_host(load, screen, store, key, host, stamp, *, transfer=False):
+    expected = store.generations
+    refreshed = refresh_routes(load, key, expected)
+    require(any(row[1] == host and row[3] == stamp for row in
+                (line.split("\t") for line in refreshed.splitlines())),
+            "store host changed; reopen the list to review it")
+    route, _, _ = selected_route(load, key, expected, host, stamp)
+    fields = (json.dumps(route[k], ensure_ascii=True)[1:-1]
+              for k in ("name", "hostname", "user", "port", "proxyjump"))
+    return screen("_store_overview_host", store.origin, *fields, "transfer" if transfer else "", store.source)
+
+
+def overview_command(args, *, host_token=None):
     from store_login import age_installations
     from store_transfer import interruptible_preview
     from store_transfer_command import compatible_picker, operator_environment
@@ -293,4 +337,25 @@ def overview_command(args):
             return subprocess.run(["/bin/bash", str(hostbook), action, *fields],
                                   input=data, text=True, stdout=subprocess.PIPE, env=env)
 
+        if host_token is not None:
+            key, versions, host, stamp = host_token.split(":")
+            versions = versions.split(".")
+            require(len(versions) == 4, "invalid host selection generations")
+            expected = Generations(*map(int, versions))
+            _, _, stores = overview_rows(load, selected=key)
+            require(key in stores and stores[key].generations == expected, "store selection changed")
+            result = review_host(load, screen, stores[key], key, host, stamp)
+            if result.returncode == 0 and result.stdout.strip() == "0":
+                connect_route(load, key, expected, host, stamp)
+            return 0
         return browse(load, checkout, screen)
+
+
+def home_inventory():
+    home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    inventory = []
+    _, _, stores = overview_rows(lambda: load_approved_account(home), inventory_rows=inventory)
+    for key, store in stores.items():
+        print("scope", key, store.origin, store.source, sep="\t")
+    for key, identity, name, origin, source, address, user, tags, description in inventory:
+        print("row", identity, name, origin, source, address, user, tags, description, sep="\t")

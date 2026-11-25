@@ -2504,12 +2504,13 @@ class StoreContextTest(unittest.TestCase):
             self.write_index_host(index, alias, new_id())
         before = snapshot(self.root)
         load = lambda: self.account
+        metadata = "\t192.0.2.90\t\t\t"
         self.assertEqual(overview_rows(load)[0].splitlines(), [
-            "host\tdb\t1\tlocal\t", "host\tdb\t2\tconnected\t", "host\tonly-in-b\t3\tconnected\t",
+            row + metadata for row in ("host\tdb\t1\tlocal\t", "host\tdb\t2\tconnected\t", "host\tonly-in-b\t3\tconnected\t")
         ])
         self.assertEqual(overview_rows(load, self.root / "shared a")[0], overview_rows(load)[0])
         self.assertEqual(overview_rows(load, selected=self.entries[2]["store_id"])[0].splitlines(), [
-            "scope\tconnected\t1\treceive-only\trefs/heads/main\t", "host\tonly-in-b\t1\tconnected\t",
+            "scope\tconnected\t1\treceive-only\trefs/heads/main\t", "host\tonly-in-b\t1\tconnected\t" + metadata,
         ])
         with self.assertRaisesRegex(StoreContextError, "checkout is not registered"):
             overview_rows(load, self.root / "unapproved")
@@ -2595,23 +2596,37 @@ class StoreContextTest(unittest.TestCase):
         source = f.remote.name
         connected, _, _ = overview_rows(load, f.store, scope[0])
         self.assertIn(f"scope\tconnected\t1\treceive-only\trefs/heads/main\t{source}\n", connected)
-        self.assertIn(f"host\tdb\t1\tconnected\t{source}\n", connected)
+        self.assertIn(f"host\tdb\t1\tconnected\t{source}\t192.0.2.1", connected)
         target_record = f.target.read_text()
         f.target.write_text(json.dumps(dict(json.loads(target_record), target_id=new_id())))
         unknown, _, _ = overview_rows(load, f.store)
-        self.assertIn("host\tdb\t1\tconnected\t\n", unknown)
+        self.assertIn("host\tdb\t1\tconnected\t\t192.0.2.1", unknown)
         f.target.write_text(target_record)
         before = snapshot(f.remote)
         disconnect_keep_checkout(load, *scope)
         offline, _, stores = overview_rows(load)
-        self.assertIn(f"host\tdb\t1\toffline\t{source}\n", offline)
-        self.assertIn(f"host\tdb\t2\tconnected\t{other.remote.name}\n", offline)
+        self.assertIn(f"host\tdb\t1\toffline\t{source}\t192.0.2.1", offline)
+        self.assertIn(f"host\tdb\t2\tconnected\t{other.remote.name}\t192.0.2.1", offline)
         filtered, _, _ = overview_rows(load, selected=scope[0])
         self.assertIn(f"scope\toffline\t1\t-\t-\t{source}\n", filtered)
         self.assertNotIn(other.remote.name, filtered)
         self.assertNotIn(str(self.root), offline)
         self.assertEqual(stores[scope[0]].origin, "offline")
         self.assertEqual(snapshot(f.remote), before)
+
+    def test_overview_exports_search_metadata_with_the_exact_store_identity(self):
+        from store_overview import overview_rows
+
+        host = new_id()
+        self.write_route(1, host, "# tags: api prod\n# desc: Máy thử nghiệm\nHost db\n"
+                         "  HostName 192.0.2.55\n  User deploy\n")
+        inventory = []
+        overview_rows(lambda: self.account, inventory_rows=inventory)
+        key, token, name, origin, source, address, user, tags, description = inventory[0]
+        self.assertEqual(key, self.entries[1]["store_id"])
+        self.assertTrue(token.startswith(f"r:{key}:1.2.3.4:{host}:"))
+        self.assertEqual((name, origin, source, address, user, tags, description),
+                         ("db", "connected", "", "192.0.2.55", "deploy", "api prod", "Máy thử nghiệm"))
 
     def test_overview_source_action_disconnects_only_the_chosen_source(self):
         from store_overview import browse

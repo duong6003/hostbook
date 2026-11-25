@@ -83,6 +83,8 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
+  _store_home_inventory|_store_home_host)
+    guard_python -I -B -S "$LEGACY_GUARD_LIB" "$@"; exit $?;;
   stores)
     [ "$#" -eq 1 ] || exit 65
     guard_python_path || exit 64
@@ -513,7 +515,7 @@ list_width(){ # [var]
   [ "$w" -ge 12 ] || w=12
   if [ -n "${1:-}" ]; then printf -v "$1" '%s' "$w"; else echo "$w"; fi
 }
-list_data(){ # key, name, project, IP, user, tags, description, secret, last use / secondary line
+legacy_list_data(){ # key, name, project, IP, user, tags, description, secret, last use / secondary line
   local s alive line only=${HOSTBOOK_ONLY:-} IDX=$IDX GRP=$GRP f_sess f_sess_h f_grp
   tv f_sess list_session; tv f_sess_h list_session_hint; tv f_grp list_group   # once, not per row (hot path)
   local filter= history=$HIST
@@ -535,6 +537,12 @@ list_data(){ # key, name, project, IP, user, tags, description, secret, last use
     filter!="" && !($1 in allowed) {next}
     {printf "%010.2f\th:%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",score[$1],$1,$1,$2,$3,$4,$8,$9,$12,ago(last[$1])}
   ' "$history" "$IDX" | sort -t"$TAB" -k1,1r -k2,2 | cut -f2-
+}
+list_data(){
+  case ${HOSTBOOK_STORE_FILTER:-} in ''|local) legacy_list_data;; esac
+  if [ -z "${HOSTBOOK_ONLY:-}" ] && [ -s "${HOSTBOOK_REGISTERED_ROWS:-}" ]; then
+    awk -F '\t' -v filter="${HOSTBOOK_STORE_FILTER:-}" 'filter == "" || $10 == filter' "$HOSTBOOK_REGISTERED_ROWS"
+  fi
 }
 esc_bg(){ # color [var]
   local fg; esc_fg "$1" fg
@@ -561,11 +569,14 @@ list_rows(){ # style, width; field 2 contains visible content only, field 3 pres
     function pad(s,w){return fit(s,w) sprintf("%" (w>vlen(s)?w-vlen(s):0) "s","")}
     BEGIN {split(chips,bg,","); count=split(chipmap,cm,"\n"); for(i=1;i<=count;i++){split(cm[i],kv,":"); color[kv[1]]=kv[2]}}
     {
-      type=substr($1,1,1); hidden=$2 " " $3 " " $4 " @" $5 " " $7 " " $9; tags=$6; gsub(/ +/," #",tags); hidden=hidden " #" tags " secret:" $8
+      type=substr($1,1,1); if(type=="r")type="h"
+      hidden=$2 " " $3 " " $4 " @" $5 " " $7 " " $9; tags=$6; gsub(/ +/," #",tags); hidden=hidden " #" tags " secret:" $8
       if(type!="h"){
         name=(type=="g"?group:session) " " $2
         vis=fit(cu cb name c0 "  " cd $7 c0,W)
         if(style=="cards")vis=vis "\n" fit(cd "  " $9 c0,W)
+      }else if(substr($1,1,1)=="r" && style!="cards"){
+        vis=fit(cb $2 c0 "  ·  " cu $3 c0,W)
       }else if(style=="minimal"){
         mark=(" " $6 " " ~ / prod /?" " cr prod "prod" c0:"")
         room=W-vlen(mark)-vlen($4)-2
@@ -601,6 +612,14 @@ list_rows_compact(){ list_rows compact "$1"; }
 list_rows_cards(){ list_rows cards "$1"; }
 list_rows_minimal(){ list_rows minimal "$1"; }
 cmd_list(){ ensure_index || return; local style=${1:-$(cfg list cards)}; list_data | "list_rows_$style" "$(list_width)"; }
+visible_host_count(){
+  local legacy=0 registered=${HB_HOME_REGISTERED_COUNT:-0}
+  case $registered in ''|*[!0-9]*) registered=0;; esac
+  case ${HOSTBOOK_STORE_FILTER:-} in
+    ''|local) [ ! -s "$IDX" ] || legacy=$(wc -l < "$IDX");;
+  esac
+  printf -v "$1" '%s' "$((legacy + registered))"
+}
 # The CLI always uses single-line rows, regardless of the selected display style.
 search_hosts(){ cmd_list compact | grep '^h:' | fzf --filter "$*" --delimiter="$TAB" --with-nth=2.. --accept-nth=1 | sed 's/^h://'; }
 # After a width change only the list reload runs at once. The header is recomputed in the background. The footer files are
@@ -621,10 +640,13 @@ write_relayout(){ # footer-dir: the two POSIX scripts behind relayout_actions. P
     'rm -rf "$D/n$g"' > "$d/bgfoot"
 }
 fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eval
-  local border preview
+  local border preview count
   border=$(cfg border rounded); preview=$(cfg preview right)
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
-  else printf '%s\n' "--style=full:$border" "--input-label= $(t fzf_find) " "--list-label= $(t fzf_servers "$(wc -l < "$IDX" | tr -d ' ')") " "--preview-label= $(t fzf_detail) "; fi
+  else
+    visible_host_count count
+    printf '%s\n' "--style=full:$border" "--input-label= $(t fzf_find) " "--list-label= $(t fzf_servers "$count") " "--preview-label= $(t fzf_detail) "
+  fi
   case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
   printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
@@ -636,6 +658,8 @@ fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eva
 cmd_preview(){
   local t=${1%%:*} n=${1#*:}
   case $t in
+    r) [ -s "${HOSTBOOK_REGISTERED_ROWS:-}" ] || return 0
+       awk -F '\t' -v key="$1" '$1==key {print $2 "\n" $3; if($4!="") print $4; if($5!="") print "@" $5; if($6!="") print "#" $6; if($7!="") print $7; exit}' "$HOSTBOOK_REGISTERED_ROWS";;
     h) ensure_index || return
        # One awk does everything and no network I/O: host row, secret meta, history and the cached result of the last check.
        local lc=$STATE/last-check.tsv kx=0 l r i
@@ -704,7 +728,7 @@ strip_ansi(){ # text var: remove SGR codes (ESC [ digits/; m), as sed 's/\033\[[
 cmd_header(){
   local n state long="" short="" t f fl="" cols line1 p1 pl
   ensure_index || return
-  n=0; [ ! -s "$IDX" ] || { n=$(wc -l < "$IDX"); n=$((n)); }; list_width cols; cols=$((cols + 2))   # keep the header inside the list column, without overflowing into the preview
+  visible_host_count n; list_width cols; cols=$((cols + 2))   # keep the header inside the list column, without overflowing into the preview
   if [ -f "$FLASH" ]; then IFS="$TAB" read -r t f < "$FLASH"; [ $(( $(date +%s) - t )) -lt 30 ] && fl=$f; fi
   # each state has a long and short version; use the short one on narrow screens
   state=; f=; { IFS= read -r state; IFS= read -r f; } 2>/dev/null < "$ST" || :
@@ -732,6 +756,7 @@ cmd_header(){
   elif [ $(( ${#p1} + ${#ps} + 6 )) -le "$cols" ]; then printf '%s %s· %s%s\n' "$line1" "$CD" "$C0" "$short"
   else printf '%s\n%s\n' "$line1" "$short"; fi
   [ -n "$fl" ] && printf '%s\n' "$fl"
+  [ -z "${HB_HOME_STORE_LINE:-}" ] || printf '%s\n' "${HB_HOME_STORE_LINE:0:$cols}"
   [ -n "${HOSTBOOK_ONLY:-}" ] && [ -f "${HOSTBOOK_ONLY:-}" ] && { printf '%s' "$CU"; t hd_only "$(grep -c . "$HOSTBOOK_ONLY")"; printf '%s\n' "$C0"; }
   if [ "$n" = 0 ]; then   # empty state: one action per line, without clipping on narrow screens
     printf '\n%s%s%s\n\n' "$CB" "$L_hd_empty" "$C0"
@@ -2941,11 +2966,41 @@ demo_box(){ # left right wl wr total border; plain box like "gum join | gum styl
 }
 
 # ---------- main screen ----------
+home_store_inventory(){ # snapshot for the list, preview and filter callbacks
+  local folder=$1 line record key name origin source address user tags description label scope
+  local sep=$'\034'
+  : > "$folder/registered-rows"
+  : > "$folder/registered-scopes"
+  guard_python -I -B -S "$LEGACY_GUARD_LIB" _store_home_inventory > "$folder/registered-input" || return
+  while IFS= read -r line; do
+    IFS="$sep" read -r record key name origin source address user tags description <<< "${line//$TAB/$sep}"
+    case $record in
+      scope)
+        [ "$name" = local ] && continue
+        store_origin_label "$name" "$origin" label || return
+        printf '%s\t%s\n' "$key" "$label" >> "$folder/registered-scopes";;
+      row)
+        store_origin_label "$origin" "$source" label || return
+        scope=${key#r:}; scope=${scope%%:*}
+        [ "$origin" != local ] || scope=local
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t\t\t%s\n' \
+          "$key" "$name" "$label" "$address" "$user" "$tags" "$description" "$scope" >> "$folder/registered-rows";;
+    esac
+  done < "$folder/registered-input"
+}
+
 home(){
-  local q=${1:-} out rc key sel first t n hosts opt opts=() fd foot ft
+  local q=${1:-} out rc key sel first t n hosts opt opts=() fd foot ft scope label choice
+  local -a scope_labels scope_keys
+  local HOSTBOOK_REGISTERED_ROWS= HOSTBOOK_STORE_FILTER= HB_HOME_STORE_LINE= HB_HOME_REGISTERED_COUNT=0
   # fzf control-port token: only child processes of this invocation may send commands
   FZF_API_KEY=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); [ ${#FZF_API_KEY} -eq 32 ] || { err "$(t err_ctl_key)"; return 1; }; export FZF_API_KEY
   fd=$(tmpd) || return 1
+  export HOSTBOOK_REGISTERED_ROWS HOSTBOOK_STORE_FILTER HB_HOME_STORE_LINE HB_HOME_REGISTERED_COUNT
+  if legacy_authority_present; then
+    HOSTBOOK_REGISTERED_ROWS=$fd/registered-rows
+  fi
+  tv HB_HOME_STORE_LINE store_overview_home_filter "$L_store_overview_all"
   # Runs in $SHELL on every focus/multi event, after "t={1};": POSIX only, builtins only (no hostbook boot; #1).
   foot="if [ \"\${FZF_TOTAL_COUNT:-0}\" -gt 0 ] && [ \"\${FZF_MATCH_COUNT:-0}\" -eq 0 ] && [ -n \"\$FZF_QUERY\" ]; then printf '%s\\n' \"\$HB_HOME_NO_MATCH\"; [ \"\${FZF_SELECT_COUNT:-0}\" -eq 0 ] || printf '%s\\n' \"\$HB_HOME_SELECTION_KEPT\"; elif [ \"\${FZF_TOTAL_COUNT:-0}\" -eq 0 ] && [ -n \"\${HOSTBOOK_ONLY:-}\" ]; then printf '%s\\n' \"\$HB_HOME_EMPTY_VIEW\"; fi
     c=\${FZF_SELECT_COUNT:-0}
@@ -2954,6 +3009,12 @@ home(){
   fwrite="t={1}; [ -z \"\$t\" ] || printf '%s\n' \"\$t\" > $(printf %q "$fd/current"); "
   while :; do
     [ -n "${ONLY_NEXT:-}" ] && { export HOSTBOOK_ONLY=$ONLY_NEXT; ONLY_NEXT=""; q=""; }
+    if [ -n "$HOSTBOOK_REGISTERED_ROWS" ]; then
+      home_store_inventory "$fd"
+      if [ -z "${HOSTBOOK_ONLY:-}" ]; then
+        HB_HOME_REGISTERED_COUNT=$(awk -F '\t' -v filter="$HOSTBOOK_STORE_FILTER" 'filter=="" || $10==filter {count++} END {print count+0}' "$HOSTBOOK_REGISTERED_ROWS")
+      else HB_HOME_REGISTERED_COUNT=0; fi
+    fi
     ADDED=""; rm -f "$fd/current" "$fd/share-request"
     export HB_HOME_NO_MATCH="$(t home_no_matches)" HB_HOME_SELECTION_KEPT="$(t home_selection_kept)" HB_HOME_EMPTY_VIEW="$(t home_empty_view)"
     cmd_footers "$fd"; IFS= read -r ft < "$fd/f-x"
@@ -2970,13 +3031,18 @@ home(){
       --bind "resize:$(relayout_actions "$fd")" \
       --listen --bind "start:execute-silent($(self_cmd) _bg_sync >/dev/null 2>&1 &)" \
       --bind "tab:transform~case {1} in h:*) echo toggle+down;; *) echo down;; esac~+transform-footer:$fwrite$foot" \
-      --bind "btab:toggle-up+transform-footer:$fwrite$foot" \
+      --bind "btab:transform~case {1} in r:*) echo up;; *) echo toggle-up;; esac~+transform-footer:$fwrite$foot" \
       --bind "ctrl-y:execute-silent(touch $(printf %q "$fd/share-request"))+transform:[ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ] && echo accept || echo select-all+accept" \
       --bind "focus:transform-footer:$fwrite$foot" \
       --bind "result:transform-footer:$fwrite$foot" \
       --bind "esc:transform~if [ -n \"\$FZF_QUERY\" ]; then echo clear-query; elif [ \"\${FZF_SELECT_COUNT:-0}\" -gt 0 ]; then echo clear-selection; else echo abort; fi~+transform-footer:$fwrite$foot" \
-      --expect='enter,ctrl-a,ctrl-e,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
+      --expect='enter,ctrl-a,ctrl-e,ctrl-f,ctrl-g,ctrl-o,ctrl-s,ctrl-t,right,?' --print-query --query "$q"); rc=$?
     if [ $rc -eq 130 ] && [ -n "${HOSTBOOK_ONLY:-}" ]; then unset HOSTBOOK_ONLY; q=""; continue; fi   # Esc in filtered mode: return to the full list
+    if [ $rc -eq 130 ] && [ -n "$HOSTBOOK_STORE_FILTER" ]; then
+      HOSTBOOK_STORE_FILTER=
+      tv HB_HOME_STORE_LINE store_overview_home_filter "$L_store_overview_all"
+      q=""; continue
+    fi
     [ $rc -eq 130 ] || [ $rc -eq 2 ] && return 0
     q=$(printf '%s\n' "$out" | sed -n 1p); key=$(printf '%s\n' "$out" | sed -n 2p); sel=$(printf '%s\n' "$out" | sed -n '3,$p')
     first=$(printf '%s\n' "$sel" | sed -n 1p)
@@ -2992,17 +3058,33 @@ home(){
     case $key in
       ''|enter) set -- $hosts
          if [ $# -ge 2 ]; then open_many "" "$@"
+         elif [ "$t" = r ]; then guard_python -I -B -S "$LEGACY_GUARD_LIB" _store_home_host "$FZF_MIN" "$n"
          elif [ "$t" = h ]; then connect "$n"
          elif [ "$t" = g ]; then open_many "$n" $(group_field "$n" 3)
          elif [ "$t" = s ]; then attach "$n"; fi;;
       ctrl-a) add_host; [ -n "${ADDED:-}" ] && q=$ADDED;;
       ctrl-e) [ "$t" = h ] && edit_host "$n";;
+      ctrl-f)
+        scope_labels=("$(t store_overview_all)" "$(t store_overview_private_label)")
+        scope_keys=("" local)
+        if [ -f "$fd/registered-scopes" ]; then
+          while IFS="$TAB" read -r scope label; do
+            scope_keys+=("$scope"); scope_labels+=(" ${label//|/¦}")
+          done < "$fd/registered-scopes"
+        fi
+        at "$(t store_overview_title)"
+        choice=$(ui_menu "$(t store_overview_filter)" "${scope_labels[@]}") || continue
+        [[ $choice =~ ^[0-9]+$ ]] && [ "$choice" -lt "${#scope_keys[@]}" ] || continue
+        HOSTBOOK_STORE_FILTER=${scope_keys[$choice]}
+        unset HOSTBOOK_ONLY
+        tv HB_HOME_STORE_LINE store_overview_home_filter "${scope_labels[$choice]# }";;
       ctrl-g) set -- $hosts; if [ $# -ge 2 ]; then save_group "$@"; else flash "${CY}$(t done_grp_need)${C0}"; fi;;
       ctrl-o) SECRET_QUERY=""; tools; [ -n "${SECRET_QUERY:-}" ] && q=$SECRET_QUERY;;
       ctrl-t) if [ "$(cfg list cards)" = cards ]; then cfg_set list compact; else cfg_set list cards; fi;;
       ctrl-s) sync_ui;;
       right) set -- $hosts; if [ $# -ge 2 ]; then batch_actions "$@"; continue; fi
              case $t in h) host_actions "$n";; g) group_actions "$n";;
+               r) guard_python -I -B -S "$LEGACY_GUARD_LIB" _store_home_host "$FZF_MIN" "$n";;
                s) confirm --default=false "$(t sess_close_q "${n#hb-}")" && tmux kill-session -t "$n" && flash "$(t done_sess_closed "${n#hb-}")";; esac;;
       '?') show_help;;
     esac
@@ -3191,7 +3273,10 @@ case ${1:-} in
   _store_overview_screen)
     at "$(t store_overview_title)"
     filter=$(t store_overview_all); summary=; rows=
-    while IFS="$TAB" read -r record first second third fourth fifth; do
+    term_cols store_width
+    sep=$'\034'
+    while IFS= read -r line; do
+      IFS="$sep" read -r record first second third fourth fifth sixth seventh eighth <<< "${line//$TAB/$sep}"
       case $record in
         scope)
           store_origin_label "$first" "$fifth" filter || exit 65
@@ -3206,15 +3291,16 @@ case ${1:-} in
           fi;;
         host)
           store_origin_label "$third" "$fourth" label || exit 65
-          printf -v rows '%s%s\t%s  ·  %s\n' "$rows" "$second" "$first" "$label";;
+          printf -v rows '%s%s\t%-*s\t%s @%s #%s %s\n' "$rows" "$second" "$store_width" "$first  ·  $label" \
+            "$fifth" "$sixth" "${seventh// / #}" "$eighth";;
         *) exit 65;;
       esac
     done
     [ -n "$rows" ] || summary=$(t store_overview_empty)
     printf '%s' "$rows" | ui_fzf "$(ui_head "$(t store_overview_filter_active "$filter")" "$summary")" \
       --info=right --expect=ctrl-o,ctrl-f,esc --print-query --query="${2:-}" \
-      --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
-      --prompt='› ' --input-label=" $(t fzf_find) " --ghost="$(t store_overview_search_hint)" --bind 'ctrl-u:clear-query' \
+      --delimiter="$TAB" --with-nth=2.. --accept-nth=1 --no-hscroll --ellipsis='' \
+      --prompt='› ' --input-label=" $(t fzf_find) " --ghost="$(t home_ghost)" --bind 'ctrl-u:clear-query' \
       --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_open)" "esc:$(t key_back)")$NL$(ui_keys "ctrl-f:$(t store_overview_filter)" "ctrl-o:$(t tools_title)")";;
   _store_overview_pick)
     [ "$#" -ge 3 ] || exit 65
@@ -3456,7 +3542,7 @@ case ${1:-} in
      check_deps || exit 1
      if [ ! -d "$DIR/.git" ]; then first_run || exit 1; fi
      vault_init || exit 1
-     if [ -n "${1:-}" ]; then
+     if [ -n "${1:-}" ] && ! legacy_authority_present; then
        ensure_index
        if valid_name "$1" && [ $# -eq 1 ] && host_exists "$1"; then connect "$1"; exit; fi   # an exact name connects directly
        m=$(search_hosts "$*")
