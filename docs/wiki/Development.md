@@ -136,15 +136,18 @@ A password marker uses OpenSSH's native terminal prompt. Registered
 connections never read or supply the stored password or use an external
 askpass program.
 
-`hostbook stores` opens search over the approved private checkout
-and one connected shared checkout. A normal launch with `HOSTBOOK_DIR` set to
-an approved registered checkout opens the same view. When multiple shared
-stores are registered, launch with `HOSTBOOK_DIR` set to the shared checkout you
-want to see. The view shows the registered branch and mode from local state.
+`hostbook stores` searches all approved registered checkouts by default.
+A normal launch with `HOSTBOOK_DIR` set to an approved registered checkout
+opens the same view. Ctrl-F filters by the local store or a registered source
+and keeps the current query. The filter shows the selected source's branch
+and mode from local state. A retained checkout remains under its source after
+disconnect and displays its disconnected status.
+
 Enter previews the selected host's scoped route before SSH. Ctrl-O opens
-private add and plain OpenSSH import, shared receive and mode controls, and
-transfer recovery. Transfer uses the selected stable host and the other store.
-Disconnect retains the local checkout for offline use after pending work is resolved.
+local add and plain OpenSSH import, receive, mode and disconnect controls,
+and transfer recovery. A filter scopes source actions to that source.
+From All, source actions ask for the target if multiple sources are connected.
+Transfers use the selected stable host and an explicitly scoped destination.
 
 Legacy history, groups and undo still use checkout-local aliases and paths.
 Registered list, preview and connect neither read nor rewrite those references.

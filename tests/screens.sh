@@ -195,17 +195,25 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   summary 'ô mật khẩu và chọn tag (S1 S2 S3 S7 S10)'
 
   local overview_input
-  printf '%s\n' $'summary-private\t1' $'summary-shared\t2\treceive-only\trefs/heads/main\tteam-source.git' \
-    $'host\tdb\t1\tlocal\t' $'host\tdb\t2\tconnected\tteam-source.git' \
-    $'host\tonly-shared\t3\toffline\tteam-source.git' > "$W/stores.tsv"
+  printf '%s\n' $'host\tdb\t1\tlocal\t' $'host\tdb\t2\tconnected\tteam-source.git' \
+    $'host\tonly-shared\t3\toffline\tother.git' > "$W/stores.tsv"
   printf -v overview_input '_store_overview_screen < %q' "$W/stores.tsv"
   start "$overview_input"
   wait_for "$L_store_overview_title"
+  wait_for "$(fmt "$L_store_overview_filter_active" "$L_store_overview_all")"
   wait_for "db  ·  $L_store_overview_private_label"
   wait_for "db  ·  team-source.git"
-  wait_for "$(fmt "$L_store_overview_offline_label" team-source.git)"
+  wait_for "$(fmt "$L_store_overview_offline_label" other.git)"
   typ "'db"; gone only-shared
   check stores
+  k C-f; fin
+  printf -v overview_input '_store_overview_pick filter all %q %q %q' \
+    $'local\t' $'connected\tteam-source.git' $'offline\tother.git'
+  start "$overview_input"
+  wait_for "$L_store_overview_all"
+  wait_for "$L_store_overview_private_label"
+  wait_for "$(fmt "$L_store_overview_offline_label" other.git)"
+  check store-filter
   k Escape; fin
   summary 'tìm host trùng tên theo kho (S1 S2 S3 S7 S10)'
   start '_store_overview_host connected db 192.0.2.90 fixture 22 "" transfer team-source.git'

@@ -3190,35 +3190,48 @@ case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
   _store_overview_screen)
     at "$(t store_overview_title)"
-    head=; rows=
-    while IFS="$TAB" read -r record first second third fourth; do
+    filter=$(t store_overview_all); summary=; rows=
+    while IFS="$TAB" read -r record first second third fourth fifth; do
       case $record in
-        summary-private) head="$head$(t store_overview_private "$first")$NL";;
-        summary-offline)
-          store_origin_label offline "$second" label || exit 65
-          head="$head$(t store_overview_offline "$label" "$first")$NL";;
-        summary-shared)
-          case $second in
-            receive-only) mode=$(t store_overview_receive_only);;
-            two-way) mode=$(t store_overview_two_way);;
-            changing) mode=$(t store_overview_changing);;
-            *) exit 65;;
-          esac
-          store_origin_label connected "$fourth" label || exit 65
-          head="$head$(t store_overview_shared "$label" "$first" "$mode" "${third#refs/heads/}")$NL";;
-        shared-none) head="$head$(t store_overview_none)$NL";;
-        shared-choose) head="$head$(t store_overview_choose)$NL";;
+        scope)
+          store_origin_label "$first" "$fifth" filter || exit 65
+          if [ "$first" = connected ]; then
+            case $third in
+              receive-only) mode=$(t store_overview_receive_only);;
+              two-way) mode=$(t store_overview_two_way);;
+              changing) mode=$(t store_overview_changing);;
+              *) exit 65;;
+            esac
+            summary=$(t store_overview_shared "$second" "$mode" "${fourth#refs/heads/}")
+          fi;;
         host)
           store_origin_label "$third" "$fourth" label || exit 65
           printf -v rows '%s%s\t%s  ·  %s\n' "$rows" "$second" "$first" "$label";;
         *) exit 65;;
       esac
     done
-    [ -n "$rows" ] || head="$head$(t store_overview_empty)$NL"
-    printf '%s' "$rows" | ui_fzf "$(ui_head "$head")" --info=right --expect=ctrl-o \
+    [ -n "$rows" ] || summary=$(t store_overview_empty)
+    printf '%s' "$rows" | ui_fzf "$(ui_head "$(t store_overview_filter_active "$filter")" "$summary")" \
+      --info=right --expect=ctrl-o,ctrl-f,esc --print-query --query="${2:-}" \
       --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
-      --prompt='› ' --ghost="$(t home_ghost)" --bind 'esc:abort,ctrl-u:clear-query' \
-      --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_open)" "ctrl-o:$(t tools_title)" "esc:$(t key_back)")$NL$(t menu_search_recovery)";;
+      --prompt='› ' --input-label=" $(t fzf_find) " --ghost="$(t store_overview_search_hint)" --bind 'ctrl-u:clear-query' \
+      --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_open)" "esc:$(t key_back)")$NL$(ui_keys "ctrl-f:$(t store_overview_filter)" "ctrl-o:$(t tools_title)")";;
+  _store_overview_pick)
+    [ "$#" -ge 3 ] || exit 65
+    case $2 in
+      filter) head=$(t store_overview_filter);;
+      receive|mode|disconnect) head=$(t "store_overview_$2");;
+      transfer) head=$(t transfer_title);;
+      *) exit 65;;
+    esac
+    shift 2; options=()
+    for option in "$@"; do
+      if [ "$option" = all ]; then tv label store_overview_all
+      else store_origin_label "${option%%"$TAB"*}" "${option#*"$TAB"}" label || exit 65; fi
+      options+=(" ${label//|/¦}")
+    done
+    at "$(t store_overview_title)"
+    ui_menu "$head" "${options[@]}";;
   _store_overview_host)
     [ "$#" -eq 9 ] || exit 65
     store_origin_label "$2" "$9" label || exit 65
@@ -3262,8 +3275,9 @@ case ${1:-} in
       "$(t store_overview_two_way)" "$(t cancel)";;
   _store_overview_disconnect)
     at "$(t store_overview_disconnect)"
+    store_origin_label connected "${2:-}" label
     ui_confirm --default=false --affirmative "$(t store_overview_disconnect_keep)" \
-      --negative "$(t cancel)" "$(t store_overview_disconnect)" "$(t store_overview_disconnect_rule)";;
+      --negative "$(t cancel)" "$label" "$(t store_overview_disconnect_rule)";;
   _store_overview_private_input)
     [ "$#" -eq 2 ] || exit 65
     case $2 in
