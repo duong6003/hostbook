@@ -38,14 +38,30 @@ picker_setup(){
 }
 editable_login(){
   picker_setup
-  ui_field(){ printf '%s' "$2" > "$T/prefill"; printf 'remote_user@100.64.0.2'; }
+  ui_choice(){ printf '%s\n' "$@" > "$T/choices"; echo 0; }
+  ui_field(){
+    if [ ! -f "$T/prefill" ]; then printf '%s' "$2" > "$T/prefill"; printf '100.64.0.2'
+    elif [ -n "$6" ]; then printf 'remote_user@100.64.0.2'
+    else return 1; fi
+  }
   local result; result=$(pick_machine fixture 2>/dev/null) || return 1
-  [ "$result" = remote_user@100.64.0.2 ] && [ "$(cat "$T/prefill")" = local_user@100.64.0.2 ] && [ ! -e "$T/network" ]
+  [ "$result" = remote_user@100.64.0.2 ] && [ "$(cat "$T/prefill")" = 100.64.0.2 ] &&
+    grep -Fxq "100.64.0.2|server · $(t disc_ts)" "$T/choices" &&
+    ! grep -Fq 'local_user@' "$T/choices" && [ ! -e "$T/network" ]
 }
 cancel_address(){
   picker_setup; ui_field(){ return 1; }
   ! pick_machine fixture >/dev/null 2>&1 && [ ! -e "$T/network" ]
 }
-for test in ip_and_labels editable_login cancel_address; do check "$test"; done
+current_repository(){
+  picker_setup
+  remote_url(){ printf '%s\n' 'remote_user@100.64.0.2:repos/hosts.git'; }
+  ui_choice(){ printf '%s\n' "$UI_HEAD" > "$T/current"; return 1; }
+  ! connect_kho >/dev/null 2>&1 &&
+    grep -Fq "$(t kho_current "$(remote_url)")" "$T/current" &&
+    [ "$(kho_repo_label 'https://fixture:secret@example.test/team/hosts.git?token=hidden')" = example.test/team/hosts.git ] &&
+    [ ! -e "$T/network" ]
+}
+for test in ip_and_labels editable_login cancel_address current_repository; do check "$test"; done
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
