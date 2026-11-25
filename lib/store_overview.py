@@ -6,9 +6,25 @@ import pwd
 import stat
 import subprocess
 
-from store_context import (JSON_LIMIT, entry_generations, load_approved_account, registry_entries,
-                           require, resolved_store, verified_account)
+from store_context import (JSON_LIMIT, StoreContextError, entry_generations, load_approved_account,
+                           path_parts, registry_entries, require, resolved_store, verified_account)
 from store_read import connect_route, refresh_routes, route_inputs, selected_route
+from store_receive import connection_target_record
+
+
+def source_label(account, context, state):
+    generation = context.generations.connection
+    if context.effective_mode is None:
+        generation -= 1  # Disconnect advances the connection and keeps the previous target record.
+    try:
+        record, target = connection_target_record(state, context.store_id, generation)
+        if context.effective_mode is not None:
+            require((record["target_id"], record["ref"]) == (context.target_id, context.ref),
+                    "registered transport binding mismatch")
+        source = "/".join(path_parts(account.root.path, target.path))
+    except (OSError, StoreContextError):
+        return ""
+    return json.dumps(source, ensure_ascii=True)[1:-1]
 
 
 def overview_rows(load, checkout=None):
@@ -36,18 +52,22 @@ def overview_rows(load, checkout=None):
         expected = entry_generations(entry)
         with resolved_store(account, key, expected) as (context, binding, root, state):
             stamp, hosts, _, _ = route_inputs(account, context, binding, root, state)
+            source, source_state = "", "local"
             if context.kind == "shared":
+                source = source_label(account, context, state)
                 if context.effective_mode is None:
-                    rows.append(f"summary-offline\t{len(hosts)}")
+                    source_state = "offline"
+                    rows.append(f"summary-offline\t{len(hosts)}\t{source}")
                 else:
+                    source_state = "connected"
                     mode = "changing" if context.transition_id else context.effective_mode
-                    rows.append(f"summary-shared\t{len(hosts)}\t{mode}\t{context.ref}")
+                    rows.append(f"summary-shared\t{len(hosts)}\t{mode}\t{context.ref}\t{source}")
             else:
                 rows.append(f"summary-private\t{len(hosts)}")
             for host in hosts:
                 token = str(len(selections) + 1)
-                selections[token] = (key, expected, host["host_id"], stamp, context.kind)
-                rows.append(f"host\t{context.kind}\t{host['name']}\t{token}")
+                selections[token] = (key, expected, host["host_id"], stamp, source_state, source)
+                rows.append(f"host\t{host['name']}\t{token}\t{source_state}\t{source}")
     require(load() == account, "store approval changed during listing")
     with verified_account(account) as (_, state):
         require(registry_entries(state, account) == (entries, bindings), "store registrations changed during listing")
@@ -168,7 +188,7 @@ def browse(reload_account, checkout, screen, *, connect=connect_route):
             return 0
         selection = selection.strip()
         require(result.returncode == 0 and not command and selection in selections, "invalid host selection")
-        key, expected, host, stamp, kind = selections[selection]
+        key, expected, host, stamp, source_state, source = selections[selection]
         refreshed = refresh_routes(load, key, expected)
         require(any(row[1] == host and row[3] == stamp for row in
                     (line.split("\t") for line in refreshed.splitlines())),
@@ -176,8 +196,8 @@ def browse(reload_account, checkout, screen, *, connect=connect_route):
         route, _, _ = selected_route(load, key, expected, host, stamp)
         fields = (json.dumps(route[k], ensure_ascii=True)[1:-1]
                   for k in ("name", "hostname", "user", "port", "proxyjump"))
-        destination = shared if kind == "private" else private if shared else None
-        result = screen("_store_overview_host", kind, *fields, "transfer" if destination else "")
+        destination = shared if source_state == "local" else private if source_state == "connected" else None
+        result = screen("_store_overview_host", source_state, *fields, "transfer" if destination else "", source)
         if result.returncode in (1, 130):
             continue
         require(result.returncode == 0 and result.stdout.strip() in ("0", "1", "2"), "invalid host action")

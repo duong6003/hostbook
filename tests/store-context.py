@@ -2505,11 +2505,11 @@ class StoreContextTest(unittest.TestCase):
         before = snapshot(self.root)
         load = lambda: self.account
         self.assertEqual(overview_rows(load)[0].splitlines(), [
-            "shared-choose", "summary-private\t1", "host\tprivate\tdb\t1",
+            "shared-choose", "summary-private\t1", "host\tdb\t1\tlocal\t",
         ])
         self.assertEqual(overview_rows(load, self.root / "shared a")[0].splitlines(), [
-            "summary-private\t1", "host\tprivate\tdb\t1",
-            "summary-shared\t1\treceive-only\trefs/heads/main", "host\tshared\tdb\t2",
+            "summary-private\t1", "host\tdb\t1\tlocal\t",
+            "summary-shared\t1\treceive-only\trefs/heads/main\t", "host\tdb\t2\tconnected\t",
         ])
         with self.assertRaisesRegex(StoreContextError, "checkout is not registered"):
             overview_rows(load, self.root / "unapproved")
@@ -2528,9 +2528,9 @@ class StoreContextTest(unittest.TestCase):
         def screen(action, *fields, data=None):
             steps.append(action)
             if action == "_store_overview_screen":
-                self.assertIn("host\tshared\tdb\t2", data)
+                self.assertIn("host\tdb\t2\tconnected", data)
                 return SimpleNamespace(returncode=0, stdout="\n2\n")
-            self.assertEqual(fields[:3], ("shared", "db", "192.0.2.90"))
+            self.assertEqual(fields[:3], ("connected", "db", "192.0.2.90"))
             return SimpleNamespace(returncode=0, stdout="0\n")
 
         def connect(current, store_id, expected, host_id, stamp):
@@ -2572,8 +2572,33 @@ class StoreContextTest(unittest.TestCase):
             resolve_store(self.account, *scope)
         data, _, shared, _ = overview_rows(load, self.root / "shared a")
         self.assertIn("summary-offline\t1", data)
-        self.assertIn("host\tshared\tdb", data)
+        self.assertIn("host\tdb\t1\toffline", data)
         self.assertIsNone(shared)
+
+    def test_overview_labels_the_original_source_after_disconnect(self):
+        from store_mode import disconnect_keep_checkout
+        from store_overview import overview_rows
+
+        f = self.prepare_receive()
+        scope = (self.entries[1]["store_id"], self.generations)
+        load = lambda: self.account
+        source = f.remote.name
+        connected, _, _, _ = overview_rows(load, f.store)
+        self.assertIn(f"summary-shared\t1\treceive-only\trefs/heads/main\t{source}\n", connected)
+        self.assertIn(f"host\tdb\t1\tconnected\t{source}\n", connected)
+        target_record = f.target.read_text()
+        f.target.write_text(json.dumps(dict(json.loads(target_record), target_id=new_id())))
+        unknown, _, _, _ = overview_rows(load, f.store)
+        self.assertIn("host\tdb\t1\tconnected\t\n", unknown)
+        f.target.write_text(target_record)
+        before = snapshot(f.remote)
+        disconnect_keep_checkout(load, *scope)
+        offline, _, shared, _ = overview_rows(load, f.store)
+        self.assertIn(f"summary-offline\t1\t{source}\n", offline)
+        self.assertIn(f"host\tdb\t1\toffline\t{source}\n", offline)
+        self.assertNotIn(str(self.root), offline)
+        self.assertIsNone(shared)
+        self.assertEqual(snapshot(f.remote), before)
 
     def test_overview_mode_uses_only_the_reviewed_pending_attempt(self):
         from store_overview import shared_mode

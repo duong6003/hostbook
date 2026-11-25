@@ -21,7 +21,7 @@ from store_context import (
     fixture_request, index_rows, load_approved_account, open_directory, parse_directory_binding,
     parse_json, path_parts, read_file, require, require_approval_file, require_private_directory,
     resolved_store, staged_local_file, store_writer, sync_local, verify_path_isolation,
-    verify_state_directory,
+    valid_id, valid_ref, verify_state_directory,
 )
 from store_checkout import OID, direct_ref, check_index, check_worktree, fast_forward, prepare_receive_files, read_index, read_ref, tree
 from store_journal import require_idle
@@ -161,26 +161,32 @@ def receive_binding(account, store_id, expected, own_record=None, *, transfer=No
                 yield context, target, target_fd, store_fd, checkout
 
 
-@contextmanager
-def registered_target(account,context,root_fd,state_fd):
-    """Open the currently named transport target from a freshly resolved registration."""
-    parts = path_parts(account.state.path, context.status.parent)
+def connection_target_record(state_fd, store_id, generation):
+    parts = ("stores", "v1", store_id, "connection", str(generation))
     with open_directory(state_fd, parts) as settings:
         require_private_directory(settings, "connection settings")
         record = parse_json(read_file(settings, "target.json", 16384, require_approval_file))
         fields(record, "version store_id target_id connection_generation ref uid bare_repository")
-        require(type(record["version"]) is int and record["version"] == 1 and record["store_id"] == context.store_id
-                and record["target_id"] == context.target_id and record["ref"] == context.ref
+        require(type(record["version"]) is int and record["version"] == 1 and record["store_id"] == store_id
+                and valid_id(record["target_id"]) and valid_ref(record["ref"])
                 and type(record["connection_generation"]) is int
-                and record["connection_generation"] == context.generations.connection and type(record["uid"]) is int
+                and record["connection_generation"] == generation and type(record["uid"]) is int
                 and record["uid"] == os.geteuid(), "registered transport binding mismatch")
-        target = parse_directory_binding(record["bare_repository"])
-        groups = [(target,), (account.state,), (account.recovery,)]
-        groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
-        verify_path_isolation(root_fd, account.root.path, groups)
-        with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
-                             "registered transport changed") as target_fd:
-            yield target, target_fd
+        return record, parse_directory_binding(record["bare_repository"])
+
+
+@contextmanager
+def registered_target(account,context,root_fd,state_fd):
+    """Open the currently named transport target from a freshly resolved registration."""
+    record, target = connection_target_record(state_fd, context.store_id, context.generations.connection)
+    require((record["target_id"], record["ref"]) == (context.target_id, context.ref),
+            "registered transport binding mismatch")
+    groups = [(target,), (account.state,), (account.recovery,)]
+    groups.extend((b.root, b.git_dir, b.git_common_dir) for b in account.checkouts.values())
+    verify_path_isolation(root_fd, account.root.path, groups)
+    with bound_directory(root_fd, path_parts(account.root.path, target.path), target,
+                         "registered transport changed") as target_fd:
+        yield target, target_fd
 
 
 @contextmanager
