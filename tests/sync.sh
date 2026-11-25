@@ -141,7 +141,8 @@ parallel_recovery(){
 different_branches(){
   fixture branches || return 1
   local root=${DIR%/*}
-  git init -q --bare "$root/remote.git" && git clone -q "$root/remote.git" "$root/peer" || return 1
+  git init -q --bare "$root/remote.git" && git clone -q "$DIR" "$root/peer" &&
+    git -C "$root/peer" remote set-url origin "$root/remote.git" || return 1
   git -C "$root/peer" checkout -qb master
   printf 'Host remote\n  HostName 192.0.2.2\n' > "$root/peer/remote.conf"
   git -C "$root/peer" add -A && git -C "$root/peer" commit -qm remote && git -C "$root/peer" push -qu origin master || return 1
@@ -215,6 +216,25 @@ resolved_rejected_push(){ # automatic|ours: convergent or conflicting final host
 }
 automatic_rejected_push(){ resolved_rejected_push automatic; }
 selected_rejected_push(){ resolved_rejected_push ours; }
+unrelated_histories(){
+  fixture unrelated || return 1
+  local remote=${DIR%/*}/remote.git peer=${DIR%/*}/peer ours theirs
+  : > "$DIR/.gitignore"
+  ensure_merge_setup && commit_all fixture || return 1
+  git init -q --bare "$remote" && git init -q -b main "$peer" || return 1
+  printf 'Host local\n  HostName 192.0.2.2\n  User fixture\n' > "$peer/local.conf"
+  git -C "$peer" add local.conf && git -C "$peer" commit -qm peer &&
+    git -C "$peer" push -q "$remote" main && g remote add origin "$remote" || return 1
+  ours=$(g rev-parse HEAD); theirs=$(git --git-dir="$remote" rev-parse main)
+  ! sync_quiet && [ "$(head -1 "$ST")" = unrelated ] && [ "$(sync_text)" = "$(t sync_unrelated)" ] || return 1
+  set_status conflict
+  ! resolve_conflict ours > "${DIR%/*}/output" 2>&1 && [ "$(head -1 "$ST")" = unrelated ] &&
+    grep -Fq "$(t sync_unrelated)" "${DIR%/*}/output" &&
+    [ "$(g rev-parse HEAD)" = "$ours" ] && [ "$(git --git-dir="$remote" rev-parse main)" = "$theirs" ] &&
+    [ "$(host_field local 3)" = 192.0.2.1 ] && [ -z "$(g status --porcelain)" ] &&
+    [ ! -e "$DIR/.git/MERGE_HEAD" ] && [ ! -d "$DIR/.git/rebase-merge" ] &&
+    [ ! -d "$DIR/.git/rebase-apply" ] && [ ! -d "$STATE/sync.lock" ]
+}
 link_controls(){ clear(){ :; }; title(){ :; }; shown(){ :; }; pause(){ :; }; }
 failed_link(){
   remote_fixture failed-link || return 1
@@ -232,6 +252,6 @@ invalid_link(){
   ! connect_kho >/dev/null 2>&1 && [ "$(g rev-parse HEAD)" = "$checkpoint" ] &&
     [ "$(remote_url)" = "$previous" ] && [ ! -f "$DIR/broken.conf" ] && validate && [ ! -d "$STATE/sync.lock" ]
 }
-for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition killed_reclaimer_releases_gate missing_lock_tool_is_reported busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push failed_link invalid_link; do check "$test"; done
+for test in live_lock foreign_unlock dead_lock empty_lock empty_lock_replaced_during_probe metadata_gate_serializes_acquisition killed_reclaimer_releases_gate missing_lock_tool_is_reported busy_status parallel_recovery different_branches invalid_pull invalid_clean_repo rejected_push automatic_rejected_push selected_rejected_push unrelated_histories failed_link invalid_link; do check "$test"; done
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
