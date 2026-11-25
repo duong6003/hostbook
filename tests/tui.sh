@@ -108,7 +108,10 @@ for width in 60 100 200; do
   start "$width"
   wait_for booking-
   if [ "$width" -ge 100 ]; then wait_for "Nhóm · mở bằng"; fi
-  if [ "$style" = cards ] && [ "$width" -ge 100 ]; then wait_for '\[booking\]  *#api'; fi
+  if [ "$style" = cards ]; then
+    wait_for '^│   ──────────'
+    if [ "$width" -ge 100 ]; then wait_for '\[booking\]  *#api'; fi
+  fi
   cp "$T/screen" "$ARTIFACTS/$style-$width.txt"
   if grep -q 'secret:\|key-prod\|unknown option\|error:' "$T/screen"; then cat "$T/screen"; exit 1; fi
   if [ "$width" -ge 100 ]; then

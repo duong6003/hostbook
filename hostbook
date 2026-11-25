@@ -652,7 +652,7 @@ fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eva
   printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
   if [ "$(cfg list cards)" = cards ]; then
     echo --read0
-    if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=╌'; fi
+    if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=─'; fi
   fi
 }
 
@@ -2922,7 +2922,8 @@ cmd_demo(){ # fixed sample data; no network checks or changes to real configurat
   cfg border rounded border; cfg preview right preview; cfg list cards style; cfg separator on sep; cfg theme hostbook theme; width=$((cols - 6))
   if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then width=$((cols * 60 / 100 - 6)); fi
   if [ "$style" = cards ]; then
-    rule=$(printf '%*s' "$width" '' | tr ' ' '-')
+    printf -v rule '%*s' "$width" ''
+    rule=${rule// /─}
     rendered=$(while IFS= read -r -d '' record; do
       record=${record#*"$TAB"}; printf '%s\n' "${record%"$TAB"*}"
       [ "$sep" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
