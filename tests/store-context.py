@@ -2497,6 +2497,24 @@ class StoreContextTest(unittest.TestCase):
         ]}]
         sidecar.write_text(json.dumps(data))
 
+    def test_overview_lists_duplicate_aliases_by_store_and_selects_one_shared_checkout(self):
+        from store_overview import overview_rows
+
+        for index, alias in enumerate(("db", "db", "only-in-b")):
+            self.write_index_host(index, alias, new_id())
+        before = snapshot(self.root)
+        load = lambda: self.account
+        self.assertEqual(overview_rows(load).splitlines(), [
+            "shared-choose", "summary-private\t1", "host\tprivate\tdb",
+        ])
+        self.assertEqual(overview_rows(load, self.root / "shared a").splitlines(), [
+            "summary-private\t1", "host\tprivate\tdb",
+            "summary-shared\t1\treceive-only\trefs/heads/main", "host\tshared\tdb",
+        ])
+        with self.assertRaisesRegex(StoreContextError, "checkout is not registered"):
+            overview_rows(load, self.root / "unapproved")
+        self.assertEqual(snapshot(self.root), before)
+
     def test_refreshing_one_index_does_not_change_other_stores(self):
         ids = [new_id() for _ in self.entries]
         contexts = [self.resolve(index) for index in range(3)]

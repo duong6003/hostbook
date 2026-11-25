@@ -83,6 +83,10 @@ resolve_self "${BASH_SOURCE[0]}" || { [ "${BASH_SOURCE[0]}" = "$0" ] || return 6
 LEGACY_GUARD_LIB=${SELF%/*}/lib/store_context.py
 # Store registration and queries run before legacy state initialization.
 case ${1:-} in
+  stores)
+    [ "$#" -eq 1 ] || exit 65
+    guard_python_path || exit 64
+    exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" _store_overview "$FZF_MIN";;
   store-conflict|store-migration-inspect|store-migration-writers|store-migration-backup|store-migration-restore|store-transfer|store-transfer-recover|store-transfer-preview|_store_add|store-add|_store_import|store-import|_store_mode|store-mode|_store_settle|store-settle|_store_edit_address|store-edit-address|_store_receive|store-receive)
     if [ "${BASH_SOURCE:-}" = "$0" ]; then
       guard_python_path || exit 64
@@ -138,6 +142,10 @@ esac
 # A v1 checkout requires explicit registration and scoped store operations.
 if [ -e "$DIR/.hostbook" ] || [ -L "$DIR/.hostbook" ]; then
   [ "${BASH_SOURCE:-}" = "$0" ] || return 65
+  if [ "$#" -eq 0 ]; then
+    guard_python_path || exit 64
+    exec "$GUARD_PYTHON" -I -B -S "$LEGACY_GUARD_LIB" _store_overview "$FZF_MIN" "$DIR"
+  fi
   HOSTBOOK_LANG_DIR=${SELF%/*}/lang HOSTBOOK_LANG=${HOSTBOOK_LANG:-${LANG:-en}} lang_load
   t err_legacy_store >&2; printf '\n' >&2
   exit 65
@@ -3168,6 +3176,33 @@ fi
 # ---------- entry point ----------
 case ${1:-} in _*|--version|-v|version) ;; *) sweep_tmp;; esac
 case ${1:-} in
+  _store_overview_screen)
+    at "$(t store_overview_title)"
+    head=; rows=
+    while IFS="$TAB" read -r record first second third; do
+      case $record in
+        summary-private) head="$head$(t store_overview_private "$first")$NL";;
+        summary-shared)
+          case $second in
+            receive-only) mode=$(t store_overview_receive_only);;
+            two-way) mode=$(t store_overview_two_way);;
+            changing) mode=$(t store_overview_changing);;
+            *) exit 65;;
+          esac
+          head="$head$(t store_overview_shared "$first" "$mode" "${third#refs/heads/}")$NL";;
+        shared-none) head="$head$(t store_overview_none)$NL";;
+        shared-choose) head="$head$(t store_overview_choose)$NL";;
+        host)
+          case $first in private|shared) ;; *) exit 65;; esac
+          tv label "store_overview_${first}_label"
+          printf -v rows '%s%s  ·  %s\n' "$rows" "$second" "$label";;
+        *) exit 65;;
+      esac
+    done
+    [ -n "$rows" ] || head="$head$(t store_overview_empty)$NL"
+    printf '%s' "$rows" | ui_fzf "$(ui_head "$head")" --info=right \
+      --prompt='› ' --ghost="$(t home_ghost)" --bind 'esc:abort,ctrl-u:clear-query,enter:ignore' \
+      --footer="$(ui_keys "↑↓:$(t key_move)" "esc:$(t key_back)")$NL$(t menu_search_recovery)" >/dev/null;;
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _store_conflict_confirm)
     [ "$#" -eq 9 ] || exit 65

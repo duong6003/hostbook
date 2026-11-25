@@ -136,6 +136,13 @@ A password marker uses OpenSSH's native terminal prompt. Registered
 connections never read or supply the stored password or use an external
 askpass program.
 
+`hostbook stores` opens a read-only search over the approved private checkout
+and one connected shared checkout. A normal launch with `HOSTBOOK_DIR` set to
+an approved registered checkout opens the same view. When multiple shared
+stores are registered, launch with `HOSTBOOK_DIR` set to the shared checkout you
+want to see. The view shows the registered branch and mode from local state.
+It performs no sync or remote status check.
+
 Legacy history, groups and undo still use checkout-local aliases and paths.
 Registered list, preview and connect neither read nor rewrite those references.
 A registered selection cannot be used as a legacy group target or undo action.
