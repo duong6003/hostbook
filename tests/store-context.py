@@ -2497,19 +2497,20 @@ class StoreContextTest(unittest.TestCase):
         ]}]
         sidecar.write_text(json.dumps(data))
 
-    def test_overview_lists_duplicate_aliases_by_store_and_selects_one_shared_checkout(self):
+    def test_overview_searches_all_registered_stores_and_filters_by_exact_store(self):
         from store_overview import overview_rows
 
         for index, alias in enumerate(("db", "db", "only-in-b")):
             self.write_index_host(index, alias, new_id())
         before = snapshot(self.root)
         load = lambda: self.account
+        metadata = "\t192.0.2.90\t\t\t"
         self.assertEqual(overview_rows(load)[0].splitlines(), [
-            "shared-choose", "summary-private\t1", "host\tprivate\tdb\t1",
+            row + metadata for row in ("host\tdb\t1\tlocal\t", "host\tdb\t2\tconnected\t", "host\tonly-in-b\t3\tconnected\t")
         ])
-        self.assertEqual(overview_rows(load, self.root / "shared a")[0].splitlines(), [
-            "summary-private\t1", "host\tprivate\tdb\t1",
-            "summary-shared\t1\treceive-only\trefs/heads/main", "host\tshared\tdb\t2",
+        self.assertEqual(overview_rows(load, self.root / "shared a")[0], overview_rows(load)[0])
+        self.assertEqual(overview_rows(load, selected=self.entries[2]["store_id"])[0].splitlines(), [
+            "scope\tconnected\t1\treceive-only\trefs/heads/main\t", "host\tonly-in-b\t1\tconnected\t" + metadata,
         ])
         with self.assertRaisesRegex(StoreContextError, "checkout is not registered"):
             overview_rows(load, self.root / "unapproved")
@@ -2528,9 +2529,17 @@ class StoreContextTest(unittest.TestCase):
         def screen(action, *fields, data=None):
             steps.append(action)
             if action == "_store_overview_screen":
-                self.assertIn("host\tshared\tdb\t2", data)
-                return SimpleNamespace(returncode=0, stdout="\n2\n")
-            self.assertEqual(fields[:3], ("shared", "db", "192.0.2.90"))
+                if len(steps) == 1:
+                    self.assertIn("host\tdb\t2\tconnected", data)
+                    return SimpleNamespace(returncode=0, stdout="db\nctrl-f\n2\n")
+                self.assertEqual(fields, ("db",))
+                self.assertNotIn("\tlocal", data)
+                self.assertIn("host\tdb\t1\tconnected", data)
+                return SimpleNamespace(returncode=0, stdout="db\n\n1\n")
+            if action == "_store_overview_pick":
+                self.assertEqual(fields, ("filter", "all", "local\t\t", "connected\t\tshared a", "connected\t\tshared b"))
+                return SimpleNamespace(returncode=0, stdout="2\n")
+            self.assertEqual(fields[:3], ("connected", "db", "192.0.2.90"))
             return SimpleNamespace(returncode=0, stdout="0\n")
 
         def connect(current, store_id, expected, host_id, stamp):
@@ -2540,12 +2549,13 @@ class StoreContextTest(unittest.TestCase):
             return 0
 
         self.assertEqual(browse(load, checkout, screen, connect=connect), 0)
-        self.assertEqual(steps, ["_store_overview_screen", "_store_overview_host"])
+        self.assertEqual(steps, ["_store_overview_screen", "_store_overview_pick",
+                                 "_store_overview_screen", "_store_overview_host"])
 
         def stale(action, *fields, data=None):
             self.assertEqual(action, "_store_overview_screen")
             self.write_index_host(1, "renamed-db", shared_id)
-            return SimpleNamespace(returncode=0, stdout="\n2\n")
+            return SimpleNamespace(returncode=0, stdout="\n\n2\n")
 
         with self.assertRaisesRegex(StoreContextError, "store host changed"):
             browse(load, checkout, stale, connect=connect)
@@ -2570,10 +2580,109 @@ class StoreContextTest(unittest.TestCase):
         self.assertEqual(after, before)
         with self.assertRaisesRegex(StoreContextError, "stale store generations"):
             resolve_store(self.account, *scope)
-        data, _, shared, _ = overview_rows(load, self.root / "shared a")
-        self.assertIn("summary-offline\t1", data)
-        self.assertIn("host\tshared\tdb", data)
-        self.assertIsNone(shared)
+        data, _, stores = overview_rows(load, selected=scope[0])
+        self.assertIn("scope\toffline\t1", data)
+        self.assertIn("host\tdb\t1\toffline", data)
+        self.assertEqual(stores[scope[0]].origin, "offline")
+
+    def test_overview_labels_the_original_source_after_disconnect(self):
+        from store_mode import disconnect_keep_checkout
+        from store_overview import overview_rows
+
+        f = self.prepare_receive()
+        other = self.prepare_receive(index=2, installed=f.app)
+        scope = (self.entries[1]["store_id"], self.generations)
+        load = lambda: self.account
+        source = f.remote.name
+        connected, _, _ = overview_rows(load, f.store, scope[0])
+        self.assertIn(f"scope\tconnected\t1\treceive-only\trefs/heads/main\t{source}\n", connected)
+        self.assertIn(f"host\tdb\t1\tconnected\t{source}\t192.0.2.1", connected)
+        target_record = f.target.read_text()
+        f.target.write_text(json.dumps(dict(json.loads(target_record), target_id=new_id())))
+        unknown, _, _ = overview_rows(load, f.store)
+        self.assertIn("host\tdb\t1\tconnected\t\t192.0.2.1", unknown)
+        f.target.write_text(target_record)
+        before = snapshot(f.remote)
+        disconnect_keep_checkout(load, *scope)
+        offline, _, stores = overview_rows(load)
+        self.assertIn(f"host\tdb\t1\toffline\t{source}\t192.0.2.1", offline)
+        self.assertIn(f"host\tdb\t2\tconnected\t{other.remote.name}\t192.0.2.1", offline)
+        filtered, _, _ = overview_rows(load, selected=scope[0])
+        self.assertIn(f"scope\toffline\t1\t-\t-\t{source}\n", filtered)
+        self.assertNotIn(other.remote.name, filtered)
+        self.assertNotIn(str(self.root), offline)
+        self.assertEqual(stores[scope[0]].origin, "offline")
+        self.assertEqual(snapshot(f.remote), before)
+
+    def test_overview_exports_search_metadata_with_the_exact_store_identity(self):
+        from store_overview import overview_rows
+
+        host = new_id()
+        self.write_route(1, host, "# tags: api prod\n# desc: Máy thử nghiệm\nHost db\n"
+                         "  HostName 192.0.2.55\n  User deploy\n")
+        inventory = []
+        overview_rows(lambda: self.account, inventory_rows=inventory)
+        key, token, name, origin, source, address, user, tags, description = inventory[0]
+        self.assertEqual(key, self.entries[1]["store_id"])
+        self.assertTrue(token.startswith(f"r:{key}:1.2.3.4:{host}:"))
+        self.assertEqual((name, origin, source, address, user, tags, description),
+                         ("db", "connected", "", "192.0.2.55", "deploy", "api prod", "Máy thử nghiệm"))
+
+    def test_overview_source_action_disconnects_only_the_chosen_source(self):
+        from store_overview import browse
+
+        a = self.prepare_receive()
+        b = self.prepare_receive(index=2, installed=a.app)
+        replies = iter([
+            ("_store_overview_screen", ("",), "db\nctrl-o\n1\n"),
+            ("_store_overview_tools", ("add", "import", "receive", "mode", "disconnect", "recover"), "4\n"),
+            ("_store_overview_pick", ("disconnect", f"connected\t{a.remote.name}\t", f"connected\t{b.remote.name}\t"), "1\n"),
+            ("_store_overview_disconnect", (b.remote.name, "shared b"), ""),
+            ("_store_overview_result", ("disconnected",), ""),
+            ("_store_overview_screen", ("db",), "db\nctrl-f\n1\n"),
+            ("_store_overview_pick", ("filter", "all", "local\t\t", f"connected\t{a.remote.name}\t",
+                                      f"offline\t{b.remote.name}\t"), "3\n"),
+            ("_store_overview_screen", ("db",), "db\nctrl-o\n1\n"),
+            ("_store_overview_tools", ("add", "import", "recover"), "2\n"),
+            ("_store_overview_screen", ("db",), "db\nesc\n"),
+            ("_store_overview_screen", ("",), "\nesc\n"),
+            ("_store_overview_screen", ("",), "\nesc\n"),
+        ])
+
+        def screen(action, *fields, data=None):
+            expected_action, expected_fields, output = next(replies)
+            self.assertEqual((action, fields), (expected_action, expected_fields))
+            return SimpleNamespace(returncode=0, stdout=output)
+
+        before = snapshot(a.store), snapshot(a.remote), snapshot(b.remote)
+        with patch("store_overview_transfer.recover"):
+            self.assertEqual(browse(lambda: self.account, None, screen), 0)
+        self.assertEqual((snapshot(a.store), snapshot(a.remote), snapshot(b.remote)), before)
+        self.assertEqual(self.resolve(1).effective_mode, "receive-only")
+        self.assertIsNone(self.resolve(2, generations=Generations(2, 2, 4, 5)).effective_mode)
+
+    def test_overview_distinguishes_unknown_sources_before_disconnect(self):
+        from store_overview import overview_rows, store_action
+
+        load = lambda: self.account
+        _, _, stores = overview_rows(load)
+        connected = [self.entries[i]["store_id"] for i in (1, 2)]
+        self.assertTrue(all(not stores[key].source for key in connected))
+        replies = iter([
+            ("_store_overview_tools", ("receive", "mode", "disconnect", "recover"), "2\n"),
+            ("_store_overview_pick", ("disconnect", "connected\t\tshared a", "connected\t\tshared b"), "1\n"),
+            ("_store_overview_disconnect", ("", "shared b"), ""),
+            ("_store_overview_result", ("disconnected",), ""),
+        ])
+
+        def screen(action, *fields):
+            expected_action, expected_fields, output = next(replies)
+            self.assertEqual((action, fields), (expected_action, expected_fields))
+            return SimpleNamespace(returncode=0, stdout=output)
+
+        store_action(load, screen, stores, connected, None)
+        self.assertEqual(self.resolve(1).effective_mode, "receive-only")
+        self.assertIsNone(self.resolve(2, generations=Generations(2, 2, 4, 5)).effective_mode)
 
     def test_overview_mode_uses_only_the_reviewed_pending_attempt(self):
         from store_overview import shared_mode

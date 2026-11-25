@@ -1027,6 +1027,14 @@ def main(args):
         if action == "_store_overview":
             from store_overview import overview_command
             return overview_command(args[1:])
+        if action == "_store_home_inventory":
+            from store_overview import home_inventory
+            require(len(args) == 1, "expected no inventory arguments")
+            return home_inventory()
+        if action == "_store_home_host":
+            from store_overview import overview_command
+            require(len(args) == 3, "expected a host selection")
+            return overview_command([args[1]], host_token=args[2])
         if action in ("_store_hosts", "_store_preview", "_store_connect", "store-hosts", "store-preview", "store-connect"):
             from store_read import route_command
             return route_command(action, args[1:])

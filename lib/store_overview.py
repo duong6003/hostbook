@@ -1,58 +1,123 @@
-"""Read and show the first-release host inventory from approved checkouts."""
+"""Search hosts across approved store checkouts."""
+from collections import Counter
+from dataclasses import astuple, dataclass, replace
 import json
 import os
 from pathlib import Path
 import pwd
+import re
 import stat
 import subprocess
 
-from store_context import (JSON_LIMIT, entry_generations, load_approved_account, registry_entries,
-                           require, resolved_store, verified_account)
+from store_context import (Generations, INDEX_HOST_LINE, JSON_LIMIT, StoreContextError, entry_generations, load_approved_account,
+                           path_parts, registry_entries, require, resolved_store, verified_account)
 from store_read import connect_route, refresh_routes, route_inputs, selected_route
+from store_receive import connection_target_record
 
 
-def overview_rows(load, checkout=None):
+@dataclass(frozen=True)
+class OverviewStore:
+    generations: Generations
+    origin: str
+    source: str
+    ref: str
+    mode: str
+    checkout: str
+
+
+def source_label(account, context, state):
+    generation = context.generations.connection
+    if context.effective_mode is None:
+        generation -= 1  # Disconnect advances the connection and keeps the previous target record.
+    try:
+        record, target = connection_target_record(state, context.store_id, generation)
+        if context.effective_mode is not None:
+            require((record["target_id"], record["ref"]) == (context.target_id, context.ref),
+                    "registered transport binding mismatch")
+        source = "/".join(path_parts(account.root.path, target.path))
+    except (OSError, StoreContextError):
+        return ""
+    return json.dumps(source, ensure_ascii=True)[1:-1]
+
+
+def search_metadata(sources, hosts):
+    blocks = {}
+    for path, contents in sources.items():
+        pending, block, ordinal = {}, None, 0
+        for line in contents.decode("utf-8").splitlines():
+            if INDEX_HOST_LINE.match(line):
+                ordinal += 1
+                block, pending = pending, {}
+                blocks[path, ordinal] = block
+                continue
+            match = re.match(r"^\s*#\s*(tags|desc):\s*(.*)$", line)
+            if match:
+                pending[match[1]] = match[2]
+                continue
+            setting = re.match(r"^\s*(hostname|user|match)(?:\s+|\s*=\s*)(.*)$", line, re.I)
+            if setting and setting[1].lower() == "match":
+                block = None
+            elif setting and block is not None:
+                block.setdefault(setting[1].lower(), setting[2].lstrip("= ").split("#", 1)[0].strip().strip('"'))
+            if line.strip() and not line.lstrip().startswith("#"):
+                pending = {}
+    for host in hosts:
+        data = {}
+        for binding in host["bindings"]:
+            for key, value in blocks.get((binding["path"], binding["host_ordinal"]), {}).items():
+                data.setdefault(key, value)
+        yield tuple(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", " ", data.get(key, ""))
+                    for key in ("hostname", "user", "tags", "desc"))
+
+
+def overview_rows(load, checkout=None, selected=None, *, inventory_rows=None):
     account = load()
     with verified_account(account) as (_, state):
         entries, bindings = registry_entries(state, account)
-    chosen = None
-    if checkout is not None:
-        chosen = next((key for key, b in bindings.items() if b.root.path == checkout), None)
-        require(chosen is not None, "selected checkout is not registered")
-    private = [key for key, row in entries.items() if row["kind"] == "private"]
-    shared = [key for key, row in entries.items() if row["connection"] is not None]
-    if chosen is not None and entries[chosen]["kind"] == "shared":
-        shared = [chosen]
-    shared_binding = (shared[0], entry_generations(entries[shared[0]])) if (
-        len(shared) == 1 and entries[shared[0]]["connection"] is not None) else None
-    rows, selections = [], {}
-    if not shared:
-        rows.append("shared-none")
-    elif len(shared) > 1:
-        rows.append("shared-choose")
-        shared = []
-    for key in private + shared:
-        entry = entries[key]
-        expected = entry_generations(entry)
+    require(checkout is None or any(b.root.path == checkout for b in bindings.values()),
+            "selected checkout is not registered")
+    inventory, stores = {}, {}
+    for key in sorted(bindings, key=lambda key: entries[key]["kind"] != "private"):
+        expected = entry_generations(entries[key])
         with resolved_store(account, key, expected) as (context, binding, root, state):
-            stamp, hosts, _, _ = route_inputs(account, context, binding, root, state)
+            origin, source = "local", ""
             if context.kind == "shared":
-                if context.effective_mode is None:
-                    rows.append(f"summary-offline\t{len(hosts)}")
-                else:
-                    mode = "changing" if context.transition_id else context.effective_mode
-                    rows.append(f"summary-shared\t{len(hosts)}\t{mode}\t{context.ref}")
-            else:
-                rows.append(f"summary-private\t{len(hosts)}")
-            for host in hosts:
-                token = str(len(selections) + 1)
-                selections[token] = (key, expected, host["host_id"], stamp, context.kind)
-                rows.append(f"host\t{context.kind}\t{host['name']}\t{token}")
+                origin = "connected" if context.effective_mode else "offline"
+                source = source_label(account, context, state)
+            mode = "changing" if context.transition_id else context.effective_mode
+            location = "/".join(path_parts(account.root.path, binding.root.path))
+            location = json.dumps(location, ensure_ascii=True)[1:-1]
+            stores[key] = OverviewStore(expected, origin, source, context.ref or "", mode or "", location)
+            if selected is None or key == selected:
+                sources = {}
+                stamp, hosts, _, _ = route_inputs(account, context, binding, root, state, search_sources=sources)
+                inventory[key] = stamp, hosts, tuple(search_metadata(sources, hosts))
     require(load() == account, "store approval changed during listing")
     with verified_account(account) as (_, state):
         require(registry_entries(state, account) == (entries, bindings), "store registrations changed during listing")
-    private_binding = (private[0], entry_generations(entries[private[0]])) if private else None
-    return "\n".join(rows) + "\n", selections, shared_binding, private_binding
+
+    labels = Counter(store.source for store in stores.values() if store.origin != "local")
+    rows, selections = [], {}
+    for key, store in stores.items():
+        if store.source and labels[store.source] > 1:
+            store = stores[key] = replace(store, source=f"{store.source} ({store.checkout})")
+        if key not in inventory:
+            continue
+        stamp, hosts, metadata = inventory[key]
+        if selected == key:
+            rows.append(f"scope\t{store.origin}\t{len(hosts)}\t{store.mode or '-'}\t{store.ref or '-'}\t{store.source}")
+        for host, (address, user, tags, description) in zip(hosts, metadata):
+            token = str(len(selections) + 1)
+            selections[token] = (key, host["host_id"], stamp)
+            row = f"host\t{host['name']}\t{token}\t{store.origin}\t{store.source}"
+            if any((address, user, tags, description)):
+                row += f"\t{address}\t{user}\t{tags}\t{description}"
+            rows.append(row)
+            if inventory_rows is not None:
+                versions = ".".join(map(str, astuple(store.generations)))
+                identity = f"r:{key}:{versions}:{host['host_id']}:{stamp}"
+                inventory_rows.append((key, identity, host["name"], store.origin, store.source, address, user, tags, description))
+    return "".join(row + "\n" for row in rows), selections, stores
 
 
 def choose(screen, action, choices, *fields):
@@ -94,18 +159,39 @@ def shared_mode(load, screen, binding):
             else "mode")
 
 
-def store_action(load, screen, shared, private):
+def pick_store(screen, purpose, stores, keys):
+    options = []
+    for key in keys:
+        if key is None:
+            options.append("all")
+        else:
+            store = stores[key]
+            checkout = store.checkout if store.origin != "local" and not store.source else ""
+            options.append(f"{store.origin}\t{store.source}\t{checkout}")
+    choice = choose(screen, "_store_overview_pick", {str(i) for i in range(len(keys))}, purpose, *options)
+    return (False, None) if choice is None else (True, keys[int(choice)])
+
+
+def store_action(load, screen, stores, connected, private):
     from store_private import add_private
     from store_receive import receive
 
-    choices = (["add", "import"] if private else []) + (["receive", "mode", "disconnect"] if shared else [])
+    choices = (["add", "import"] if private else []) + (["receive", "mode", "disconnect"] if connected else [])
+    if stores:
+        choices.append("recover")
     if not choices:
         return
-    choices.append("recover")
     choice = choose(screen, "_store_overview_tools", {str(i) for i in range(len(choices))}, *choices)
     if choice is None:
         return
     action = choices[int(choice)]
+    if action in ("receive", "mode", "disconnect"):
+        key = connected[0]
+        if len(connected) > 1:
+            confirmed, key = pick_store(screen, action, stores, connected)
+            if not confirmed:
+                return
+        shared = key, stores[key].generations
     if action in ("add", "import"):
         result = screen("_store_overview_private_input", action)
         if result.returncode in (1, 130):
@@ -137,12 +223,13 @@ def store_action(load, screen, shared, private):
     elif action == "recover":
         from store_overview_transfer import recover
 
-        recover(load, screen, {scope[0] for scope in (shared, private) if scope})
+        recover(load, screen, set(stores))
         return
     else:
         from store_mode import disconnect_keep_checkout
 
-        if screen("_store_overview_disconnect").returncode != 0:
+        store = stores[key]
+        if screen("_store_overview_disconnect", store.source, store.checkout).returncode != 0:
             return
         disconnect_keep_checkout(load, *shared)
         outcome = "disconnected"
@@ -157,27 +244,44 @@ def browse(reload_account, checkout, screen, *, connect=connect_route):
         require(reload_account() == account, "store approval changed while the overview was open")
         return account
 
+    selected, query = None, ""
     while True:
-        rows, selections, shared, private = overview_rows(load, checkout)
-        result = screen("_store_overview_screen", data=rows)
-        command, _, selection = result.stdout.partition("\n")
+        rows, selections, stores = overview_rows(load, checkout, selected)
+        if selected is not None and selected not in stores:
+            selected = None
+            continue
+        private = next(((key, store.generations) for key, store in stores.items()
+                        if store.origin == "local"), None)
+        connected = [key for key, store in stores.items() if store.origin == "connected"]
+        result = screen("_store_overview_screen", query, data=rows)
+        query, _, output = result.stdout.partition("\n")
+        command, _, selection = output.partition("\n")
+        if result.returncode in (0, 1) and command == "ctrl-f":
+            confirmed, key = pick_store(screen, "filter", stores, [None, *stores])
+            if confirmed:
+                selected = key
+            continue
+        if result.returncode in (0, 1) and command == "esc":
+            if query:
+                query = ""
+            elif selected is not None:
+                selected = None
+            else:
+                return 0
+            continue
         if result.returncode in (0, 1) and command == "ctrl-o":
-            store_action(load, screen, shared, private)
+            scoped = connected if selected is None else [key for key in connected if key == selected]
+            store_action(load, screen, stores, scoped, private)
             continue
         if result.returncode in (1, 130):
             return 0
         selection = selection.strip()
         require(result.returncode == 0 and not command and selection in selections, "invalid host selection")
-        key, expected, host, stamp, kind = selections[selection]
-        refreshed = refresh_routes(load, key, expected)
-        require(any(row[1] == host and row[3] == stamp for row in
-                    (line.split("\t") for line in refreshed.splitlines())),
-                "store host changed; reopen the list to review it")
-        route, _, _ = selected_route(load, key, expected, host, stamp)
-        fields = (json.dumps(route[k], ensure_ascii=True)[1:-1]
-                  for k in ("name", "hostname", "user", "port", "proxyjump"))
-        destination = shared if kind == "private" else private if shared else None
-        result = screen("_store_overview_host", kind, *fields, "transfer" if destination else "")
+        key, host, stamp = selections[selection]
+        store = stores[key]
+        expected = store.generations
+        can_transfer = (store.origin == "local" and connected) or (store.origin == "connected" and private)
+        result = review_host(load, screen, store, key, host, stamp, transfer=can_transfer)
         if result.returncode in (1, 130):
             continue
         require(result.returncode == 0 and result.stdout.strip() in ("0", "1", "2"), "invalid host action")
@@ -186,12 +290,32 @@ def browse(reload_account, checkout, screen, *, connect=connect_route):
         if result.stdout.strip() == "2":
             from store_overview_transfer import move_host
 
-            require(destination, "select a connected shared store and a private store")
+            require(can_transfer, "select a connected shared store and a private store")
+            destination = private
+            if store.origin == "local":
+                target = connected[0]
+                if len(connected) > 1:
+                    confirmed, target = pick_store(screen, "transfer", stores, connected)
+                    if not confirmed:
+                        continue
+                destination = target, stores[target].generations
             selected_route(load, key, expected, host, stamp)
             move_host(load, screen, (key, expected, host), destination)
 
 
-def overview_command(args):
+def review_host(load, screen, store, key, host, stamp, *, transfer=False):
+    expected = store.generations
+    refreshed = refresh_routes(load, key, expected)
+    require(any(row[1] == host and row[3] == stamp for row in
+                (line.split("\t") for line in refreshed.splitlines())),
+            "store host changed; reopen the list to review it")
+    route, _, _ = selected_route(load, key, expected, host, stamp)
+    fields = (json.dumps(route[k], ensure_ascii=True)[1:-1]
+              for k in ("name", "hostname", "user", "port", "proxyjump"))
+    return screen("_store_overview_host", store.origin, *fields, "transfer" if transfer else "", store.source)
+
+
+def overview_command(args, *, host_token=None):
     from store_login import age_installations
     from store_transfer import interruptible_preview
     from store_transfer_command import compatible_picker, operator_environment
@@ -215,4 +339,25 @@ def overview_command(args):
             return subprocess.run(["/bin/bash", str(hostbook), action, *fields],
                                   input=data, text=True, stdout=subprocess.PIPE, env=env)
 
+        if host_token is not None:
+            key, versions, host, stamp = host_token.split(":")
+            versions = versions.split(".")
+            require(len(versions) == 4, "invalid host selection generations")
+            expected = Generations(*map(int, versions))
+            _, _, stores = overview_rows(load, selected=key)
+            require(key in stores and stores[key].generations == expected, "store selection changed")
+            result = review_host(load, screen, stores[key], key, host, stamp)
+            if result.returncode == 0 and result.stdout.strip() == "0":
+                connect_route(load, key, expected, host, stamp)
+            return 0
         return browse(load, checkout, screen)
+
+
+def home_inventory():
+    home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    inventory = []
+    _, _, stores = overview_rows(lambda: load_approved_account(home), inventory_rows=inventory)
+    for key, store in stores.items():
+        print("scope", key, store.origin, store.source, store.checkout, sep="\t")
+    for key, identity, name, origin, source, address, user, tags, description in inventory:
+        print("row", identity, name, origin, source, address, user, tags, description, sep="\t")

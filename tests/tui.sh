@@ -91,14 +91,17 @@ end_ui
 echo 'ok    TUI import mở thẳng bộ chọn gói, esc huỷ'
 # An unknown underscore-prefixed argument remains an ordinary search query.
 printf '\nHost _web-a\n  HostName 192.0.2.1\nHost _web-b\n  HostName 192.0.2.2\n' >> "$HOSTBOOK_DIR/booking.conf"
+# Keep this search fixture clean so tearing down its pane cannot interrupt a writer.
+git -C "$HOSTBOOK_DIR" add -- booking.conf
+git -C "$HOSTBOOK_DIR" commit -qm 'Add query fixture'
+printf 'ok\n\n%s\n' "$(date +%s)" > "$HOSTBOOK_STATE/status"
 "$S" _index >/dev/null
 start 100 _web
 wait_for _web-a
 wait_for _web-b
 end_ui
-# Search can commit external edits in the background; HEAD is not the fixture baseline.
-"$S" _sync_now >/dev/null
-git -C "$HOSTBOOK_DIR" show "$fixture_commit:booking.conf" > "$HOSTBOOK_DIR/booking.conf"
+git -C "$HOSTBOOK_DIR" restore --source "$fixture_commit" --staged --worktree -- booking.conf
+git -C "$HOSTBOOK_DIR" commit -qm 'Restore search fixture'
 ! grep -q '^Host _web-' "$HOSTBOOK_DIR/booking.conf"
 "$S" _index >/dev/null
 echo 'ok    TUI tìm hai server với truy vấn bắt đầu bằng dấu gạch dưới'
@@ -108,6 +111,11 @@ for width in 60 100 200; do
   start "$width"
   wait_for booking-
   if [ "$width" -ge 100 ]; then wait_for "Nhóm · mở bằng"; fi
+  if [ "$style" = cards ] && [ "$width" -ge 100 ]; then
+    wait_for '\[booking\]  *#api'
+    cells=$(tmux -L "$socket" capture-pane -ep -t ui | grep -Ec $'^(\033\\[[0-9;]*m)*│ \033\\[[0-9;]*;7m(\033\\[[0-9;]*m)* ')
+    [ "$cells" -eq 2 ] || { echo "FAIL TUI: dải trỏ của thẻ cần phủ hai dòng"; exit 1; }
+  fi
   cp "$T/screen" "$ARTIFACTS/$style-$width.txt"
   if grep -q 'secret:\|key-prod\|unknown option\|error:' "$T/screen"; then cat "$T/screen"; exit 1; fi
   if [ "$width" -ge 100 ]; then

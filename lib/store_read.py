@@ -199,8 +199,8 @@ def local_inputs(state_fd, store_id, evidence=None):
         return None, None, None
 
 
-def route_inputs(account, context, binding, root_fd, state_fd, *, collect=False):
-    files = {} if collect else None
+def route_inputs(account, context, binding, root_fd, state_fd, *, collect=False, search_sources=None):
+    files = {} if collect else search_sources
     with bound_directory(root_fd, path_parts(account.root.path, binding.root.path),
                          binding.root, "checkout binding mismatch") as checkout_fd:
         identity, _ = index_rows(checkout_fd, context.store_id, files, MAX_ROUTE_BYTES)
