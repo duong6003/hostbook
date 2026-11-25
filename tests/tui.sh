@@ -108,9 +108,10 @@ for width in 60 100 200; do
   start "$width"
   wait_for booking-
   if [ "$width" -ge 100 ]; then wait_for "Nhóm · mở bằng"; fi
-  if [ "$style" = cards ]; then
-    wait_for '^│   ──────────'
-    if [ "$width" -ge 100 ]; then wait_for '\[booking\]  *#api'; fi
+  if [ "$style" = cards ] && [ "$width" -ge 100 ]; then
+    wait_for '\[booking\]  *#api'
+    cells=$(tmux -L "$socket" capture-pane -ep -t ui | grep -Ec $'^(\033\\[[0-9;]*m)*│ \033\\[[0-9;]*;7m(\033\\[[0-9;]*m)* ')
+    [ "$cells" -eq 2 ] || { echo "FAIL TUI: dải trỏ của thẻ cần phủ hai dòng"; exit 1; }
   fi
   cp "$T/screen" "$ARTIFACTS/$style-$width.txt"
   if grep -q 'secret:\|key-prod\|unknown option\|error:' "$T/screen"; then cat "$T/screen"; exit 1; fi

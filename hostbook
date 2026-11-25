@@ -641,18 +641,25 @@ write_relayout(){ # footer-dir: the two POSIX scripts behind relayout_actions. P
     'rm -rf "$D/n$g"' > "$d/bgfoot"
 }
 fzf_opts(){ # footer-dir → one argument per line for a Bash array, without eval
-  local border preview count
+  local border preview count style pointer=$ICON_PTR colors
   border=$(cfg border rounded); preview=$(cfg preview right)
+  cfg list cards style
+  colors=$(fzf_colors)
+  # Color the whole terminal cell so the pointer joins across both lines of a card.
+  if [ "$style" = cards ] && [ "$pointer" = '▌' ] && [ -z "${NO_COLOR:-}" ]; then
+    pointer=' '
+    colors="$colors,pointer:$TH_ACCENT:reverse"
+  fi
   if [ "$border" = none ]; then printf '%s\n' --style=minimal
   else
     visible_host_count count
     printf '%s\n' "--style=full:$border" "--input-label= $(t fzf_find) " "--list-label= $(t fzf_servers "$count") " "--preview-label= $(t fzf_detail) "
   fi
   case $preview in right) echo '--preview-window=right,38%,wrap,<36(hidden)';; bottom) echo '--preview-window=down,40%,wrap';; hidden) echo '--preview-window=right,38%,wrap,hidden,<36(hidden)';; esac
-  printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$(fzf_colors)" "--pointer=$ICON_PTR" '--highlight-line'
-  if [ "$(cfg list cards)" = cards ]; then
+  printf '%s\n' "--bind=ctrl-/:toggle-preview+$(relayout_actions "$1")" "--color=$colors" "--pointer=$pointer" '--highlight-line'
+  if [ "$style" = cards ]; then
     echo --read0
-    if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=─'; fi
+    if [ "$(cfg separator on)" = on ]; then printf '%s\n' --gap '--gap-line=╌'; fi
   fi
 }
 
@@ -2923,7 +2930,7 @@ cmd_demo(){ # fixed sample data; no network checks or changes to real configurat
   if [ "$preview" = right ] && [ $((cols * 38 / 100)) -ge 36 ]; then width=$((cols * 60 / 100 - 6)); fi
   if [ "$style" = cards ]; then
     printf -v rule '%*s' "$width" ''
-    rule=${rule// /─}
+    rule=${rule// /-}
     rendered=$(while IFS= read -r -d '' record; do
       record=${record#*"$TAB"}; printf '%s\n' "${record%"$TAB"*}"
       [ "$sep" != on ] || printf '%s%s%s\n' "$CD" "$rule" "$C0"
