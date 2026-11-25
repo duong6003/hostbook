@@ -1024,6 +1024,9 @@ def main(args):
         if action in ("_store_receive", "store-receive"):
             from store_receive import receive_command
             return receive_command(action, args[1:])
+        if action == "_store_overview":
+            from store_overview import overview_command
+            return overview_command(args[1:])
         if action in ("_store_hosts", "_store_preview", "_store_connect", "store-hosts", "store-preview", "store-connect"):
             from store_read import route_command
             return route_command(action, args[1:])

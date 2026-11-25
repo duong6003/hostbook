@@ -538,6 +538,32 @@ def send_confirmed(load, store_id, expected, source, wanted):
     return mode
 
 
+def disconnect_keep_checkout(load, store_id, expected):
+    """Remove only the local connection, under the shared publication gate."""
+    with store_writer(load, store_id, expected) as (account, context, state, writer):
+        entries, _ = registry_entries(state, account)
+        entry = entries[store_id]
+        require(context.kind == "shared" and entry["connection"] and not entry["transition_id"],
+                "a connected shared store with no mode transition is required")
+        with recovery_root(account) as recovery:
+            require_idle(recovery, account, store_id)
+            active, pending, inflight = mode_records(recovery, account, store_id, None)
+            require(not active and not pending and not inflight,
+                    "resolve pending shared edits before disconnecting")
+            with open_directory(state, ("stores", "v1", store_id)) as namespace:
+                require_private_directory(namespace, "store state")
+                require_no_receive_pending(namespace, None)
+            disconnected = dict(entry, connection=None, effective_mode=None,
+                                registration_generation=expected.registration + 1,
+                                connection_generation=expected.connection + 1,
+                                policy_generation=expected.policy + 1)
+
+            def verify(current):
+                verify_live(load, account, state, writer, current)
+
+            replace_entry(state, account, entry, disconnected, verify)
+
+
 def mode_command(action, args):
     if action == "_store_mode":
         require(len(args) >= 1, "one requested sync mode is required")

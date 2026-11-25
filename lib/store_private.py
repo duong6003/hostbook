@@ -111,10 +111,11 @@ def private_commit(stage, base, store, records, document):
     return commit,host_ids
 
 
-def add_private(load, document):
+def add_private(load, document, *, destination=None):
     records = admitted_hosts(document)
     account = load()
     store, expected = private_destination(account)
+    require(destination is None or destination == (store, expected), "private store changed while the form was open")
     with store_writer(load,store,expected) as (actual,start,state,_):
         require(actual == account,"private account changed")
         local = local_inputs(state,store)

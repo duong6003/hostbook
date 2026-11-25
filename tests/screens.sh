@@ -194,6 +194,32 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   wait_for "$L_tags_other"; wait_for "$L_tags_head"; check tag-picker; fin
   summary 'ô mật khẩu và chọn tag (S1 S2 S3 S7 S10)'
 
+  local overview_input
+  printf '%s\n' $'summary-private\t1' $'summary-shared\t2\treceive-only\trefs/heads/main' \
+    $'host\tprivate\tdb\t1' $'host\tshared\tdb\t2' $'host\tshared\tonly-shared\t3' > "$W/stores.tsv"
+  printf -v overview_input '_store_overview_screen < %q' "$W/stores.tsv"
+  start "$overview_input"
+  wait_for "$L_store_overview_title"
+  wait_for "db  ·  $L_store_overview_private_label"
+  wait_for "db  ·  $L_store_overview_shared_label"
+  typ db; gone only-shared
+  check stores
+  k Escape; fin
+  summary 'tìm host trùng tên theo kho (S1 S2 S3 S7 S10)'
+  start '_store_overview_host shared db 192.0.2.90 fixture 22 "" transfer'
+  wait_for "$L_store_overview_connect"
+  wait_for "fixture@192.0.2.90:22"
+  check store-host
+  k Escape; fin
+  printf -v overview_input '_store_overview_pending %q %q send-then-switch discard-then-switch cancel' \
+    '12345678-1234-4234-8234-123456789abc' \
+    $'23456789-2345-4234-8234-234567890abc\trefs/heads/main\tabcdef\t123456'
+  start "$overview_input"
+  wait_for "$L_store_overview_pending"
+  wait_for 'abcdef → 123456'
+  check store-pending
+  k Escape; fin
+
   # ---- file picker: send a file
   start; wait_for shop-api; find_host shop-api; k Right; wait_for "$L_act_ssh"; menu_pick "$L_act_send"; wait_for note.txt; check file-picker
   if grep -qF .secretrc "$cap"; then die 'file picker hiện file ẩn'; fi

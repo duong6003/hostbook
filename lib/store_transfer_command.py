@@ -112,7 +112,7 @@ def operator_environment(scratch,home):
 def compatible_picker(account, locations, minimum):
     require(re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}",minimum),"invalid installed fzf requirement")
     required = tuple(int(v) for v in minimum.split("."))
-    reason = "registered transfer confirmation requires an approved fzf "+minimum+" or later"
+    reason = "registered store screens require an approved fzf "+minimum+" or later"
     for location in locations:
         try:
             binary = verified_programs(account,(location,),("fzf",),reason)
