@@ -576,7 +576,7 @@ list_rows(){ # style, width; field 2 contains visible content only, field 3 pres
         vis=fit(cu cb name c0 "  " cd $7 c0,W)
         if(style=="cards")vis=vis "\n" fit(cd "  " $9 c0,W)
       }else if(substr($1,1,1)=="r" && style!="cards"){
-        vis=fit(cb $2 c0 "  ·  " cu $3 c0,W)
+        vis=fit(cb $2 c0 "  ·  " cd $3 c0,W)
       }else if(style=="minimal"){
         mark=(" " $6 " " ~ / prod /?" " cr prod "prod" c0:"")
         room=W-vlen(mark)-vlen($4)-2
@@ -584,13 +584,14 @@ list_rows(){ # style, width; field 2 contains visible content only, field 3 pres
         else vis=fit($2,W-vlen(mark)) mark
       }else{
         tagtext=""; nt=split($6,tt," ")
-        for(i=1;i<=nt;i++)if(tt[i]!="" && tt[i]!="prod")tagtext=tagtext (i>1?" ":"") (tt[i]=="prod"?cr prod "prod":cu "#" tt[i]) c0
+        for(i=1;i<=nt;i++)if(tt[i]!="" && tt[i]!="prod")tagtext=tagtext (tagtext!=""?" ":"") "#" tt[i]
         nw=(W<70?16:W<110?20:26); if(style=="cards" && W>=45)nw=26; if(nw>W-4)nw=W-4
         mark=(" " $6 " " ~ / prod /?" " cr prod "prod" c0:"")
         name=fit($2,nw-vlen(mark)) mark
         if(style=="cards"){
           chip=(bg[1]==""?cu:bg[(color[$3]?color[$3]:1)] chipfg)
-          vis=fit(cb pad(name,nw) c0 "  " chip " " $3 " " c0 "  " tagtext,W)
+          label=(substr($1,1,1)=="r" ? cd "· " $3 : chip " [" $3 "] ") c0
+          vis=fit(cb pad(name,nw) c0 "  " label "  " tagtext,W)
           detail="  " $4 " · @" $5 ($7!=""?" · " $7:""); age=$9
           room=W-vlen(age)-2; vis=vis "\n" cd pad(detail,room) "  " age c0
         }else{
@@ -598,7 +599,7 @@ list_rows(){ # style, width; field 2 contains visible content only, field 3 pres
           if(used+19<=W){vis=vis pad(tagtext,18) " ";used+=19}
           if(used+16<=W){vis=vis cd pad($4,16) c0;used+=16}
           if(used+11<=W){vis=vis cd pad("@" $5,11) c0;used+=11}
-          if(used+13<=W){vis=vis cd pad($3,13) c0;used+=13}
+          if(used+13<=W){vis=vis cd pad("[" $3 "]",13) c0;used+=13}
           if(used+5<=W){vis=vis cd pad($9,5) c0;used+=5}
           if(used+8<=W)vis=vis cd fit($7,W-used) c0
           vis=fit(vis,W)
