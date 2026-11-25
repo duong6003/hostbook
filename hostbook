@@ -3182,6 +3182,7 @@ case ${1:-} in
     while IFS="$TAB" read -r record first second third; do
       case $record in
         summary-private) head="$head$(t store_overview_private "$first")$NL";;
+        summary-offline) head="$head$(t store_overview_offline "$first")$NL";;
         summary-shared)
           case $second in
             receive-only) mode=$(t store_overview_receive_only);;
@@ -3195,14 +3196,107 @@ case ${1:-} in
         host)
           case $first in private|shared) ;; *) exit 65;; esac
           tv label "store_overview_${first}_label"
-          printf -v rows '%s%s  ·  %s\n' "$rows" "$second" "$label";;
+          printf -v rows '%s%s\t%s  ·  %s\n' "$rows" "$third" "$second" "$label";;
         *) exit 65;;
       esac
     done
     [ -n "$rows" ] || head="$head$(t store_overview_empty)$NL"
-    printf '%s' "$rows" | ui_fzf "$(ui_head "$head")" --info=right \
-      --prompt='› ' --ghost="$(t home_ghost)" --bind 'esc:abort,ctrl-u:clear-query,enter:ignore' \
-      --footer="$(ui_keys "↑↓:$(t key_move)" "esc:$(t key_back)")$NL$(t menu_search_recovery)" >/dev/null;;
+    printf '%s' "$rows" | ui_fzf "$(ui_head "$head")" --info=right --expect=ctrl-o \
+      --delimiter="$TAB" --with-nth=2.. --accept-nth=1 \
+      --prompt='› ' --ghost="$(t home_ghost)" --bind 'esc:abort,ctrl-u:clear-query' \
+      --footer="$(ui_keys "↑↓:$(t key_move)" "enter:$(t key_open)" "ctrl-o:$(t tools_title)" "esc:$(t key_back)")$NL$(t menu_search_recovery)";;
+  _store_overview_host)
+    [ "$#" -eq 8 ] || exit 65
+    case $2 in private|shared) ;; *) exit 65;; esac
+    tv label "store_overview_${2}_label"
+    at "$(t store_overview_title)|$3"
+    head=$(t store_overview_route "$label" "$5" "$4" "$6")
+    [ -z "$7" ] || head="$head$NL$(t store_overview_jump "$7")"
+    items=("$(t store_overview_connect)" "$(t store_overview_back)")
+    [ "$8" != transfer ] || items+=("$(t transfer_title)")
+    UI_HEAD="$head" ui_menu "$3" "${items[@]}";;
+  _store_overview_tools|_store_overview_pending)
+    [ "$#" -ge 2 ] || exit 65
+    screen=$1; shift; options=(); head=
+    if [ "$screen" = _store_overview_pending ]; then
+      at "$(t store_overview_pending)"
+      head=$(t store_overview_transaction "$1"); shift
+    else at "$(t tools_title)"; fi
+    for action in "$@"; do
+      case $action in
+        add|import|receive|mode|disconnect|recover|retry|discard|send-then-switch|discard-then-switch|cancel)
+          options+=("$(t "store_overview_${action//-/_}")");;
+        *) exit 65;;
+      esac
+    done
+    UI_HEAD="$head" ui_menu "$(t store_overview_title)" "${options[@]}";;
+  _store_overview_discard_confirm)
+    [ "$#" -eq 2 ] || exit 65
+    at "$(t store_overview_pending)"
+    ui_confirm --danger --default=false --affirmative "$(t store_overview_discard)" \
+      --negative "$(t cancel)" "$(t store_overview_discard_question)" "$(t store_overview_transaction "$2")";;
+  _store_overview_mode)
+    at "$(t store_overview_mode)"
+    ui_menu "$(t store_overview_shared_label)" "$(t store_overview_receive_only)" \
+      "$(t store_overview_two_way)" "$(t cancel)";;
+  _store_overview_disconnect)
+    at "$(t store_overview_disconnect)"
+    ui_confirm --default=false --affirmative "$(t store_overview_disconnect_keep)" \
+      --negative "$(t cancel)" "$(t store_overview_disconnect)" "$(t store_overview_disconnect_rule)";;
+  _store_overview_private_input)
+    [ "$#" -eq 2 ] || exit 65
+    case $2 in
+      add)
+        at "$(t store_overview_add)"
+        name=$(ui_field "$(t f_name)" "" name:/dev/null "$(t store_overview_name_rule)") || exit 1
+        address=$(ui_field "$(t f_addr)" "" text "$(t store_overview_address_rule)") || exit 1
+        printf '%s\n%s\n' "$name" "$address";;
+      import)
+        at "$(t store_overview_import)"
+        ui_field "$(t store_overview_file)" "" text "$(t store_overview_file_rule)";;
+      *) exit 65;;
+    esac;;
+  _store_overview_vault_prompt)
+    t store_overview_vault;;
+  _store_overview_transfer_alias)
+    [ "$#" -eq 2 ] || exit 65
+    at "$(t transfer_title)"
+    ui_field "$(t f_name)" "$2" name:/dev/null "$(t store_overview_transfer_alias_rule)";;
+  _store_overview_transfer_duplicate)
+    shift; options=()
+    at "$(t transfer_title)"
+    for item in "$@"; do
+      action=${item%%|*}
+      case $action in update|keep-both|rename|cancel) ;; *) exit 65;; esac
+      options+=("$(t "store_overview_transfer_${action//-/_}")|${item#*|}")
+    done
+    ui_menu "$(t store_overview_transfer_duplicate)" "${options[@]}";;
+  _store_overview_transfer_credential)
+    [ "$#" -eq 2 ] || exit 65
+    at "$(t transfer_title)"
+    alias=$(ui_field "$(t store_overview_transfer_credential)" "$2" lname:/dev/null "$(t secret_name_rule)") || exit 1
+    case $(ui_menu "$(t store_overview_transfer_credential)" "$(t transfer_create "$alias")" \
+        "$(t transfer_reuse "$alias")" "$(t cancel)") in
+      0) printf '%s\ncreate\n' "$alias";;
+      1) printf '%s\nreuse\n' "$alias";;
+      *) exit 1;;
+    esac;;
+  _store_overview_recovery_id)
+    at "$(t store_overview_recover)"
+    ui_field "$(t store_overview_transaction_id)" "" text "$(t store_overview_transaction_rule)";;
+  _store_overview_recovery_action)
+    [ "$#" -eq 2 ] || exit 65
+    at "$(t store_overview_recover)"
+    ui_menu "$(t store_overview_transaction "$2")" "$(t store_overview_recovery_status)" \
+      "$(t store_overview_recovery_resume)" "$(t store_overview_recovery_settle)" \
+      "$(t store_overview_recovery_cancel)" "$(t store_overview_recovery_rollback)";;
+  _store_overview_result)
+    [ "$#" -ge 2 ] && [ "$#" -le 4 ] || exit 65
+    case $2 in private|received|mode|settle|transferred|transfer_pending|transfer_reconcile|disconnected|recovery) ;; *) exit 65;; esac
+    at "$(t store_overview_title)"
+    [ -z "${3:-}" ] || UI_HEAD=$(t store_overview_transaction "$3")
+    [ -z "${4:-}" ] || UI_HEAD="$UI_HEAD$NL$(t store_overview_checkpoint "$4")"
+    ui_choice "$(t "store_overview_result_$2")" "$(t store_overview_back)" >/dev/null;;
   _demo) cmd_demo "${2:-preset=cards}";; settings) check_deps || exit 1; settings;;
   _store_conflict_confirm)
     [ "$#" -eq 9 ] || exit 65

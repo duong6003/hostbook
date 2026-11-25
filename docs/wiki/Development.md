@@ -136,12 +136,15 @@ A password marker uses OpenSSH's native terminal prompt. Registered
 connections never read or supply the stored password or use an external
 askpass program.
 
-`hostbook stores` opens a read-only search over the approved private checkout
+`hostbook stores` opens search over the approved private checkout
 and one connected shared checkout. A normal launch with `HOSTBOOK_DIR` set to
 an approved registered checkout opens the same view. When multiple shared
 stores are registered, launch with `HOSTBOOK_DIR` set to the shared checkout you
 want to see. The view shows the registered branch and mode from local state.
-It performs no sync or remote status check.
+Enter previews the selected host's scoped route before SSH. Ctrl-O opens
+private add and plain OpenSSH import, shared receive and mode controls, and
+transfer recovery. Transfer uses the selected stable host and the other store.
+Disconnect retains the local checkout for offline use after pending work is resolved.
 
 Legacy history, groups and undo still use checkout-local aliases and paths.
 Registered list, preview and connect neither read nor rewrite those references.

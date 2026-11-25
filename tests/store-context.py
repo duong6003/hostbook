@@ -2504,16 +2504,140 @@ class StoreContextTest(unittest.TestCase):
             self.write_index_host(index, alias, new_id())
         before = snapshot(self.root)
         load = lambda: self.account
-        self.assertEqual(overview_rows(load).splitlines(), [
-            "shared-choose", "summary-private\t1", "host\tprivate\tdb",
+        self.assertEqual(overview_rows(load)[0].splitlines(), [
+            "shared-choose", "summary-private\t1", "host\tprivate\tdb\t1",
         ])
-        self.assertEqual(overview_rows(load, self.root / "shared a").splitlines(), [
-            "summary-private\t1", "host\tprivate\tdb",
-            "summary-shared\t1\treceive-only\trefs/heads/main", "host\tshared\tdb",
+        self.assertEqual(overview_rows(load, self.root / "shared a")[0].splitlines(), [
+            "summary-private\t1", "host\tprivate\tdb\t1",
+            "summary-shared\t1\treceive-only\trefs/heads/main", "host\tshared\tdb\t2",
         ])
         with self.assertRaisesRegex(StoreContextError, "checkout is not registered"):
             overview_rows(load, self.root / "unapproved")
         self.assertEqual(snapshot(self.root), before)
+
+    def test_overview_preview_and_connect_use_exact_shared_host_and_refuse_stale_selection(self):
+        from store_overview import browse
+
+        private_id, shared_id = new_id(), new_id()
+        self.write_index_host(0, "db", private_id)
+        self.write_index_host(1, "db", shared_id)
+        checkout = self.root / "shared a"
+        load = lambda: self.account
+        steps = []
+
+        def screen(action, *fields, data=None):
+            steps.append(action)
+            if action == "_store_overview_screen":
+                self.assertIn("host\tshared\tdb\t2", data)
+                return SimpleNamespace(returncode=0, stdout="\n2\n")
+            self.assertEqual(fields[:3], ("shared", "db", "192.0.2.90"))
+            return SimpleNamespace(returncode=0, stdout="0\n")
+
+        def connect(current, store_id, expected, host_id, stamp):
+            self.assertEqual((current(), store_id, expected, host_id),
+                             (self.account, self.entries[1]["store_id"], self.generations, shared_id))
+            self.assertRegex(stamp, r"^[a-f0-9]{64}$")
+            return 0
+
+        self.assertEqual(browse(load, checkout, screen, connect=connect), 0)
+        self.assertEqual(steps, ["_store_overview_screen", "_store_overview_host"])
+
+        def stale(action, *fields, data=None):
+            self.assertEqual(action, "_store_overview_screen")
+            self.write_index_host(1, "renamed-db", shared_id)
+            return SimpleNamespace(returncode=0, stdout="\n2\n")
+
+        with self.assertRaisesRegex(StoreContextError, "store host changed"):
+            browse(load, checkout, stale, connect=connect)
+
+    def test_overview_disconnect_keeps_the_checkout_and_refuses_pending_edits(self):
+        from store_mode import disconnect_keep_checkout
+        from store_overview import overview_rows
+
+        self.write_index_host(1, "db", new_id())
+        scope = (self.entries[1]["store_id"], self.generations)
+        load = lambda: self.account
+        store_context.refresh_store_status(load, *scope)
+        before = snapshot(self.root)
+        with patch("store_mode.mode_records", return_value=(None, [new_id()], [])):
+            with self.assertRaisesRegex(StoreContextError, "resolve pending"):
+                disconnect_keep_checkout(load, *scope)
+        self.assertEqual(snapshot(self.root), before)
+        disconnect_keep_checkout(load, *scope)
+        after = snapshot(self.root)
+        self.assertNotEqual(after.pop(self.registry.relative_to(self.root)),
+                            before.pop(self.registry.relative_to(self.root)))
+        self.assertEqual(after, before)
+        with self.assertRaisesRegex(StoreContextError, "stale store generations"):
+            resolve_store(self.account, *scope)
+        data, _, shared, _ = overview_rows(load, self.root / "shared a")
+        self.assertIn("summary-offline\t1", data)
+        self.assertIn("host\tshared\tdb", data)
+        self.assertIsNone(shared)
+
+    def test_overview_mode_uses_only_the_reviewed_pending_attempt(self):
+        from store_overview import shared_mode
+
+        load = lambda: self.account
+        scope = (self.entries[1]["store_id"], self.generations)
+        pending = new_id()
+        replies = {"_store_overview_mode": "0", "_store_overview_pending": "0"}
+
+        def screen(action, *fields):
+            if action == "_store_overview_pending":
+                self.assertEqual(fields, (pending, "send-then-switch", "discard-then-switch", "cancel"))
+            return SimpleNamespace(returncode=0, stdout=replies[action])
+
+        report = {"pending": [pending], "choices": ["send-then-switch", "discard-then-switch", "cancel"]}
+        with patch("store_mode.change_mode", side_effect=[report, {"mode": "receive-only"}]) as change:
+            self.assertEqual(shared_mode(load, screen, scope), "mode")
+        self.assertEqual([call.args for call in change.call_args_list], [
+            (load, *scope, "receive-only"),
+            (load, *scope, "receive-only", "send-confirmed", [pending]),
+        ])
+        replies["_store_overview_pending"] = "2"
+        with patch("store_mode.change_mode", return_value=report) as change:
+            self.assertIsNone(shared_mode(load, screen, scope))
+        change.assert_called_once_with(load, *scope, "receive-only")
+
+    def test_overview_transfer_passes_exact_duplicate_and_returns_interrupted_transaction(self):
+        from store_overview_transfer import move_host
+
+        load = lambda: self.account
+        src = (self.entries[0]["store_id"], self.generations, new_id())
+        dst = (self.entries[1]["store_id"], self.generations)
+        match, transaction = new_id(), new_id()
+        comparison = {
+            "source": {"revision": "a" * 40, "credential": "fixture-login"},
+            "destination": {"revision": "b" * 40, "proposed_alias": "db"},
+            "choices": ["update", "choose-free-alias", "cancel"],
+            "matches": [{"name": "db", "host_id": match, "reasons": ["endpoint", "alias"]}],
+        }
+        decisions = []
+        plan = SimpleNamespace(comparison=lambda: comparison, choose=lambda *args: decisions.append(args))
+        replies = {
+            "_store_overview_transfer_alias": "db\n",
+            "_store_overview_transfer_duplicate": "0\n",
+            "_store_overview_transfer_credential": "fixture-login\nreuse\n",
+            "_store_overview_result": "",
+        }
+        screens = []
+
+        def screen(action, *fields):
+            screens.append((action, fields))
+            return SimpleNamespace(returncode=0, stdout=replies[action])
+
+        def perform(args, *, recovery):
+            self.assertFalse(recovery)
+            self.assertEqual(args[-7:], ["db", "fixture-login", "reuse", "update", match, "a" * 40, "b" * 40])
+            print(json.dumps({"transaction_id": transaction, "checkpoint": "prepared"}))
+            raise StoreContextError("fixture interruption")
+
+        with patch("store_overview_transfer.preview", return_value=plan), \
+                patch("store_overview_transfer.transfer_command", side_effect=perform):
+            move_host(load, screen, src, dst)
+        self.assertEqual(decisions, [("update", match, "a" * 40, "b" * 40)])
+        self.assertEqual(screens[-1], ("_store_overview_result", ("transfer_pending", transaction)))
 
     def test_refreshing_one_index_does_not_change_other_stores(self):
         ids = [new_id() for _ in self.entries]

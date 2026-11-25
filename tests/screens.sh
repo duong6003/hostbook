@@ -196,7 +196,7 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
 
   local overview_input
   printf '%s\n' $'summary-private\t1' $'summary-shared\t2\treceive-only\trefs/heads/main' \
-    $'host\tprivate\tdb' $'host\tshared\tdb' $'host\tshared\tonly-shared' > "$W/stores.tsv"
+    $'host\tprivate\tdb\t1' $'host\tshared\tdb\t2' $'host\tshared\tonly-shared\t3' > "$W/stores.tsv"
   printf -v overview_input '_store_overview_screen < %q' "$W/stores.tsv"
   start "$overview_input"
   wait_for "$L_store_overview_title"
@@ -206,6 +206,11 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   check stores
   k Escape; fin
   summary 'tìm host trùng tên theo kho (S1 S2 S3 S7 S10)'
+  start '_store_overview_host shared db 192.0.2.90 fixture 22 "" transfer'
+  wait_for "$L_store_overview_connect"
+  wait_for "fixture@192.0.2.90:22"
+  check store-host
+  k Escape; fin
 
   # ---- file picker: send a file
   start; wait_for shop-api; find_host shop-api; k Right; wait_for "$L_act_ssh"; menu_pick "$L_act_send"; wait_for note.txt; check file-picker
