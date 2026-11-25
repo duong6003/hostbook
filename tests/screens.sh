@@ -211,6 +211,14 @@ for i,l in enumerate(open(sys.argv[1],encoding="utf-8").read().split("\n"),1):
   wait_for "fixture@192.0.2.90:22"
   check store-host
   k Escape; fin
+  printf -v overview_input '_store_overview_pending %q %q send-then-switch discard-then-switch cancel' \
+    '12345678-1234-4234-8234-123456789abc' \
+    $'23456789-2345-4234-8234-234567890abc\trefs/heads/main\tabcdef\t123456'
+  start "$overview_input"
+  wait_for "$L_store_overview_pending"
+  wait_for 'abcdef → 123456'
+  check store-pending
+  k Escape; fin
 
   # ---- file picker: send a file
   start; wait_for shop-api; find_host shop-api; k Right; wait_for "$L_act_ssh"; menu_pick "$L_act_send"; wait_for note.txt; check file-picker

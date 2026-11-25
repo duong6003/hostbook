@@ -3220,7 +3220,11 @@ case ${1:-} in
     screen=$1; shift; options=(); head=
     if [ "$screen" = _store_overview_pending ]; then
       at "$(t store_overview_pending)"
-      head=$(t store_overview_transaction "$1"); shift
+      head=$(t store_overview_transaction "$1")
+      while IFS="$TAB" read -r host ref before after; do
+        [ -z "$host" ] || head="$head$NL$(t store_overview_candidate "$host" "${ref#refs/heads/}" "$before" "$after")"
+      done <<< "$2"
+      shift 2
     else at "$(t tools_title)"; fi
     for action in "$@"; do
       case $action in
@@ -3231,10 +3235,14 @@ case ${1:-} in
     done
     UI_HEAD="$head" ui_menu "$(t store_overview_title)" "${options[@]}";;
   _store_overview_discard_confirm)
-    [ "$#" -eq 2 ] || exit 65
+    [ "$#" -eq 3 ] || exit 65
     at "$(t store_overview_pending)"
+    head=$(t store_overview_transaction "$2")
+    while IFS="$TAB" read -r host ref before after; do
+      [ -z "$host" ] || head="$head$NL$(t store_overview_candidate "$host" "${ref#refs/heads/}" "$before" "$after")"
+    done <<< "$3"
     ui_confirm --danger --default=false --affirmative "$(t store_overview_discard)" \
-      --negative "$(t cancel)" "$(t store_overview_discard_question)" "$(t store_overview_transaction "$2")";;
+      --negative "$(t cancel)" "$(t store_overview_discard_question)" "$head";;
   _store_overview_mode)
     at "$(t store_overview_mode)"
     ui_menu "$(t store_overview_shared_label)" "$(t store_overview_receive_only)" \
@@ -3284,6 +3292,10 @@ case ${1:-} in
   _store_overview_recovery_id)
     at "$(t store_overview_recover)"
     ui_field "$(t store_overview_transaction_id)" "" text "$(t store_overview_transaction_rule)";;
+  _store_overview_recovery_pick)
+    shift
+    at "$(t store_overview_recover)"
+    ui_menu "$(t store_overview_pending)" "$@" "$(t store_overview_recovery_manual)";;
   _store_overview_recovery_action)
     [ "$#" -eq 2 ] || exit 65
     at "$(t store_overview_recover)"

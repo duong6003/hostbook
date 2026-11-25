@@ -81,11 +81,13 @@ def shared_mode(load, screen, binding):
         }
         offered = result["choices"]
         attempts = ", ".join(pending)
+        evidence = "\n".join("\t".join(row[key] for key in ("host_id", "ref", "base_oid", "proposed_oid"))
+                             for row in result["candidates"])
         choice = choose(screen, "_store_overview_pending", {str(i) for i in range(len(offered))},
-                        attempts, *offered)
+                        attempts, evidence, *offered)
         if choice is None or offered[int(choice)] == "cancel":
             return None
-        if offered[int(choice)].startswith("discard") and screen("_store_overview_discard_confirm", attempts).returncode:
+        if offered[int(choice)].startswith("discard") and screen("_store_overview_discard_confirm", attempts, evidence).returncode:
             return None
         result = change_mode(load, *binding, wanted, decisions[offered[int(choice)]], pending)
     return ("settle" if "settle_attempt" in result or result.get("outcome", "accepted") != "accepted"
@@ -118,7 +120,7 @@ def store_action(load, screen, shared, private):
             with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
                 require(stat.S_ISREG(os.fstat(source.fileno()).st_mode), "expected an OpenSSH configuration file")
                 document = source.read(JSON_LIMIT + 1)
-        add_private(load, document)
+        add_private(load, document, destination=private)
         outcome = "private"
     elif action == "receive":
         from store_login import prompt_passphrase
@@ -135,7 +137,7 @@ def store_action(load, screen, shared, private):
     elif action == "recover":
         from store_overview_transfer import recover
 
-        recover(screen)
+        recover(load, screen, {scope[0] for scope in (shared, private) if scope})
         return
     else:
         from store_mode import disconnect_keep_checkout
@@ -148,7 +150,13 @@ def store_action(load, screen, shared, private):
         screen("_store_overview_result", outcome)
 
 
-def browse(load, checkout, screen, *, connect=connect_route):
+def browse(reload_account, checkout, screen, *, connect=connect_route):
+    account = reload_account()
+
+    def load():
+        require(reload_account() == account, "store approval changed while the overview was open")
+        return account
+
     while True:
         rows, selections, shared, private = overview_rows(load, checkout)
         result = screen("_store_overview_screen", data=rows)

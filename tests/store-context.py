@@ -2581,14 +2581,17 @@ class StoreContextTest(unittest.TestCase):
         load = lambda: self.account
         scope = (self.entries[1]["store_id"], self.generations)
         pending = new_id()
+        candidate = {"host_id": new_id(), "ref": "refs/heads/main", "base_oid": "a" * 40, "proposed_oid": "b" * 40}
         replies = {"_store_overview_mode": "0", "_store_overview_pending": "0"}
 
         def screen(action, *fields):
             if action == "_store_overview_pending":
-                self.assertEqual(fields, (pending, "send-then-switch", "discard-then-switch", "cancel"))
+                self.assertEqual(fields, (pending, "\t".join(candidate.values()),
+                                          "send-then-switch", "discard-then-switch", "cancel"))
             return SimpleNamespace(returncode=0, stdout=replies[action])
 
-        report = {"pending": [pending], "choices": ["send-then-switch", "discard-then-switch", "cancel"]}
+        report = {"pending": [pending], "choices": ["send-then-switch", "discard-then-switch", "cancel"],
+                  "candidates": [candidate]}
         with patch("store_mode.change_mode", side_effect=[report, {"mode": "receive-only"}]) as change:
             self.assertEqual(shared_mode(load, screen, scope), "mode")
         self.assertEqual([call.args for call in change.call_args_list], [
@@ -2599,6 +2602,17 @@ class StoreContextTest(unittest.TestCase):
         with patch("store_mode.change_mode", return_value=report) as change:
             self.assertIsNone(shared_mode(load, screen, scope))
         change.assert_called_once_with(load, *scope, "receive-only")
+
+    def test_overview_private_form_rejects_changed_generation_before_writing(self):
+        from store_private import add_private
+
+        selected = (self.entries[0]["store_id"], self.generations)
+        self.entries[0]["checkout_generation"] += 1
+        self.save_registry()
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(StoreContextError, "private store changed while the form was open"):
+            add_private(lambda: self.account, b"Host fixture\n  HostName 192.0.2.2\n", destination=selected)
+        self.assertEqual(snapshot(self.root), before)
 
     def test_overview_transfer_passes_exact_duplicate_and_returns_interrupted_transaction(self):
         from store_overview_transfer import move_host
@@ -4027,6 +4041,9 @@ with store_writer(lambda: load_approved_account(Path(sys.argv[2])), sys.argv[3],
                 self.assertEqual(json.loads(hint.read_bytes()),{"version":1,"transaction_id":ident})
             require_idle(root,self.account,self.entries[2]["store_id"])
         record, manifest = reopen_intent(f.load,ident,code,recovery=True)
+        from store_overview_transfer import unfinished_transfers
+        self.assertEqual(unfinished_transfers(f.load, {v.src.store_id}), [(ident, "prepared")])
+        self.assertEqual(unfinished_transfers(f.load, {self.entries[2]["store_id"]}), [])
         self.assertEqual(record["checkpoint"],"prepared")
         self.assertEqual(record["transaction_id"],ident)
         self.assertEqual(manifest["proposed"],proposal)

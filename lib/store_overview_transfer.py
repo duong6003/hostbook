@@ -3,9 +3,13 @@ from contextlib import redirect_stdout
 from dataclasses import astuple
 import io
 import json
+import os
 
-from store_context import StoreContextError, require, valid_id
+from store_context import (DIRECTORY_FLAGS, StoreContextError, open_directory, require,
+                           require_private_directory, valid_id)
+from store_journal import TERMINAL, TRANSFER, classify, private_json
 from store_overview import choose
+from store_publish import recovery_root
 from store_transfer import preview
 from store_transfer_command import transfer_command
 
@@ -76,12 +80,51 @@ def transfer_result(args, *, recovery=False):
     return status, [json.loads(line) for line in report.getvalue().splitlines()]
 
 
-def recover(screen):
-    result = screen("_store_overview_recovery_id")
-    if result.returncode in (1, 130):
-        return
-    ident = result.stdout.strip()
-    require(result.returncode == 0 and valid_id(ident), "invalid transfer transaction ID")
+def unfinished_transfers(load, scopes):
+    account = load()
+    active = []
+    with recovery_root(account) as root:
+        try:
+            transactions = os.open("transactions", DIRECTORY_FLAGS, dir_fd=root)
+        except FileNotFoundError:
+            return active
+        try:
+            require_private_directory(transactions, "transfer recovery")
+            for ident in sorted(os.listdir(transactions)):
+                require(valid_id(ident), "invalid transfer transaction directory")
+                with open_directory(transactions, (ident,)) as folder:
+                    scope, complete = classify(folder, account, ident, "transactions")
+                    if complete or not scope or not scopes.intersection(scope):
+                        continue
+                    selector = private_json(folder, "current.json")
+                    with open_directory(folder, ("records",)) as history:
+                        record = private_json(history, f"{selector['sequence']}.json")
+                    if record["operation"] == "transfer":
+                        require(record["checkpoint"] in TRANSFER + TERMINAL + ("rollback-pending",),
+                                "invalid transfer checkpoint")
+                        active.append((ident, record["checkpoint"]))
+        finally:
+            os.close(transactions)
+    require(load() == account, "store approval changed while listing transfers")
+    return active
+
+
+def recover(load, screen, scopes):
+    active = unfinished_transfers(load, scopes)
+    if active:
+        choice = choose(screen, "_store_overview_recovery_pick", {str(i) for i in range(len(active) + 1)},
+                        *(f"{ident}|{stage}" for ident, stage in active))
+        if choice is None:
+            return
+        ident = active[int(choice)][0] if int(choice) < len(active) else None
+    else:
+        ident = None
+    if ident is None:
+        result = screen("_store_overview_recovery_id")
+        if result.returncode in (1, 130):
+            return
+        ident = result.stdout.strip()
+        require(result.returncode == 0 and valid_id(ident), "invalid transfer transaction ID")
     actions = ("status", "resume", "settle", "cancel", "rollback")
     choice = choose(screen, "_store_overview_recovery_action", {str(i) for i in range(len(actions))}, ident)
     if choice is None:
